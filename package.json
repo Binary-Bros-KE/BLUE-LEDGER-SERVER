@@ -1,0 +1,39 @@
+{
+  "name": "blue-ledger-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "seed:super-admin": "tsx prisma/seed-super-admin.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6",
+    "bcryptjs": "^3",
+    "cors": "^2.8.5",
+    "dotenv": "^16",
+    "express": "^5",
+    "express-rate-limit": "^8.6.0",
+    "helmet": "^8",
+    "jsonwebtoken": "^9",
+    "morgan": "^1.10.0",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5",
+    "@types/jsonwebtoken": "^9",
+    "@types/morgan": "^1.9.9",
+    "@types/node": "^24",
+    "prisma": "^6",
+    "tsx": "^4",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,1189 @@
+// This registry database ALSO now holds synced tenant business data (Category, PaymentMethod,
+// Rider, Supplier, Customer, Employee, Role, and more as later sync phases land) — a deliberate
+// 2026-07-21 decision, made with the user, to use ONE shared Postgres database with every synced
+// table carrying a tenantId column, isolated via Row-Level Security (see the RLS policies appended
+// to each sync migration's .sql, and lib/tenant-context.ts's withTenantContext()), rather than a
+// real database-per-tenant. Reasoning: RLS closes the leak concern at the database layer itself;
+// composite (tenantId, ...) indexes keep tenant-scoped queries fast even at millions of rows;
+// offboarding a tenant is a scripted delete either way. True DB-per-tenant remains available later
+// for a specific client that needs physical isolation, but running real migration fan-out and
+// connection pooling across tens of thousands of separate databases isn't warranted as day-one
+// plumbing. The dbName/dbHost/dbPort fields on Tenant below predate this decision and are now
+// vestigial (never used for sync) — left in place rather than risk a disruptive removal; not to be
+// used for anything new.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// Exactly two roles, by design — see Account below. Not modeled as a generic permissions table
+/// like the desktop app's roles (which has many roles/modules/actions): this is a small internal
+/// team, and "SUPER_ADMIN sees/does everything, MARKETER sees/creates clients in their own outlet
+/// only" is the whole rulebook. Add a third role only if a real third job description shows up.
+enum AccountRole {
+  SUPER_ADMIN
+  MARKETER
+}
+
+/// Gates whether the desktop app is even allowed to run at all — the fundamental entitlement to
+/// USE the software, independent of Subscription (the commercial/billing arrangement) and
+/// SupportStatus (whether updates/support specifically are current). A LIFETIME license can stay
+/// ACTIVE forever even if support has lapsed.
+enum LicenseStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+enum SuspensionReason {
+  PAYMENT_OVERDUE
+  FRAUD
+  MANUAL
+  CUSTOMER_REQUESTED
+}
+
+/// The commercial arrangement a tenant bought into — not the same axis as BillingCycle: a LIFETIME
+/// purchase still has a recurring (YEARLY) maintenance fee on top of its one-time (ONCE) price.
+enum SubscriptionType {
+  MONTHLY
+  LIFETIME
+  CUSTOM
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+  ONCE
+}
+
+/// Whether the BILLING side of the subscription is being honored — deliberately separate from
+/// LicenseStatus: a Super Admin might keep a License ACTIVE as a goodwill gesture while this sits
+/// at PAST_DUE, or suspend a License for a support dispute while billing is current.
+enum SubscriptionBillingStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+}
+
+/// Whether updates/support are currently owed to this tenant — independent of whether the license
+/// to use the software at all is still valid. LIFETIME means "owns it forever, support included
+/// forever" (rare/negotiated); the common lifetime case is ACTIVE-while-maintenance-is-paid,
+/// EXPIRED once maintenance lapses (software keeps working, updates/support stop).
+enum SupportStatus {
+  ACTIVE
+  EXPIRED
+  LIFETIME
+}
+
+enum PaymentStatus {
+  PAID
+  PENDING
+  FAILED
+}
+
+enum DeviceType {
+  DESKTOP
+  LAPTOP
+}
+
+enum DeviceStatus {
+  ACTIVE
+  INACTIVE
+  REVOKED
+}
+
+enum BusinessType {
+  /// Real values the desktop app's own Business Profile screen actually offers (see DESKTOP's
+  /// shared/types/tenant.ts BUSINESS_TYPE_OPTIONS) — the two lists were built independently and had
+  /// never matched (desktop had Hotel/Restaurant/General Store the server couldn't store at all;
+  /// server had BOOKSHOP the desktop never offered). Found live 2026-07-24 pushing a real edit.
+  /// These lowercase values are now the ones actually used going forward.
+  retail_shop
+  wholesale_shop
+  retail_and_wholesale
+  restaurant
+  hotel
+  pharmacy
+  electronics
+  hardware
+  general_store
+  supermarket
+  other
+
+  /// Legacy values from before the reconciliation above — every existing row was migrated off these
+  /// (see migration 20260724_business_type_migrate_values), kept here only so Prisma's schema
+  /// matches the real Postgres enum type exactly (Postgres can't cleanly DROP an enum value without
+  /// recreating the whole type). Never written or read by application code anymore.
+  RETAIL
+  WHOLESALE
+  RETAIL_AND_WHOLESALE
+  HARDWARE
+  PHARMACY
+  SUPERMARKET
+  ELECTRONICS
+  BOOKSHOP
+  OTHER
+}
+
+enum Currency {
+  KES
+  UGX
+  TZS
+  USD
+}
+
+/// A physical/regional marketing team (e.g. "Nairobi Team", "Mombasa Team") — one of the four the
+/// business currently works with. Every Account and every Tenant belongs to exactly one Outlet
+/// (except a SUPER_ADMIN Account, which oversees all of them and so belongs to none); every Plan
+/// also belongs to exactly one Outlet, since pricing/packages are set per marketing team. Super-
+/// admin only: full CRUD, its own tab, never shown to a MARKETER.
+model Outlet {
+  id       String  @id @default(uuid())
+  name     String
+  location String?
+  notes    String?
+
+  accounts Account[]
+  tenants  Tenant[]
+  plans    Plan[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("outlets")
+}
+
+/// An employee of the Blue Ledger company itself (marketing-team staff who onboard clients) — NOT
+/// a tenant's own employee (that's the desktop app's own `employees` table, in a completely
+/// separate per-tenant database). Only a SUPER_ADMIN can see or CRUD this table/tab at all; a
+/// MARKETER can't even list their teammates.
+model Account {
+  id           String      @id @default(uuid())
+  name         String
+  email        String      @unique
+  passwordHash String
+  role         AccountRole @default(MARKETER)
+
+  /// Required in practice for MARKETER (their client visibility/creation is scoped to it) —
+  /// nullable at the DB level only because SUPER_ADMIN legitimately has none. Enforced by Zod at
+  /// the input boundary, same pattern as the desktop app's nullable-but-required columns.
+  outletId String?
+  outlet   Outlet? @relation(fields: [outletId], references: [id])
+
+  isActive    Boolean   @default(true)
+  lastLoginAt DateTime?
+
+  recordedPayments SubscriptionPayment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("accounts")
+}
+
+/// A pricing package (e.g. "Duka", "Biashara", or a one-off custom package for a specific big
+/// client) — belongs to exactly one Outlet, so each marketing team runs its own catalog. Carries
+/// every possible pricing angle (monthly / one-time-purchase+maintenance) so a Subscription can
+/// pick whichever commercial arrangement the client actually agreed to; changing a plan's price
+/// here never touches an existing Subscription's own (possibly negotiated) priceCents snapshot.
+model Plan {
+  id       String @id @default(uuid())
+  outletId String
+  outlet   Outlet @relation(fields: [outletId], references: [id])
+
+  name String
+
+  /// Null unless this plan is ever sold as a recurring monthly package.
+  monthlyPriceCents      Int?
+  /// Null unless this plan is ever sold as a one-time purchase.
+  purchasePriceCents     Int?
+  /// Null unless this plan is ever sold as a one-time purchase (its recurring maintenance fee).
+  annualMaintenanceCents Int?
+
+  maxBranches Int @default(1)
+  maxUsers    Int @default(3)
+  maxDevices  Int @default(1)
+
+  supportLevel String?
+  description  String?
+
+  /// A retired plan stays visible on any Subscription still referencing it, just can't be picked
+  /// for a new one.
+  status PlanStatus @default(ACTIVE)
+
+  featureInventory      Boolean @default(true)
+  featureSales          Boolean @default(true)
+  featureQuotations     Boolean @default(false)
+  featurePurchaseOrders Boolean @default(false)
+  featureExpenses       Boolean @default(false)
+  featurePayroll        Boolean @default(false)
+  featureCrm            Boolean @default(false)
+  featureMultiStore     Boolean @default(false)
+  featureCloudSync      Boolean @default(false)
+
+  subscriptions Subscription[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("plans")
+}
+
+enum PlanStatus {
+  ACTIVE
+  INACTIVE
+}
+
+/// One per Tenant — the fundamental entitlement to run the software at all. Separate from
+/// Subscription (the commercial arrangement) so a license can be manually suspended/reactivated
+/// (with a reason) independent of billing state.
+model License {
+  id       String @id @default(uuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  /// Presented to the desktop app to unlock/validate a license. Generated once; if ever rotated,
+  /// Device.licenseKeyUsed keeps each device's OWN historical activation key, not this live value.
+  licenseKey String @unique @default(uuid())
+
+  status      LicenseStatus @default(TRIAL)
+  trialEndsAt DateTime?
+
+  suspensionReason SuspensionReason?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("licenses")
+}
+
+/// One per Tenant — the commercial/billing arrangement. Plan changes over a tenant's lifetime
+/// overwrite this row in place (no history kept here); SubscriptionPayment is the append-only
+/// ledger that must never be overwritten instead.
+model Subscription {
+  id       String @id @default(uuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  planId String
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  subscriptionType SubscriptionType
+  billingCycle     BillingCycle
+  status           SubscriptionBillingStatus @default(ACTIVE)
+
+  startDate   DateTime
+  /// Next invoice/payment due date — the rolling deadline itself (no fixed "expiry"; per the
+  /// website's own "no contracts" promise).
+  nextDueDate DateTime?
+
+  /// The actually-agreed price for THIS tenant — may differ from plan.monthlyPriceCents /
+  /// plan.purchasePriceCents if negotiated; decoupled so changing the plan's list price later never
+  /// silently changes what an existing client is being charged.
+  priceCents          Int
+  /// Only relevant when subscriptionType is LIFETIME.
+  maintenanceFeeCents Int?
+  maintenanceExpiry   DateTime?
+
+  supportExpiry DateTime?
+  supportStatus SupportStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("subscriptions")
+}
+
+/// Append-only payment ledger — NEVER overwritten or updated in place once PAID (a correction is a
+/// new row, not an edit). This is what lets the dashboard show "Jan ✅ Feb ✅ Mar ❌" without any
+/// hacks, and is the actual source of truth for a tenant's payment history over time.
+model SubscriptionPayment {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  amountCents Int
+  currency    Currency
+
+  paymentMethod        String
+  transactionReference String?
+
+  /// Free-form period label this payment covers — "2026-01" for a monthly payment, "2026" for an
+  /// annual maintenance fee, "one-time" for a lifetime purchase.
+  billingPeriod String
+
+  paymentDate      DateTime
+  /// Snapshot of what the subscription's nextDueDate became right after this payment was recorded
+  /// — an audit trail, independent of Subscription.nextDueDate's current live value.
+  nextDueDateAfter DateTime?
+
+  status PaymentStatus @default(PAID)
+
+  createdBy        String?
+  createdByAccount Account? @relation(fields: [createdBy], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("subscription_payments")
+}
+
+/// A specific installation of the desktop app — many per Tenant, up to Plan.maxDevices. Deliberately
+/// its own table (not a JSON array on Tenant): app_version and last_sync genuinely differ PER
+/// DEVICE (a warehouse PC lagging a version behind the main till is a completely normal, expected
+/// state), so collapsing them onto Tenant would silently discard that.
+model Device {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  deviceName String
+  deviceType DeviceType
+
+  /// Opaque reference to a location/storefront inside the TENANT'S OWN separate application
+  /// database — never a foreign key here, since that database isn't this one and isn't queryable
+  /// from the registry until sync exists.
+  storefrontId String?
+
+  osName     String?
+  appVersion String?
+
+  /// Permanent, never-reused ordinal for this tenant (1, 2, 3, ...) — claimed atomically from
+  /// Tenant.nextDeviceSequence at registration. Used by the desktop app as a per-device tag baked
+  /// into every document number it generates (e.g. "INV-D2-000058"), so two offline devices for the
+  /// same tenant can never independently mint the same number — and as the default device label
+  /// ("Device 2") until the user renames it.
+  sequenceNumber Int
+
+  registeredAt DateTime  @default(now())
+  lastSeen     DateTime?
+  lastSync     DateTime?
+
+  status DeviceStatus @default(ACTIVE)
+
+  /// The literal license key string this device activated with — a historical snapshot, not a
+  /// foreign key, so it stays accurate even if License.licenseKey is ever rotated later.
+  licenseKeyUsed String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("devices")
+}
+
+model Tenant {
+  id   String @id @default(uuid())
+  /// Business/company name — shown throughout the admin dashboard.
+  name String
+  /// URL-safe unique identifier (subdomain-friendly). Also used to derive the tenant's database
+  /// name by default, so it must stay stable once set.
+  slug String @unique
+
+  /// The marketing team that onboarded this client — every tenant belongs to exactly one outlet,
+  /// no exceptions, so this is required (unlike Account.outletId). A MARKETER can only see/create
+  /// tenants in their own outlet; SUPER_ADMIN sees and assigns any.
+  outletId String
+  outlet   Outlet @relation(fields: [outletId], references: [id])
+
+  businessType BusinessType @default(OTHER)
+  /// IANA timezone, e.g. "Africa/Nairobi" — matters once clients outside Kenya sign up.
+  timezone     String       @default("Africa/Nairobi")
+  currency     Currency     @default(KES)
+
+  ownerName    String?
+  contactEmail String
+  contactPhone String?
+
+  /// Everything below is set at tenant creation only as far as this dashboard is concerned — its
+  /// real source of truth is the desktop app's own Business Profile screen, pushed up via
+  /// POST /activation/profile whenever the tenant saves it locally (see license-service.ts on the
+  /// desktop side). Never overwritten by anything BUT that push — Plan/License/Subscription stay
+  /// admin-only regardless.
+  businessRegistrationNumber String?
+  kraPin                     String?
+  email                      String?
+  alternativePhone           String?
+  website                    String?
+  country                    String?
+  countyState                String?
+  cityTown                   String?
+  physicalAddress            String?
+  ownerPhone                 String?
+  ownerEmail                 String?
+
+  /// When a device last successfully PUSHED a business-profile edit here (POST /activation/profile)
+  /// — deliberately NOT the same as this row's own `updatedAt`, which also bumps for a dozen
+  /// unrelated reasons (device registration, every heartbeat's lastCloudSync touch, etc.) and so
+  /// can't be used to tell "did the profile actually change" from "did ANYTHING about this tenant
+  /// change." Returned on every register/heartbeat response so each device can decide whether the
+  /// cloud's copy is actually newer than its own local edit before ever overwriting it — the same
+  /// recency-guard idea used throughout the Phase 1+ entity sync, applied here since business
+  /// profile intentionally uses its own separate push/pull path, not the generic one.
+  businessProfileUpdatedAt DateTime?
+
+  /// The Postgres database that holds THIS tenant's own business data (sales, inventory, etc.) —
+  /// distinct from this registry database. Provisioned separately when the tenant is created.
+  dbName String  @unique
+  /// Null means "the default shared cluster" (see TENANT_DB_HOST/TENANT_DB_PORT in .env) — only
+  /// set this if a tenant is ever moved to a dedicated host.
+  dbHost String?
+  dbPort Int?
+
+  /// Not yet populated by anything — there's no sync mechanism for the desktop app to report its
+  /// own storefront count back here yet. Column exists now so the eventual sync job has somewhere
+  /// to write; the dashboard can display it once real values start arriving.
+  storefrontCount    Int       @default(0)
+  /// Tenant-level rollup (most recent sync across ALL its devices) — see Device.lastSync for the
+  /// per-device value; deliberately kept as two separate fields, not one.
+  lastCloudSync      DateTime?
+  pendingSyncRecords Int       @default(0)
+
+  /// Monotonically increasing, NEVER reused — the next value handed to a device at registration
+  /// (see Device.sequenceNumber). Deliberately NOT derived from a live count of active devices:
+  /// revoking a device and adding a new one must never let the new one reuse an old number, since
+  /// this is what makes document numbers (e.g. "INV-D2-000058") permanently collision-free across
+  /// devices for a tenant. Claimed atomically via `tenant.update({ nextDeviceSequence: { increment: 1 } } )`
+  /// inside the same transaction as the Device row's own creation — see registerDevice.
+  nextDeviceSequence Int @default(1)
+
+  /// Per-tenant exception to the Plan's own maxDevices — null means "use the plan's value",
+  /// unchanged. Exists because the plan-level limit is shared across every tenant on that plan;
+  /// raising (or lowering) it for just ONE tenant (e.g. a business that legitimately needs an extra
+  /// till) shouldn't require creating a whole new Plan just for them. See registerDevice/heartbeat
+  /// in activation-service.ts for where this is actually applied (`?? plan.maxDevices`).
+  maxDevicesOverride Int?
+
+  /// Internal notes for the Blue Ledger team; never shown to the tenant.
+  notes String?
+
+  license      License?
+  subscription Subscription?
+  payments     SubscriptionPayment[]
+  devices      Device[]
+  mobileLoginAttempts MobileLoginAttempt[]
+
+  // Synced business-data entities (Phase 1) — see the sync-model block at the end of this file.
+  categories     Category[]
+  paymentMethods PaymentMethod[]
+  riders         Rider[]
+  suppliers      Supplier[]
+  customers      Customer[]
+  employees      Employee[]
+  roles          Role[]
+
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  products          Product[]
+  locations         Location[]
+  sales             Sale[]
+  expenseCategories ExpenseCategory[]
+  expenses          Expense[]
+  salaries          Salary[]
+  recurringBills    RecurringBill[]
+  saleVoids         SaleVoid[]
+  saleReturns       SaleReturn[]
+  quotations        Quotation[]
+  purchases         Purchase[]
+  stockMovements    StockMovement[]
+  stockRequests     StockRequest[]
+
+  @@map("tenants")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Synced tenant business data (Phase 1) — mirrors the DESKTOP app's own per-tenant SQLite tables
+// (see DESKTOP/src/main/database/migrate.ts). Populated via the generic /sync/push, /sync/pull,
+// /sync/counts endpoints (routes/sync.ts), tenant-scoped via Postgres Row-Level Security. Every
+// model shares the same shape: `id` is the identical client-generated UUID the desktop already
+// minted (no local-id/server-id remapping needed), `deviceId` is an opaque provenance stamp (which
+// device last wrote this row — NOT a Prisma relation, same convention as Device.storefrontId
+// above), `localCreatedAt`/`localUpdatedAt` are the desktop's own timestamps (authoritative for
+// display and last-write-wins ordering), and `syncedAt` is when THIS server last received the row
+// (what pull's "since" cursor and the drift/count check actually use). Business-level uniqueness
+// (e.g. one employee_code per tenant) is enforced locally on the desktop before a row ever syncs,
+// so it is deliberately NOT duplicated here.
+// ---------------------------------------------------------------------------------------------
+
+model Category {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  parentId    String?
+  name        String
+  description String?
+  color       String
+  level       Int
+  sortOrder   Int
+  status      String
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("categories")
+}
+
+model PaymentMethod {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  name              String
+  code              String
+  description       String?
+  isSystemMethod    Boolean
+  isActive          Boolean
+  requiresReference Boolean
+  sortOrder         Int
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("payment_methods")
+}
+
+model Rider {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  name               String
+  phone              String
+  altPhone           String?
+  company            String?
+  vehicleDescription String?
+  status             String
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("riders")
+}
+
+model Supplier {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  supplierCode           String
+  businessName           String
+  contactPerson          String?
+  phone1                 String
+  phone2                 String?
+  email                  String?
+  website                String?
+  country                String?
+  county                 String?
+  town                   String?
+  physicalAddress        String?
+  paymentOption          String
+  mpesaName              String?
+  mpesaNumber            String?
+  mpesaAlternativeNumber String?
+  bankName               String?
+  bankAccountName        String?
+  bankAccountNumber      String?
+  creditLimitCents       Int?
+  status                 String
+  notes                  String?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("suppliers")
+}
+
+model Customer {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  customerCode        String
+  customerType        String
+  name                String
+  phone               String
+  email               String?
+  physicalAddress     String?
+  creditLimitCents    Int?
+  /// Deliberately stopped syncing (Phase 2 finding): this changes as a SIDE EFFECT of sales/payments
+  /// on whichever device recorded them, not a value someone consciously edits like a product price —
+  /// syncing it as plain last-write-wins risked silently losing one device's balance change entirely.
+  /// Defaults to 0 so a customer can still be created without the desktop ever sending this field;
+  /// a real fix (an append-only balance-adjustment ledger) is Phase 3 territory.
+  currentBalanceCents Int     @default(0)
+  notes               String?
+  status              String
+  /// Opaque reference to the tenant's own `locations` row — not a foreign key, locations aren't
+  /// synced in Phase 1.
+  locationId          String?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("customers")
+}
+
+model Employee {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  employeeCode     String
+  firstName        String
+  middleName       String?
+  lastName         String
+  gender           String?
+  dateOfBirth      String?
+  phone            String?
+  alternativePhone String?
+  email            String?
+  /// Opaque reference to the tenant's own `locations` row — locations aren't synced in Phase 1.
+  branchId         String?
+  department       String?
+  jobTitle         String?
+  hireDate         String?
+  /// Opaque reference to the tenant's own `roles` row. Deliberately NOT a Prisma relation to Role
+  /// even though Role also syncs in Phase 1 with the identical id — the generic push endpoint
+  /// doesn't guarantee cross-entity ordering (an Employee could sync before its Role has), so a
+  /// real FK here would be fragile. Revisit once the sync engine can express dependency ordering.
+  roleId           String?
+  username         String?
+  status           String
+  lastLogin        DateTime?
+
+  /// Now synced (was deliberately excluded through Phase 1-5) — a lost/replaced device must let an
+  /// employee log in with their EXISTING PIN, not force everyone to be re-created from scratch, per
+  /// the "buy a new device, continue like nothing happened" goal. Reconsidered the original privacy
+  /// objection: these are scrypt hashes (see DESKTOP's password-hash.ts) of a 6-digit PIN or an
+  /// optional longer password, gated behind the same RLS as everything else here; a breach that
+  /// reaches this table already has far more direct access to the tenant's own data than a
+  /// brute-forced hash would additionally provide, and a cracked PIN is only useful against the
+  /// physical desktop app it belongs to, not this registry. Cost-factor for the hash was doubled
+  /// (32768) the same day this shipped, as a direct, cheap harden given the hash now leaves the
+  /// device at all.
+  pinHash      String?
+  passwordHash String?
+
+  // Still deliberately NOT synced: failedLoginAttempts/lockedUntil (live local security state,
+  // meaningless/stale the moment it left the device), photoPath (a local file path — no shared
+  // cloud image storage exists yet).
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("employees")
+}
+
+model Role {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  roleName        String
+  description     String?
+  permissionsJson Json
+  isSystemRole    Boolean
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("roles")
+}
+
+/// Server-native — NOT a synced entity (no deviceId/localCreatedAt/syncedAt), created and updated
+/// only by mobile-auth-service.ts's Owner App login flow. Tracks failed PIN attempts per
+/// (tenant, employeeCode) so a 6-digit PIN can't be brute-forced against this new internet-facing
+/// endpoint — mirrors DESKTOP's own MAX_FAILED_ATTEMPTS=10/LOCKOUT_MINUTES=15 (auth-service.ts),
+/// kept as its own table rather than reusing Employee's local-only failedLoginAttempts/lockedUntil
+/// (those are deliberately never synced — see Employee's own comment above).
+model MobileLoginAttempt {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  employeeCode   String
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([tenantId, employeeCode])
+  @@map("mobile_login_attempts")
+}
+
+/// Phase 2's one conflict-aware entity — see sync-service.ts's pushRows() for the optimistic-lock
+/// check keyed off localUpdatedAt (the desktop sends its last-known baseline as `baseUpdatedAt`,
+/// stripped by sanitizeRow before it ever reaches Prisma). categoryId/storefrontId are opaque
+/// strings, not relations, for the same reason as Employee.roleId/branchId above.
+model Product {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  sku                  String
+  barcode              String?
+  supplierSku          String?
+  name                 String
+  shortName            String?
+  description          String?
+  categoryId           String?
+  storefrontId         String?
+  buyingPriceCents     Int
+  sellingPriceCents    Int
+  wholesalePriceCents  Int?
+  wholesaleMinQuantity Int
+  minimumPriceCents    Int?
+  taxRate              Float
+  reorderLevel         Int
+  trackStock           Boolean
+  allowNegativeStock   Boolean
+  status               String
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("products")
+}
+
+/// Phase 3 — foundational, must sync before anything that references it (employees.branchId,
+/// products.storefrontId, customers.locationId, sales.locationId, etc. are all already-opaque
+/// strings on those models; they only resolve to something meaningful on a fresh device once this
+/// table itself has synced). Tier-1 (no conflict lock) — rarely edited concurrently.
+model Location {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  locationCode        String
+  locationName        String
+  displayName         String?
+  locationType        String
+  phone               String?
+  alternativePhone    String?
+  email               String?
+  country             String?
+  county              String?
+  city                String?
+  physicalAddress     String?
+  buildingName        String?
+  floorRoom           String?
+  postalAddress       String?
+  latitude            Float?
+  longitude           Float?
+  googleMapsLink      String?
+  managerName         String?
+  managerPhone        String?
+  managerEmail        String?
+  openingTime         String?
+  closingTime         String?
+  workingDays         String?
+  defaultTaxRate      Float?
+  allowNegativeStock  Boolean
+  priceLevel          String?
+  isInventoryLocation Boolean
+  canReceiveStock     Boolean
+  canSellStock        Boolean
+  canTransferStock    Boolean
+  status              String
+  description         String?
+  notes               String?
+  receiptHeader       String?
+  receiptFooter       String?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("locations")
+}
+
+/// Phase 3's "document with line items" entity — covers both retail sales AND invoices (one local
+/// table, distinguished by transactionType/paymentStatus, so one cloud model matches). Line items
+/// and attached extras are stored as nested JSON on this same row rather than separate relational
+/// tables (a deliberate simplification — this data only needs to support device restore right now,
+/// not cloud-side SQL reporting across line items). locationId/employeeId/customerId/
+/// paymentMethodId stay opaque strings, same FK-avoidance precedent as Employee.roleId.
+model Sale {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  receiptNumber       String?
+  locationId          String
+  employeeId          String
+  customerId          String?
+  saleStatus          String
+  subtotalCents       Int
+  discountAmountCents Int
+  taxAmountCents      Int
+  grandTotalCents     Int
+  paymentMethodId     String?
+  paymentReference    String?
+  amountReceivedCents Int?
+  changeGivenCents    Int?
+  notes               String?
+  completedAt         DateTime?
+  transactionType     String
+  paymentStatus       String
+  invoiceNumber       String?
+  invoiceDate         String?
+  dueDate             String?
+  amountPaidCents     Int
+  balanceDueCents     Int
+  invoiceNotes        String?
+  /// Already a JSON-text column locally (a list of individual payment entries against this
+  /// sale/invoice) — carries straight through as Json.
+  payments            Json
+  /// sale_items rows for this sale — {id, productId, quantity, unitPriceCents,
+  /// discountAmountCents, taxAmountCents, lineTotalCents, createdAt}[].
+  items               Json
+  /// sale_service_charges rows for this sale — {id, name, feeCents, costCents, createdAt}[].
+  serviceCharges      Json
+  /// The attached delivery_notes row for this sale, or null — {id, deliveryNoteNumber, riderId,
+  /// recipientName, country, town, physicalAddress, notes, feeCents, costCents, isDelivered,
+  /// deliveredAt, createdAt, updatedAt} | null.
+  delivery            Json?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("sales")
+}
+
+/// Phase 3 fast-follow — flat, single-row documents (no line items), same tier-1 pattern as
+/// Phase 1's entities.
+model ExpenseCategory {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  name        String
+  description String?
+  status      String
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("expense_categories")
+}
+
+model Expense {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  expenseNumber       String
+  expenseDate         String
+  categoryId          String
+  amountCents         Int
+  /// Opaque employee reference, same FK-avoidance precedent as Employee.roleId.
+  paidBy              String?
+  paymentMethodId     String
+  storefrontId        String?
+  reference           String?
+  description         String?
+  /// attachmentPath deliberately NOT synced — a local file path, no shared cloud storage yet.
+  status              String
+  isRecurring         Boolean
+  recurrenceFrequency String?
+  nextDueDate         String?
+  lastReminderSent    String?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("expenses")
+}
+
+model Salary {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  payslipNumber    String
+  employeeId       String
+  payPeriod        String
+  basicSalaryCents Int
+  allowancesCents  Int
+  deductionsCents  Int
+  netPayCents      Int
+  paymentMethodId  String?
+  paymentReference String?
+  status           String
+  notes            String?
+  allowancesJson   Json
+  deductionsJson   Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("salaries")
+}
+
+model RecurringBill {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  name         String
+  categoryId   String?
+  storefrontId String?
+  amountCents  Int
+  cycle        String
+  startDate    String
+  nextDueDate  String
+  status       String
+  notes        String?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("recurring_bills")
+}
+
+/// A void request against a sale — its own approval-workflow lifecycle, not a sale line item, so it
+/// stays its own entity rather than folding into the parent Sale's nested payload.
+model SaleVoid {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  saleId      String
+  status      String
+  reason      String
+  notes       String?
+  requestedBy String
+  requestedAt DateTime
+  approvedBy  String?
+  approvedAt  DateTime?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("sale_voids")
+}
+
+/// A return request against a sale — same reasoning as SaleVoid (own lifecycle, own entity), but
+/// DOES carry its own line items (sale_return_items), so — like Sale/Quotation/Purchase — those
+/// nest as JSON on this row rather than becoming a separate cloud table.
+model SaleReturn {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  saleId      String
+  status      String
+  reason      String
+  notes       String?
+  requestedBy String
+  requestedAt DateTime
+  approvedBy  String?
+  approvedAt  DateTime?
+  /// sale_return_items rows — {id, saleItemId, productId, quantity, unitPriceCents,
+  /// lineTotalCents, createdAt}[].
+  items       Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("sale_returns")
+}
+
+/// Same "document with nested line items" pattern as Sale — covers the quote itself plus its items/
+/// serviceCharges/delivery (the latter two attached via quotationId locally, same tables Sale's own
+/// extras use). locationId/customerId/employeeId/convertedSaleId stay opaque strings, same
+/// FK-avoidance precedent as Employee.roleId.
+model Quotation {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  quotationNumber     String
+  customerId          String
+  locationId          String
+  employeeId          String
+  status              String
+  subtotalCents       Int
+  discountAmountCents Int
+  taxAmountCents      Int
+  grandTotalCents     Int
+  validUntil          String
+  notes               String?
+  convertedSaleId     String?
+  convertedAt         DateTime?
+  /// quotation_items rows — same shape as Sale.items.
+  items               Json
+  /// sale_service_charges rows attached via quotationId — same shape as Sale.serviceCharges.
+  serviceCharges      Json
+  /// The attached delivery_notes row via quotationId, or null — same shape as Sale.delivery.
+  delivery            Json?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("quotations")
+}
+
+/// Same "document with nested line items" pattern as Sale — a purchase order plus its
+/// purchase_items. supplierId/locationId/paymentMethodId stay opaque strings, same precedent.
+model Purchase {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  purchaseNumber        String
+  supplierId            String
+  supplierInvoiceNumber String?
+  locationId            String
+  status                String
+  taxType               String
+  subtotalCents         Int
+  discountAmountCents   Int
+  taxAmountCents        Int
+  grandTotalCents       Int
+  paymentMethodId       String?
+  paymentReference      String?
+  paymentStatus         String
+  amountPaidCents       Int
+  /// Already a JSON-text column locally (individual payment entries) — carries through as Json.
+  payments              Json
+  notes                 String?
+  /// attachmentPath deliberately NOT synced — a local file path, no shared cloud storage yet.
+  orderedAt             DateTime?
+  receivedAt            DateTime?
+  /// purchase_items rows — {id, productId, orderedQuantity, receivedQuantity, unitCostCents,
+  /// discountAmountCents, taxAmountCents, lineTotalCents, createdAt, updatedAt}[].
+  items                 Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("purchases")
+}
+
+/// Phase 4 — the only entity in this whole sync system that is NOT a document and NOT last-write-
+/// wins: an append-only ledger row. inventory.quantity/main_store_allocations are locally-derived
+/// running totals fed BY this ledger, never synced directly — a pulling device replays each
+/// never-before-seen movement as a quantity DELTA (see DESKTOP's applyStockMovementPulledRow), which
+/// converges to the same total regardless of arrival order since addition is commutative. No
+/// localUpdatedAt-based conflict concept applies here (nothing ever edits a movement after it's
+/// created), so unlike Product this is deliberately NOT in CONFLICT_AWARE_ENTITIES.
+/// allocationStorefrontId/allocationExplicit exist purely so a second device can correctly replay
+/// the Main Store allocation side-effect applyValidatedStockMovement performs at write time — see
+/// DESKTOP migrate.ts v39's own comment for why both fields (not just one) are needed.
+model StockMovement {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  productId              String
+  locationId             String
+  movementType           String
+  quantityChange         Int
+  referenceType          String?
+  referenceId            String?
+  performedBy            String?
+  notes                  String?
+  allocationStorefrontId String?
+  allocationExplicit     Boolean @default(false)
+
+  /// No separate localUpdatedAt column locally (the row is immutable) — DESKTOP sends its
+  /// localCreatedAt value for both fields.
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("stock_movements")
+}
+
+/// The last entity in "buy a new device, get everything back" — back to a plain document-with-
+/// nested-line-items (same pattern as SaleReturn), NOT a ledger like StockMovement: this has a real
+/// update path (approve/reject bumps status/reviewedBy/reviewedAt), so it IS last-write-wins on
+/// localUpdatedAt like every other document. Approving a request creates its own StockMovement rows
+/// (already synced independently) — this model is purely the approval-workflow record itself.
+model StockRequest {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  requestNumber   String
+  storefrontId    String
+  status          String
+  notes           String?
+  rejectionReason String?
+  requestedBy     String
+  requestedAt     DateTime
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  /// stock_request_items rows — {id, productId, quantityRequested, createdAt}[]. Never independently
+  /// edited after creation (confirmed — no update/delete function exists for them), so a plain
+  /// replace-all on pull is safe.
+  items           Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("stock_requests")
+}
