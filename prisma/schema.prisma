@@ -466,6 +466,7 @@ model Tenant {
   payments     SubscriptionPayment[]
   devices      Device[]
   mobileLoginAttempts MobileLoginAttempt[]
+  shareLinks   ShareLink[]
 
   // Synced business-data entities (Phase 1) — see the sync-model block at the end of this file.
   categories     Category[]
@@ -734,6 +735,29 @@ model MobileLoginAttempt {
 
   @@unique([tenantId, employeeCode])
   @@map("mobile_login_attempts")
+}
+
+/// Server-native — backs the Share button (receipts/invoices/quotations via WhatsApp/Email). `id`
+/// IS the short public token (a random base64url string, not a UUID) — deliberately the ONLY
+/// lookup key, and deliberately NOT RLS-protected: an anonymous visitor has nothing but this token,
+/// no tenant context yet to set the RLS GUC with (same reasoning License/Device stay
+/// RLS-unprotected — see activation-service.ts's own bare `prisma.license.findUnique`). Everything
+/// this token then leads to (Sale, Quotation, etc.) stays fully RLS-protected via the normal
+/// withTenantContext(tenantId, ...) call once the row here has told us which tenant that is.
+/// `entity`/`entityId` deliberately opaque strings, same FK-avoidance precedent used everywhere
+/// else in this file — a share link can outlive edits/deletes to the row it points at.
+model ShareLink {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  entity    String
+  entityId  String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("share_links")
 }
 
 /// Phase 2's one conflict-aware entity — see sync-service.ts's pushRows() for the optimistic-lock

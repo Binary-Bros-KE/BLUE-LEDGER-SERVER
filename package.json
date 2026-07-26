@@ -24,6 +24,7 @@
     "helmet": "^8",
     "jsonwebtoken": "^9",
     "morgan": "^1.10.0",
+    "puppeteer": "^25.3.0",
     "zod": "^4"
   },
   "devDependencies": {
