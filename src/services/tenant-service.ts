@@ -1,6 +1,7 @@
 import type { License, Location, Outlet, Plan, Subscription, Tenant } from "@prisma/client";
 import type { AuthenticatedAccount } from "../middleware/auth.js";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
+import { computeInitialNextDueDate } from "../lib/billing-periods.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { tenantCreateSchema, tenantUpdateSchema } from "../schemas/tenant.js";
@@ -33,23 +34,6 @@ async function findTenantLocations(tenantId: string): Promise<Location[]> {
  * known before that provisioning work exists. */
 function deriveDbName(slug: string): string {
   return `bl_tenant_${slug.replace(/-/g, "_")}`;
-}
-
-/** MONTHLY → due again in a month; YEARLY → due again in a year (this is what a LIFETIME
- * subscription's ongoing maintenance renewal tracks); ONCE → no recurring due date at all (a
- * true one-and-done sale, nothing ever owed again). */
-function computeNextDueDate(startDate: Date, billingCycle: "MONTHLY" | "YEARLY" | "ONCE"): Date | null {
-  if (billingCycle === "MONTHLY") {
-    const next = new Date(startDate);
-    next.setMonth(next.getMonth() + 1);
-    return next;
-  }
-  if (billingCycle === "YEARLY") {
-    const next = new Date(startDate);
-    next.setFullYear(next.getFullYear() + 1);
-    return next;
-  }
-  return null;
 }
 
 async function findTenantRow(id: string): Promise<TenantWithRelations | null> {
@@ -105,7 +89,7 @@ export async function createTenant(input: unknown, actor: AuthenticatedAccount):
     throw new HttpError(400, "Selected plan doesn't belong to this outlet");
   }
 
-  const nextDueDate = computeNextDueDate(parsed.startDate, parsed.billingCycle);
+  const nextDueDate = computeInitialNextDueDate(parsed.startDate, parsed.billingCycle);
   const hasMaintenance = parsed.maintenanceFeeCents !== null;
   const supportStatus = parsed.billingCycle === "ONCE" && !hasMaintenance ? "LIFETIME" : "ACTIVE";
 

@@ -31,3 +31,13 @@ outletsRouter.delete("/:id", async (req, res) => {
   await outletService.deleteOutlet(req.params.id as string);
   res.status(204).send();
 });
+
+outletsRouter.get("/:id/mpesa-settings", async (req, res) => {
+  const settings = await outletService.getOutletMpesaSettings(req.params.id as string);
+  res.json(settings);
+});
+
+outletsRouter.put("/:id/mpesa-settings", async (req, res) => {
+  const settings = await outletService.saveOutletMpesaSettings(req.params.id as string, req.body);
+  res.json(settings);
+});

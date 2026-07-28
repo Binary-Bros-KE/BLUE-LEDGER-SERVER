@@ -3,6 +3,7 @@ import type { AuthenticatedAccount } from "../middleware/auth.js";
 import { NotFoundError } from "../lib/http-error.js";
 import { prisma } from "../prisma.js";
 import { subscriptionPaymentCreateSchema } from "../schemas/subscription-payment.js";
+import { reactivateIfPaymentOverdue } from "./license-service.js";
 import { getTenant } from "./tenant-service.js";
 
 /** Reuses getTenant's outlet-scoping (throws 404 for a MARKETER viewing another outlet's tenant) —
@@ -50,6 +51,7 @@ export async function recordPayment(
         nextDueDate: parsed.nextDueDateAfter ?? tenant.subscription.nextDueDate,
       },
     });
+    await reactivateIfPaymentOverdue(tenantId);
   }
 
   return payment;

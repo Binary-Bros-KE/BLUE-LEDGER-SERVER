@@ -1,7 +1,7 @@
 import type { Outlet } from "@prisma/client";
 import { ConflictError, NotFoundError } from "../lib/http-error.js";
 import { prisma } from "../prisma.js";
-import { outletCreateSchema, outletUpdateSchema } from "../schemas/outlet.js";
+import { outletCreateSchema, outletMpesaSettingsSaveSchema, outletUpdateSchema } from "../schemas/outlet.js";
 
 // Every function here is only ever reached via a SUPER_ADMIN-gated router (see
 // routes/outlets.ts) — no role checks needed inside the service itself.
@@ -43,4 +43,21 @@ export async function deleteOutlet(id: string): Promise<void> {
     );
   }
   await prisma.outlet.delete({ where: { id } });
+}
+
+/** Full settings INCLUDING the secret — only ever reachable via the SUPER_ADMIN-gated router, same
+ * tier as every other Outlet action. Returns null if this outlet has no Till configured yet. */
+export async function getOutletMpesaSettings(outletId: string) {
+  await getOutlet(outletId);
+  return prisma.outletMpesaSettings.findUnique({ where: { outletId } });
+}
+
+export async function saveOutletMpesaSettings(outletId: string, input: unknown) {
+  const parsed = outletMpesaSettingsSaveSchema.parse(input);
+  await getOutlet(outletId);
+  return prisma.outletMpesaSettings.upsert({
+    where: { outletId },
+    create: { outletId, ...parsed },
+    update: parsed,
+  });
 }

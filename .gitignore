@@ -2,3 +2,8 @@ node_modules/
 dist/
 .env
 *.log
+
+# DESKTOP release artifacts (installers, .blockmap, latest.yml) — copied here manually after each
+# build, never committed. See RELEASES_DIR in env.ts.
+releases/*
+!releases/.gitkeep

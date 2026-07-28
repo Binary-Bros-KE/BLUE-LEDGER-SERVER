@@ -24,6 +24,7 @@ export const SYNC_ENTITY_NAMES = [
   "purchases",
   "stock_movements",
   "stock_requests",
+  "main_store_allocations",
 ] as const;
 
 export type SyncEntityName = (typeof SYNC_ENTITY_NAMES)[number];

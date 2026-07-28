@@ -236,8 +236,9 @@ function asArray<T>(value: unknown): T[] {
 }
 
 /** Ports DESKTOP's computePaymentStatus (shared/lib/invoice.ts) — derives live status from the
- * numbers rather than trusting a value that goes stale as the calendar moves past a due date. */
-function computePaymentStatus(params: {
+ * numbers rather than trusting a value that goes stale as the calendar moves past a due date.
+ * Exported so mobile-sales-service.ts's invoice list doesn't need a third copy of this logic. */
+export function computePaymentStatus(params: {
   balanceDueCents: number;
   amountPaidCents: number;
   dueDate: string | null;
@@ -251,8 +252,9 @@ function computePaymentStatus(params: {
 }
 
 /** Ports DESKTOP's computeQuotationStatus (shared/lib/quotation.ts) — rejected/converted are
- * terminal, otherwise a date past validUntil means expired regardless of the stored status. */
-function computeQuotationStatus(params: { storedStatus: string; validUntil: string }): string {
+ * terminal, otherwise a date past validUntil means expired regardless of the stored status.
+ * Exported so mobile-quotations-service.ts's list doesn't need a second copy of this logic. */
+export function computeQuotationStatus(params: { storedStatus: string; validUntil: string }): string {
   if (params.storedStatus === "rejected" || params.storedStatus === "converted") return params.storedStatus;
   if (new Date(params.validUntil).getTime() < Date.now()) return "expired";
   return params.storedStatus;
@@ -314,7 +316,10 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
   return [...charges, ...deliveryLine];
 }
 
-async function buildSharedDocument(tenantId: string, entity: "sale" | "quotation", entityId: string): Promise<SharedDocumentResult | null> {
+/** Exported for reuse by the Owner App's mobile-sales-service.ts — the owner viewing their own
+ * tenant's own document is a plain authenticated read, not a public-token share, so it calls this
+ * directly instead of minting a ShareLink. Same view-model either way — one source of truth. */
+export async function buildSharedDocument(tenantId: string, entity: "sale" | "quotation", entityId: string): Promise<SharedDocumentResult | null> {
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: tenantId },
     select: { name: true, physicalAddress: true, contactPhone: true, currency: true },
@@ -510,8 +515,10 @@ async function buildSharedDeliveryNote(
 /** customerId here (not a Sale/Quotation id) — a statement has no document row of its own, it's
  * recomputed live from whichever of the customer's invoices are still outstanding, same query
  * findCustomerOutstandingBalanceRow already runs locally for the credit-limit check, just returning
- * the invoice-by-invoice detail instead of only the sum. */
-async function buildSharedStatement(tenantId: string, customerId: string): Promise<SharedStatementResult | null> {
+ * the invoice-by-invoice detail instead of only the sum. Exported for reuse by the Owner App's
+ * mobile-customers-service.ts — same "authenticated owner, not a public token" reasoning as
+ * buildSharedDocument's own export comment. */
+export async function buildSharedStatement(tenantId: string, customerId: string): Promise<SharedStatementResult | null> {
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: tenantId },
     select: { name: true, physicalAddress: true, contactPhone: true, currency: true },

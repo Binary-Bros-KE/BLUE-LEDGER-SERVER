@@ -24,3 +24,8 @@ activationRouter.post("/payments", async (req, res) => {
   const result = await activationService.listPayments(req.body);
   res.json(result);
 });
+
+activationRouter.post("/payment-schedule", async (req, res) => {
+  const result = await activationService.getPaymentSchedule(req.body);
+  res.json(result);
+});

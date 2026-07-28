@@ -32,6 +32,7 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
   purchases: (tx) => tx.purchase,
   stock_movements: (tx) => tx.stockMovement,
   stock_requests: (tx) => tx.stockRequest,
+  main_store_allocations: (tx) => tx.mainStoreAllocation,
 };
 
 /** The only nullable Json columns across the whole synced schema today (every other Json field —
@@ -117,6 +118,11 @@ const NATURAL_KEY_FIELDS: Partial<Record<SyncEntityName, string>> = {
   payment_methods: "code",
   expense_categories: "name",
   locations: "locationCode",
+  // Not a boot-seeded default like the five above — this reconciles a DIFFERENT collision: two
+  // devices each first-touching the same real (product, storefront) bucket before ever syncing
+  // with each other, which would otherwise land as two permanent duplicate rows (see the model's
+  // own schema comment).
+  main_store_allocations: "bucketKey",
 };
 
 export type PushRowResult =

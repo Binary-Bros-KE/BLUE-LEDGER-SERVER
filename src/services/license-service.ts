@@ -30,6 +30,24 @@ export async function reactivateLicense(tenantId: string): Promise<License> {
   });
 }
 
+/** Called after ANY payment lands PAID — the manual admin "Record Payment" flow and the self-serve
+ * platform-billing STK flow both funnel through this, so "pay and get back in immediately" works
+ * identically no matter which path collected the money. Deliberately narrow: only reactivates a
+ * license the automatic billing scheduler suspended for being overdue (suspensionReason ===
+ * PAYMENT_OVERDUE) — a license an admin suspended for FRAUD/MANUAL/CUSTOMER_REQUESTED must stay
+ * suspended even if a payment somehow comes in; a payment should never silently undo a deliberate
+ * human decision to lock someone out for a different reason. No-op (not an error) if the license
+ * isn't currently suspended for that reason at all — the common case for most payments. */
+export async function reactivateIfPaymentOverdue(tenantId: string): Promise<void> {
+  const license = await prisma.license.findUnique({ where: { tenantId } });
+  if (license && license.status === "SUSPENDED" && license.suspensionReason === "PAYMENT_OVERDUE") {
+    await prisma.license.update({
+      where: { tenantId },
+      data: { status: "ACTIVE", suspensionReason: null },
+    });
+  }
+}
+
 /** General-purpose edit for cases suspend/reactivate don't cover — e.g. moving TRIAL → ACTIVE
  * directly (no payment-driven trigger for that exists yet), setting CANCELLED outright, or
  * setting/clearing a trial end date. suspensionReason only persists when status is SUSPENDED. */

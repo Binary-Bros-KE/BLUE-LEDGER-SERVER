@@ -26,3 +26,18 @@ export const outletUpdateSchema = z.object({
 });
 
 export type OutletUpdateInput = z.infer<typeof outletUpdateSchema>;
+
+/** The Till (Buy Goods) this outlet's own tenants pay their software subscription/maintenance
+ * into — same shape as the desktop app's per-storefront mpesaSettingsSaveSchema, deliberately
+ * mirrored so the two features stay easy to reason about together. */
+export const outletMpesaSettingsSaveSchema = z.object({
+  environment: z.enum(["sandbox", "production"]),
+  consumerKey: z.string().trim().min(1, "Consumer Key is required"),
+  consumerSecret: z.string().trim().min(1, "Consumer Secret is required"),
+  passkey: z.string().trim().min(1, "Passkey is required"),
+  shortcode: z.string().trim().min(1, "Shortcode is required"),
+  tillNumber: z.string().trim().min(1, "Till Number is required"),
+  accountReference: z.string().trim().max(120).optional().default(""),
+});
+
+export type OutletMpesaSettingsSaveInput = z.infer<typeof outletMpesaSettingsSaveSchema>;

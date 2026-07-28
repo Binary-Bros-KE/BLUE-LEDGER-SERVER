@@ -103,6 +103,7 @@ export function resolvePeriodRange(period: MobilePeriod, timezone: string, now: 
 export type PaymentMethodBreakdownEntry = {
   paymentMethodName: string;
   revenueCents: number;
+  transactionCount: number;
   percentOfTotal: number;
 };
 
@@ -116,6 +117,12 @@ export type SalesTopProduct = {
 export type SalesSnapshot = {
   revenueCents: number;
   transactionCount: number;
+  /** Sum of every sold line's lineTotalCents — an ACCRUAL figure (what was sold), unlike
+   * revenueCents above which is CASH (what was actually collected). Added for
+   * mobile-sales-report-service.ts's averageSaleCents/averageDailyRevenueCents, which DESKTOP's own
+   * Sales Report also derives from gross sales, not cash revenue. */
+  grossSalesCents: number;
+  itemsSold: number;
   paymentMethodBreakdown: PaymentMethodBreakdownEntry[];
   topProducts: SalesTopProduct[];
 };
@@ -165,15 +172,18 @@ export type OwnerDashboardResult = {
 
 /** Fetches sale rows + the approved-void exclusion set + item/return/product context shared by both
  * the sales snapshot and the expenses/profit sections, then computes both from the same raw
- * material — mirrors getSalesFinancialOverview's own single-fetch-many-derivations shape. */
-async function computeSalesAndProfit(
+ * material — mirrors getSalesFinancialOverview's own single-fetch-many-derivations shape.
+ * Exported so mobile-sales-report-service.ts can reuse the exact same cash-recognition/net-profit
+ * math for the Sales Report's overview cards and trend points — one source of truth, so the two
+ * screens' numbers can never quietly disagree for the same period. */
+export async function computeSalesAndProfit(
   tx: Parameters<Parameters<typeof withTenantContext>[1]>[0],
   tenantId: string,
   range: PeriodRange,
 ): Promise<{ sales: SalesSnapshot; profit: ExpensesAndProfit }> {
   const { start, endExclusive } = range;
 
-  const [voidedSales, salesInRange, invoiceCandidates, approvedReturnsInRange, expenseAgg, purchases, salaries, productRows] =
+  const [voidedSales, salesInRange, invoiceCandidates, approvedReturnsInRange, expenseAgg, purchases, salaries, productRows, paymentMethods] =
     await Promise.all([
       tx.saleVoid.findMany({ where: { tenantId, status: "approved" }, select: { saleId: true } }),
       tx.sale.findMany({
@@ -226,27 +236,31 @@ async function computeSalesAndProfit(
         _sum: { netPayCents: true },
       }),
       tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true } }),
+      tx.paymentMethod.findMany({ where: { tenantId }, select: { id: true, name: true } }),
     ]);
 
   const voidedSaleIds = new Set(voidedSales.map((v) => v.saleId));
   const liveSales = salesInRange.filter((s) => !voidedSaleIds.has(s.id));
 
   const productById = new Map(productRows.map((p) => [p.id, p]));
+  const paymentMethodNameById = new Map(paymentMethods.map((p) => [p.id, p.name]));
 
   // --- Cash revenue: retail/wholesale sales counted by completedAt (already range-bounded above),
   // invoice cash counted by each individual payment's receivedAt, minus approved-return refunds
   // dated by approvedAt (both already range-bounded above). ---
-  const buckets = new Map<string, { name: string; revenueCents: number }>();
+  const buckets = new Map<string, { name: string; revenueCents: number; transactionCount: number }>();
   const addToBucket = (id: string, name: string, cents: number) => {
-    const existing = buckets.get(id) ?? { name, revenueCents: 0 };
+    const existing = buckets.get(id) ?? { name, revenueCents: 0, transactionCount: 0 };
     existing.revenueCents += cents;
+    existing.transactionCount += 1;
     buckets.set(id, existing);
   };
 
   let retailWholesaleCents = 0;
   const nonInvoiceSales = liveSales.filter((s) => s.invoiceNumber === null);
   for (const sale of nonInvoiceSales) {
-    addToBucket(sale.paymentMethodId ?? "other", "Other", sale.grandTotalCents);
+    const methodName = sale.paymentMethodId ? (paymentMethodNameById.get(sale.paymentMethodId) ?? "Other") : "Other";
+    addToBucket(sale.paymentMethodId ?? "other", methodName, sale.grandTotalCents);
     retailWholesaleCents += sale.grandTotalCents;
   }
 
@@ -276,6 +290,7 @@ async function computeSalesAndProfit(
     .map((bucket) => ({
       paymentMethodName: bucket.name,
       revenueCents: bucket.revenueCents,
+      transactionCount: bucket.transactionCount,
       percentOfTotal: grossCents > 0 ? Math.round((bucket.revenueCents / grossCents) * 1000) / 10 : 0,
     }))
     .sort((a, b) => b.revenueCents - a.revenueCents);
@@ -287,6 +302,8 @@ async function computeSalesAndProfit(
   const productMap = new Map<string, SalesTopProduct>();
   let netRevenueCents = 0;
   let transactionCount = 0;
+  let grossSalesCents = 0;
+  let itemsSold = 0;
   for (const sale of liveSales) {
     const items = asArray<SaleItemEntry>(sale.items);
     let saleRevenue = 0;
@@ -294,6 +311,7 @@ async function computeSalesAndProfit(
     for (const item of items) {
       saleRevenue += item.lineTotalCents;
       saleCost += item.quantity * (productById.get(item.productId)?.buyingPriceCents ?? 0);
+      itemsSold += item.quantity;
 
       const existing = productMap.get(item.productId) ?? {
         productId: item.productId,
@@ -305,6 +323,7 @@ async function computeSalesAndProfit(
       existing.revenueCents += item.lineTotalCents;
       productMap.set(item.productId, existing);
     }
+    grossSalesCents += saleRevenue;
 
     const fractionPaid =
       sale.invoiceNumber === null ? 1 : sale.grandTotalCents > 0 ? Math.min(1, sale.amountPaidCents / sale.grandTotalCents) : 0;
@@ -341,7 +360,7 @@ async function computeSalesAndProfit(
   const netProfitCents = netRevenueCents - totalExpensesCents;
 
   return {
-    sales: { revenueCents, transactionCount, paymentMethodBreakdown, topProducts },
+    sales: { revenueCents, transactionCount, grossSalesCents, itemsSold, paymentMethodBreakdown, topProducts },
     profit: {
       expensesCents,
       purchasesPaidCents,

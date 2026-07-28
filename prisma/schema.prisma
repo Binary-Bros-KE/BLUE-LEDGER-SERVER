@@ -152,11 +152,39 @@ model Outlet {
   accounts Account[]
   tenants  Tenant[]
   plans    Plan[]
+  mpesaSettings OutletMpesaSettings?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@map("outlets")
+}
+
+/// The Till (Buy Goods) M-Pesa credentials THIS outlet (marketing team) collects its own tenants'
+/// software subscription/maintenance payments into — deliberately outlet-scoped, not a single
+/// platform-wide Till, mirroring the same "each marketing team runs its own catalog" precedent
+/// already established by Plan being outlet-scoped. Configured only via the admin dashboard's
+/// Outlet edit screen (SUPER_ADMIN only, same tier as every other Outlet-touching action) — never
+/// synced to DESKTOP, same "server-side only" precedent as the per-storefront MpesaTillSettings
+/// used for a tenant's OWN sales.
+model OutletMpesaSettings {
+  id       String @id @default(uuid())
+  outletId String @unique
+  outlet   Outlet @relation(fields: [outletId], references: [id])
+
+  environment String @default("sandbox")
+
+  consumerKey      String
+  consumerSecret   String
+  passkey          String
+  shortcode        String
+  tillNumber       String
+  accountReference String @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("outlet_mpesa_settings")
 }
 
 /// An employee of the Blue Ledger company itself (marketing-team staff who onboard clients) — NOT
@@ -492,6 +520,10 @@ model Tenant {
   purchases         Purchase[]
   stockMovements    StockMovement[]
   stockRequests     StockRequest[]
+  mainStoreAllocations MainStoreAllocation[]
+  mpesaTillSettings    MpesaTillSettings[]
+  mpesaTransactions    MpesaTransaction[]
+  billingMpesaTransactions BillingMpesaTransaction[]
 
   @@map("tenants")
 }
@@ -1210,4 +1242,183 @@ model StockRequest {
 
   @@index([tenantId])
   @@map("stock_requests")
+}
+
+/// Directly synced (its OWN push/pull), NOT reconstructed by replaying StockMovement — unlike
+/// inventory.quantity (which genuinely IS a correct running total of the ledger), this table also
+/// gets touched by reallocateMainStoreStock (DESKTOP), a pure bookkeeping move between two buckets
+/// that never writes a StockMovement row at all. A pulling device replaying the ledger alone can
+/// never learn about that move, so its own replayed bucket state can permanently diverge from the
+/// originating device's — found live via real two-device testing (2026-07-26): a device catching up
+/// on a large backlog hit exactly this divergence and, because the mismatch used to throw instead of
+/// clamp, wedged its ENTIRE stock_movements pull cursor forever. `bucketKey` is a synthetic natural
+/// key (`${productId}:${storefrontId ?? "unallocated"}`) so this reuses the exact same
+/// naturalKey/aliasing reconciliation every boot-seeded reference entity already has (see DESKTOP's
+/// own APPLY_CONFIG comment) — two devices that each first-touch the SAME real bucket before ever
+/// syncing with each other get merged instead of creating two permanent duplicate rows.
+model MainStoreAllocation {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  productId    String
+  storefrontId String?
+  quantity     Int
+  bucketKey    String
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@unique([tenantId, bucketKey])
+  @@index([tenantId])
+  @@map("main_store_allocations")
+}
+
+/// Per-STOREFRONT M-Pesa Till (Buy Goods) STK Push credentials — deliberately NOT part of the
+/// generic DESKTOP<->Postgres sync engine (no deviceId/localCreatedAt/syncedAt/etc, no ENTITY_
+/// DELEGATES entry). These are live API secrets (Consumer Secret, Passkey), not business records —
+/// syncing them to every cashier device's local SQLite at rest would mean a single stolen laptop
+/// leaks a tenant's Safaricom credentials. Instead: DESKTOP's Storefronts settings screen fetches
+/// the current value fresh over HTTPS only when an admin explicitly opens that panel (never
+/// persisted locally, never touched by the routine push/pull cycle), and the actual STK push/query
+/// calls happen entirely server-side (mpesa-service.ts), where the secret is looked up and used
+/// in the same request, never handed back to DESKTOP at all. Confirmed with the user directly —
+/// this was a real security tradeoff, not an assumption.
+model MpesaTillSettings {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  /// Opaque reference to the tenant's own `locations` row, same "no cross-entity Prisma relation"
+  /// convention as every other synced-business-entity reference in this schema (e.g. Sale.locationId).
+  locationId String @unique
+
+  /// "sandbox" | "production" — Safaricom's two environments use entirely different base URLs and
+  /// credential sets; this is a per-storefront setting; the two known base URLs are hardcoded in
+  /// mpesa-client.ts, never configured per-tenant (they never change).
+  environment String @default("sandbox")
+
+  consumerKey    String
+  consumerSecret String
+  passkey        String
+  /// BusinessShortCode — the value the STK password is built from and sent as the top-level
+  /// request field. For many Till setups this is IDENTICAL to tillNumber below, but Safaricom does
+  /// not guarantee that for every merchant account type, so the two are kept as separate fields
+  /// rather than assumed equal.
+  shortcode String
+  /// PartyB — the actual Till Number the customer's payment posts to.
+  tillNumber String
+  /// STK's own "AccountReference" field, shown to the customer on their phone (e.g. the business
+  /// name) — optional, sensible default applied at push time if left blank.
+  accountReference String @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("mpesa_till_settings")
+}
+
+/// Durable audit log of every STK push attempt — server-side only (never synced to DESKTOP; see
+/// MpesaTillSettings' own comment on why this whole feature lives outside the generic sync engine).
+/// Exists specifically for the recovery case the user described: an STK push genuinely succeeds on
+/// Safaricom's side, but the cashier's own sale never gets recorded (app crash, network drop, etc.)
+/// — this table plus the manual status-check endpoint (which re-queries Safaricom directly, more
+/// authoritative than trusting only our own callback) is what lets a cashier confirm "did that
+/// payment actually go through" after the fact and recover the M-Pesa receipt number.
+///
+/// Deliberately NOT RLS-protected (see the `mpesa_transactions_no_rls` migration) — same precedent
+/// as ShareLink/License/Device: Safaricom's callback POST carries no tenantId, only this row's own
+/// checkoutRequestId, so the callback handler (and the DESKTOP status poll, which uses the same
+/// opaque id) must be able to look this row up BEFORE any tenant context is known. Isolation is
+/// enforced by an explicit tenantId-match check in mpesa-service.ts after the lookup instead.
+model MpesaTransaction {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  locationId String
+
+  merchantRequestId String
+  checkoutRequestId String @unique
+
+  phone            String
+  amountCents      Int
+  accountReference String?
+
+  /// pending | success | insufficient | cancelled | wrong_pin | timeout | failed — set by whichever
+  /// arrives first, the passive Safaricom callback (handleMpesaCallback) or an explicit manual
+  /// status check (checkMpesaStatusManually); both funnel through the same mapResultCodeToStatus so
+  /// they can never disagree about what a given ResultCode means.
+  status             String  @default("pending")
+  resultCode         Int?
+  resultDescription  String?
+  mpesaReceiptNumber String?
+  transactionDate    String?
+
+  /// Which employee/device initiated this push — audit context only, never used for authorization.
+  initiatedByEmployeeId String?
+  initiatedByDeviceId   String?
+
+  /// Throttles the MANUAL "Check Status Now" action's query to Safaricom's own STK query API — never
+  /// re-queried more often than STATUS_QUERY_MIN_INTERVAL_MS (mpesa-service.ts), so a cashier
+  /// double-clicking the button can't hammer Safaricom's API. Never touched by the passive
+  /// auto-poll, which only ever reads this row's own current status — it never calls Safaricom.
+  lastQueriedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([checkoutRequestId])
+  @@map("mpesa_transactions")
+}
+
+/// The platform-billing counterpart to MpesaTransaction above — a tenant paying Blue Ledger for
+/// their OWN software subscription/maintenance (via billing-mpesa-service.ts), as opposed to a
+/// tenant's customer paying that tenant for a sale. Uses the tenant's own Outlet's
+/// OutletMpesaSettings as the Till, not a per-storefront one. `periods` is the list of
+/// SubscriptionPayment.billingPeriod keys this single push covers — a "pay N months/years in
+/// advance" push creates one row here but N separate SubscriptionPayment rows once it succeeds.
+///
+/// Deliberately NOT RLS-protected — same reasoning as MpesaTransaction (see that model's own
+/// comment and the `mpesa_transactions_no_rls` migration this repeats verbatim for a new table so
+/// the same bug can't recur here): Safaricom's callback carries no tenantId, only this row's own
+/// checkoutRequestId, so the callback handler needs a tenant-blind first lookup. Isolation is the
+/// same explicit tenantId-match check after the lookup instead.
+model BillingMpesaTransaction {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  merchantRequestId String
+  checkoutRequestId String @unique
+
+  phone       String
+  amountCents Int
+  /// billingPeriod keys this push covers, in order (e.g. ["2026-08","2026-09"] for a 2-month
+  /// advance payment, or ["2028"] for one annual maintenance fee).
+  periods     String[]
+
+  /// pending | success | insufficient | cancelled | wrong_pin | timeout | failed — same shared
+  /// mapResultCodeToStatus as the sales M-Pesa flow, so the two can never disagree on wording.
+  status             String  @default("pending")
+  resultCode         Int?
+  resultDescription  String?
+  mpesaReceiptNumber String?
+  transactionDate    String?
+
+  /// Which device initiated this push — audit context only. No employeeId: this can legitimately
+  /// happen before any employee is logged in (Pay Now from the lockout screen itself).
+  initiatedByDeviceId String?
+
+  /// Throttles the manual "Check Status Now" action, same as MpesaTransaction.lastQueriedAt.
+  lastQueriedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([checkoutRequestId])
+  @@map("billing_mpesa_transactions")
 }

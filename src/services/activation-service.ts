@@ -1,6 +1,7 @@
 import type { Device, License, Plan, Subscription, Tenant } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { assertLicenseUsable } from "../lib/license-guard.js";
+import { type BillingPeriodEntry, computePaymentSchedule } from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
 import {
   activationHeartbeatSchema,
@@ -306,5 +307,57 @@ export async function listPayments(input: unknown): Promise<PaymentHistoryResult
   return {
     recentPayments: recentPayments.map(toPaymentSummary),
     pendingPayments: pendingPayments.map(toPaymentSummary),
+  };
+}
+
+export type PaymentScheduleResult = {
+  billingCycle: string;
+  /** What ONE period costs — Subscription.priceCents for MONTHLY, maintenanceFeeCents for YEARLY.
+   * Null for ONCE (nothing recurring exists to show a schedule or a prepay picker for). */
+  pricePerPeriodCents: number | null;
+  currency: string;
+  periods: BillingPeriodEntry[];
+  nextDueDate: string | null;
+};
+
+/** Powers both DESKTOP's own port of the admin dashboard's "Jan ✅ Feb ✅ Mar ❌" PaymentCalendar
+ * view and the "pay N periods in advance" picker's period list/pricing — read-only, license-key-
+ * authenticated like listPayments above. All period math lives in billing-periods.ts so this can
+ * never disagree with how the platform-billing STK flow itself computes what a payment covers. */
+export async function getPaymentSchedule(input: unknown): Promise<PaymentScheduleResult> {
+  const parsed = activationPaymentsQuerySchema.parse(input);
+  const license = await prisma.license.findUnique({
+    where: { licenseKey: parsed.licenseKey },
+    include: { tenant: { include: { subscription: true } } },
+  });
+  if (!license) {
+    throw new NotFoundError("Invalid license key");
+  }
+
+  const subscription = license.tenant.subscription;
+  if (!subscription) {
+    return { billingCycle: "ONCE", pricePerPeriodCents: null, currency: license.tenant.currency, periods: [], nextDueDate: null };
+  }
+
+  const paidPayments = await prisma.subscriptionPayment.findMany({
+    where: { tenantId: license.tenantId, status: "PAID" },
+    select: { billingPeriod: true },
+  });
+  const paidPeriods = new Set(paidPayments.map((payment) => payment.billingPeriod));
+
+  const periods = computePaymentSchedule(subscription.startDate, subscription.billingCycle, paidPeriods);
+  const pricePerPeriodCents =
+    subscription.billingCycle === "MONTHLY"
+      ? subscription.priceCents
+      : subscription.billingCycle === "YEARLY"
+        ? (subscription.maintenanceFeeCents ?? null)
+        : null;
+
+  return {
+    billingCycle: subscription.billingCycle,
+    pricePerPeriodCents,
+    currency: license.tenant.currency,
+    periods,
+    nextDueDate: subscription.nextDueDate?.toISOString() ?? null,
   };
 }
