@@ -1,7 +1,7 @@
 import type { SubscriptionPayment } from "@prisma/client";
 import type { AuthenticatedAccount } from "../middleware/auth.js";
 import { NotFoundError } from "../lib/http-error.js";
-import { computePaymentSchedule, type BillingCycle } from "../lib/billing-periods.js";
+import { computePaymentSchedule, computeTrueNextDueDate, type BillingCycle } from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
 import { subscriptionPaymentCreateSchema } from "../schemas/subscription-payment.js";
 import { reactivateIfPaymentOverdue } from "./license-service.js";
@@ -61,8 +61,12 @@ export async function getPaymentSchedule(tenantId: string, actor: AuthenticatedA
 
 /** SUPER_ADMIN only — enforced at the route layer (recording a payment affects billing state, a
  * more sensitive action than creating a client). Append-only: this never updates or replaces a
- * prior payment row, a correction is always a new row. Rolls the Subscription's own nextDueDate
- * and clears PAST_DUE as a side effect when the payment is PAID. */
+ * prior payment row, a correction is always a new row. `nextDueDateAfter` is still STORED on the
+ * payment row as an audit snapshot of what the admin believed at the time, but the live
+ * Subscription.nextDueDate is now always RECOMPUTED from the full paid-periods set (see
+ * computeTrueNextDueDate) rather than trusted from that client-supplied value — an admin manually
+ * recording one out-of-order period (e.g. paying August before May) must not accidentally advance
+ * the cursor past a still-unpaid earlier gap, the same bug class this fixed on the STK side. */
 export async function recordPayment(
   tenantId: string,
   input: unknown,
@@ -90,12 +94,19 @@ export async function recordPayment(
   });
 
   if (parsed.status === "PAID" && tenant.subscription) {
+    const allPaid = await prisma.subscriptionPayment.findMany({
+      where: { tenantId, status: "PAID" },
+      select: { billingPeriod: true },
+    });
+    const paidPeriods = new Set(allPaid.map((p) => p.billingPeriod));
+    const newNextDueDate = computeTrueNextDueDate(
+      tenant.subscription.startDate,
+      tenant.subscription.billingCycle as BillingCycle,
+      paidPeriods,
+    );
     await prisma.subscription.update({
       where: { tenantId },
-      data: {
-        status: "ACTIVE",
-        nextDueDate: parsed.nextDueDateAfter ?? tenant.subscription.nextDueDate,
-      },
+      data: { status: "ACTIVE", nextDueDate: newNextDueDate },
     });
     await reactivateIfPaymentOverdue(tenantId);
   }

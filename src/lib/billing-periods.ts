@@ -174,3 +174,28 @@ export function computePaymentSchedule(
   }
   return entries;
 }
+
+/** The tenant's TRUE next due date — the earliest period (from the same real anchor
+ * computeInitialNextDueDate/computePaymentSchedule use) that is NOT yet paid. Call this to
+ * RECOMPUTE Subscription.nextDueDate fresh after every payment (both the STK flow and the manual
+ * admin entry), instead of incrementally advancing it "N periods past wherever it already was."
+ * That incremental approach is what let a payment silently skip over an earlier unpaid gap — pay 3
+ * periods starting from an already-advanced nextDueDate and the truly-oldest unpaid period could
+ * never be reached again, yet nextDueDate looked perfectly caught up (in the future), so the
+ * license never re-locked despite a real gap the calendar still (correctly) showed as overdue. Since
+ * this is DERIVED fresh from the full paid-periods set every time, a gap is now structurally
+ * impossible to create via either payment path. Returns null for ONCE (nothing recurring) or if
+ * every generated period within the horizon is already paid (practically unreachable). */
+export function computeTrueNextDueDate(
+  startDate: Date,
+  billingCycle: BillingCycle,
+  paidPeriods: ReadonlySet<string>,
+  now: Date = new Date(),
+): Date | null {
+  if (billingCycle === "ONCE") return null;
+  const schedule = computePaymentSchedule(startDate, billingCycle, paidPeriods, now);
+  const earliestUnpaid = schedule.find((entry) => entry.status === "overdue" || entry.status === "due");
+  if (earliestUnpaid) return parsePeriodKey(earliestUnpaid.key, billingCycle);
+  const firstFuture = schedule.find((entry) => entry.status === "future");
+  return firstFuture ? parsePeriodKey(firstFuture.key, billingCycle) : null;
+}

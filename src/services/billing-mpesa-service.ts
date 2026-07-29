@@ -7,7 +7,7 @@ import {
   queryStkStatus,
   type TillCredentials,
 } from "../lib/mpesa-client.js";
-import { computeAdvancePayment, nextPeriodAfter, parsePeriodKey, type BillingCycle } from "../lib/billing-periods.js";
+import { computeAdvancePayment, computeTrueNextDueDate, type BillingCycle } from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
 import {
   billingMpesaAdminStatusSchema,
@@ -116,10 +116,11 @@ export async function initiateBillingStkPushAsAdmin(input: unknown): Promise<Bil
 
 /** The actual "mark it paid" side effect, applied exactly once per transaction regardless of
  * whether the callback or a manual check is what first observes success (see both call sites'
- * `wasAlreadySuccess` guard) — creates one SubscriptionPayment PAID row per covered period, rolls
- * Subscription.nextDueDate past the last of them, and reactivates the License if it had been
- * auto-suspended for being overdue. This is the "pay and get back in immediately" mechanism the
- * product spec asked for. */
+ * `wasAlreadySuccess` guard) — creates one SubscriptionPayment PAID row per covered period,
+ * RECOMPUTES Subscription.nextDueDate from the full paid-periods set (see computeTrueNextDueDate's
+ * own comment on why this must be a fresh recomputation, not "advance past the periods just paid"),
+ * and reactivates the License if it had been auto-suspended for being overdue. This is the "pay and
+ * get back in immediately" mechanism the product spec asked for. */
 async function applySuccessfulBillingPayment(transaction: {
   tenantId: string;
   periods: string[];
@@ -150,8 +151,12 @@ async function applySuccessfulBillingPayment(transaction: {
     });
   }
 
-  const lastPeriodDate = parsePeriodKey(transaction.periods[transaction.periods.length - 1]!, subscription.billingCycle as BillingCycle);
-  const newNextDueDate = nextPeriodAfter(lastPeriodDate, subscription.billingCycle as BillingCycle);
+  const allPaid = await prisma.subscriptionPayment.findMany({
+    where: { tenantId: transaction.tenantId, status: "PAID" },
+    select: { billingPeriod: true },
+  });
+  const paidPeriods = new Set(allPaid.map((p) => p.billingPeriod));
+  const newNextDueDate = computeTrueNextDueDate(subscription.startDate, subscription.billingCycle as BillingCycle, paidPeriods);
 
   await prisma.subscription.update({
     where: { tenantId: transaction.tenantId },
