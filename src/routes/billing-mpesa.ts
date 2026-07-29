@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireSuperAdmin } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/auth.js";
 import * as billingMpesaService from "../services/billing-mpesa-service.js";
 
 /** License-key-authenticated throughout (like activation.ts) — no requireDevice/requireAuth here.
@@ -30,20 +30,25 @@ billingMpesaRouter.post("/status/check", async (req, res) => {
   res.json(result);
 });
 
-// --- Admin-dashboard equivalents --- a SUPER_ADMIN triggering/checking a payment on a client's
-// behalf (e.g. over a support call), identified by tenantId (already known from the open tenant
-// page) instead of a license key. Same underlying STK logic, same BillingMpesaTransaction table.
-billingMpesaRouter.post("/admin/stk-push", requireSuperAdmin, async (req, res) => {
+// --- Admin-dashboard equivalents --- any logged-in admin account (SUPER_ADMIN or MARKETER)
+// triggering/checking a payment on a client's behalf (e.g. over a support call), identified by
+// tenantId (already known from the open tenant page) instead of a license key. Same underlying STK
+// logic, same BillingMpesaTransaction table. Deliberately NOT requireSuperAdmin — the money always
+// lands in the tenant's own Outlet Till regardless of who initiates the push, so there's no fraud
+// exposure in letting any authenticated staff member send one (explicit product decision). Must
+// come AFTER requireAuth (this router has no blanket .use(requireAuth) — the license-key routes
+// above are deliberately reachable pre-login) so req.account actually gets populated here.
+billingMpesaRouter.post("/admin/stk-push", requireAuth, async (req, res) => {
   const result = await billingMpesaService.initiateBillingStkPushAsAdmin(req.body);
   res.status(201).json(result);
 });
 
-billingMpesaRouter.post("/admin/status", requireSuperAdmin, async (req, res) => {
+billingMpesaRouter.post("/admin/status", requireAuth, async (req, res) => {
   const result = await billingMpesaService.getBillingMpesaStatusAsAdmin(req.body);
   res.json(result);
 });
 
-billingMpesaRouter.post("/admin/status/check", requireSuperAdmin, async (req, res) => {
+billingMpesaRouter.post("/admin/status/check", requireAuth, async (req, res) => {
   const result = await billingMpesaService.checkBillingMpesaStatusManuallyAsAdmin(req.body);
   res.json(result);
 });

@@ -37,15 +37,29 @@ export async function reactivateLicense(tenantId: string): Promise<License> {
  * PAYMENT_OVERDUE) — a license an admin suspended for FRAUD/MANUAL/CUSTOMER_REQUESTED must stay
  * suspended even if a payment somehow comes in; a payment should never silently undo a deliberate
  * human decision to lock someone out for a different reason. No-op (not an error) if the license
- * isn't currently suspended for that reason at all — the common case for most payments. */
+ * isn't currently suspended for that reason at all — the common case for most payments.
+ *
+ * CRITICAL: only actually reactivates if the subscription's nextDueDate is now genuinely caught up
+ * (>= today). Previously this reactivated on ANY successful payment regardless of how much backlog
+ * remained — a tenant who owed 3 months and paid only 1 got fully unlocked anyway, even though the
+ * payment calendar still showed the other 2 as overdue. This is the actual enforcement point for
+ * "you must clear everything owed to get back in," not just a courtesy check. */
 export async function reactivateIfPaymentOverdue(tenantId: string): Promise<void> {
-  const license = await prisma.license.findUnique({ where: { tenantId } });
-  if (license && license.status === "SUSPENDED" && license.suspensionReason === "PAYMENT_OVERDUE") {
-    await prisma.license.update({
-      where: { tenantId },
-      data: { status: "ACTIVE", suspensionReason: null },
-    });
+  const license = await prisma.license.findUnique({
+    where: { tenantId },
+    include: { tenant: { include: { subscription: true } } },
+  });
+  if (!license || license.status !== "SUSPENDED" || license.suspensionReason !== "PAYMENT_OVERDUE") {
+    return;
   }
+  const nextDueDate = license.tenant.subscription?.nextDueDate ?? null;
+  if (nextDueDate && nextDueDate < new Date()) {
+    return; // Still behind — a payment came in, but it didn't clear the whole backlog.
+  }
+  await prisma.license.update({
+    where: { tenantId },
+    data: { status: "ACTIVE", suspensionReason: null },
+  });
 }
 
 /** General-purpose edit for cases suspend/reactivate don't cover — e.g. moving TRIAL → ACTIVE

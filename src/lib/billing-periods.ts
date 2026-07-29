@@ -19,12 +19,16 @@
 
 export type BillingCycle = "MONTHLY" | "YEARLY" | "ONCE";
 
-/** The very first due date a brand-new subscription gets, computed once at tenant creation. */
+/** The very first due date a brand-new subscription gets, computed once at tenant creation (seeds
+ * Subscription.nextDueDate) — and ALSO the exact anchor computePaymentSchedule below starts its
+ * calendar from, via this same function, so the two can never disagree about which period is the
+ * tenant's first real obligation. MONTHLY owes from the calendar month the tenant started in (no
+ * free first month) — a tenant with zero trial is expected to be billed from day one. YEARLY stays
+ * calendar-aligned to January 1st of the year AFTER start (a mid-year signup owes nothing for the
+ * remainder of their start year, covered by the one-time purchase price). */
 export function computeInitialNextDueDate(startDate: Date, billingCycle: BillingCycle): Date | null {
   if (billingCycle === "MONTHLY") {
-    const next = new Date(startDate);
-    next.setMonth(next.getMonth() + 1);
-    return next;
+    return new Date(startDate.getFullYear(), startDate.getMonth(), 1);
   }
   if (billingCycle === "YEARLY") {
     return new Date(startDate.getFullYear() + 1, 0, 1);
@@ -137,10 +141,14 @@ export function computePaymentSchedule(
 ): BillingPeriodEntry[] {
   if (billingCycle === "ONCE") return [];
 
-  const start =
-    billingCycle === "MONTHLY"
-      ? new Date(startDate.getFullYear(), startDate.getMonth(), 1)
-      : new Date(startDate.getFullYear() + 1, 0, 1);
+  // Same anchor computeInitialNextDueDate uses to seed the real Subscription.nextDueDate — by
+  // construction, the calendar's first cell and the tenant's actual first payable period can never
+  // disagree (previously they were computed separately and drifted: this used to start the MONTHLY
+  // grid at the tenant's own start month while computeInitialNextDueDate seeded nextDueDate one
+  // month later, so the calendar showed a period as owed that the real payment-advancement engine
+  // had never considered due at all — it could never actually be paid via the STK "pay N periods"
+  // flow, which always counts forward from nextDueDate).
+  const start = computeInitialNextDueDate(startDate, billingCycle)!;
 
   const horizon =
     billingCycle === "MONTHLY"
