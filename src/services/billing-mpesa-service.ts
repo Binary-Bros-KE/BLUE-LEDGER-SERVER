@@ -9,7 +9,12 @@ import {
 } from "../lib/mpesa-client.js";
 import { computeAdvancePayment, nextPeriodAfter, parsePeriodKey, type BillingCycle } from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
-import { billingMpesaStatusSchema, billingMpesaStkPushSchema } from "../schemas/billing-mpesa.js";
+import {
+  billingMpesaAdminStatusSchema,
+  billingMpesaAdminStkPushSchema,
+  billingMpesaStatusSchema,
+  billingMpesaStkPushSchema,
+} from "../schemas/billing-mpesa.js";
 import { reactivateIfPaymentOverdue } from "./license-service.js";
 import { env } from "../env.js";
 
@@ -38,59 +43,75 @@ export type BillingStkPushResponse = {
   periods: string[];
 };
 
-/** License-key-authenticated (like activation.ts) — this can legitimately be called before any
- * employee is logged in (Pay Now from the lockout screen itself), so it can't require a device
- * session the way the sales STK flow does. `periodCount` periods are computed starting from the
- * subscription's CURRENT nextDueDate and persisted on the transaction row now, at push time — the
- * callback applies exactly that stored list rather than recomputing against whatever nextDueDate
- * happens to be by the time it arrives (see BillingMpesaTransaction's own schema comment). */
-export async function initiateBillingStkPush(input: unknown): Promise<BillingStkPushResponse> {
-  const parsed = billingMpesaStkPushSchema.parse(input);
-  const license = await prisma.license.findUnique({
-    where: { licenseKey: parsed.licenseKey },
-    include: { tenant: { include: { subscription: true } } },
-  });
-  if (!license) {
-    throw new NotFoundError("Invalid license key");
-  }
-
-  const subscription = license.tenant.subscription;
+/** The shared core, called by BOTH the license-key path (a tenant paying from DESKTOP, sometimes
+ * pre-login) and the admin-dashboard path (a SUPER_ADMIN triggering a push on a client's behalf,
+ * e.g. over a support call) — one implementation so the two can never diverge on how an amount or
+ * period list gets computed. `periodCount` periods are computed starting from the subscription's
+ * CURRENT nextDueDate and persisted on the transaction row now, at push time — the callback applies
+ * exactly that stored list rather than recomputing against whatever nextDueDate happens to be by
+ * the time it arrives (see BillingMpesaTransaction's own schema comment). */
+async function initiateBillingStkPushForTenant(
+  tenantId: string,
+  phone: string,
+  periodCount: number,
+  deviceId: string | null,
+): Promise<BillingStkPushResponse> {
+  const subscription = await prisma.subscription.findUnique({ where: { tenantId } });
   if (!subscription || !subscription.nextDueDate) {
     throw new HttpError(400, "There is nothing currently due for this account.");
   }
 
-  const advance = computeAdvancePayment(subscription.nextDueDate, subscription.billingCycle, parsed.periodCount);
+  const advance = computeAdvancePayment(subscription.nextDueDate, subscription.billingCycle, periodCount);
   if (!advance) {
     throw new HttpError(400, "This subscription has no recurring payment to make.");
   }
 
   const perPeriodCents = subscription.billingCycle === "MONTHLY" ? subscription.priceCents : (subscription.maintenanceFeeCents ?? 0);
-  const amountCents = perPeriodCents * parsed.periodCount;
+  const amountCents = perPeriodCents * periodCount;
   if (amountCents <= 0) {
     throw new HttpError(400, "Nothing is currently owed for this account.");
   }
 
-  const credentials = await requireOutletTillSettings(license.tenantId);
+  const credentials = await requireOutletTillSettings(tenantId);
   const accessToken = await getAccessToken(credentials);
   const callbackUrl = `${env.SERVER_PUBLIC_URL}/billing-mpesa/callback`;
   const amountKes = Math.round(amountCents / 100);
 
-  const result = await callInitiateStkPush({ credentials, accessToken, phone: parsed.phone, amountKes, callbackUrl });
+  const result = await callInitiateStkPush({ credentials, accessToken, phone, amountKes, callbackUrl });
 
   await prisma.billingMpesaTransaction.create({
     data: {
-      tenantId: license.tenantId,
+      tenantId,
       merchantRequestId: result.merchantRequestId,
       checkoutRequestId: result.checkoutRequestId,
-      phone: parsed.phone,
+      phone,
       amountCents,
       periods: advance.periods,
       status: "pending",
-      initiatedByDeviceId: parsed.deviceId ?? null,
+      initiatedByDeviceId: deviceId,
     },
   });
 
   return { ...result, amountCents, periods: advance.periods };
+}
+
+/** License-key-authenticated (like activation.ts) — this can legitimately be called before any
+ * employee is logged in (Pay Now from the lockout screen itself), so it can't require a device
+ * session the way the sales STK flow does. */
+export async function initiateBillingStkPush(input: unknown): Promise<BillingStkPushResponse> {
+  const parsed = billingMpesaStkPushSchema.parse(input);
+  const license = await prisma.license.findUnique({ where: { licenseKey: parsed.licenseKey } });
+  if (!license) {
+    throw new NotFoundError("Invalid license key");
+  }
+  return initiateBillingStkPushForTenant(license.tenantId, parsed.phone, parsed.periodCount, parsed.deviceId ?? null);
+}
+
+/** Admin-dashboard equivalent — requireSuperAdmin at the route layer is what actually authorizes
+ * this; the tenantId comes straight from the admin's already-open tenant page, not a license key. */
+export async function initiateBillingStkPushAsAdmin(input: unknown): Promise<BillingStkPushResponse> {
+  const parsed = billingMpesaAdminStkPushSchema.parse(input);
+  return initiateBillingStkPushForTenant(parsed.tenantId, parsed.phone, parsed.periodCount, null);
 }
 
 /** The actual "mark it paid" side effect, applied exactly once per transaction regardless of
@@ -208,16 +229,20 @@ function toStatusResponse(row: BillingTransactionRow): BillingMpesaStatusRespons
   };
 }
 
+async function findBillingTransactionForTenant(tenantId: string, checkoutRequestId: string): Promise<BillingTransactionRow> {
+  const existing = await prisma.billingMpesaTransaction.findUnique({ where: { checkoutRequestId } });
+  if (!existing || existing.tenantId !== tenantId) {
+    throw new NotFoundError("No payment found for this request");
+  }
+  return existing;
+}
+
 async function findBillingTransactionOrThrow(licenseKey: string, checkoutRequestId: string): Promise<BillingTransactionRow> {
   const license = await prisma.license.findUnique({ where: { licenseKey } });
   if (!license) {
     throw new NotFoundError("Invalid license key");
   }
-  const existing = await prisma.billingMpesaTransaction.findUnique({ where: { checkoutRequestId } });
-  if (!existing || existing.tenantId !== license.tenantId) {
-    throw new NotFoundError("No payment found for this request");
-  }
-  return existing;
+  return findBillingTransactionForTenant(license.tenantId, checkoutRequestId);
 }
 
 /** Passive — polled automatically while showing "waiting for you to enter your M-Pesa PIN." Reads
@@ -229,12 +254,30 @@ export async function getBillingMpesaStatus(input: unknown): Promise<BillingMpes
   return toStatusResponse(existing);
 }
 
+/** Admin-dashboard equivalent of getBillingMpesaStatus — same passive read, tenant-scoped by id
+ * instead of a license key. */
+export async function getBillingMpesaStatusAsAdmin(input: unknown): Promise<BillingMpesaStatusResponse> {
+  const parsed = billingMpesaAdminStatusSchema.parse(input);
+  const existing = await findBillingTransactionForTenant(parsed.tenantId, parsed.checkoutRequestId);
+  return toStatusResponse(existing);
+}
+
 /** The MANUAL "Check Status Now" action — only ever called from an explicit user click. Actively
  * asks Safaricom via the STK Query endpoint, throttled by lastQueriedAt. */
 export async function checkBillingMpesaStatusManually(input: unknown): Promise<BillingMpesaStatusResponse> {
   const parsed = billingMpesaStatusSchema.parse(input);
   const existing = await findBillingTransactionOrThrow(parsed.licenseKey, parsed.checkoutRequestId);
+  return checkBillingMpesaStatusCore(existing);
+}
 
+/** Admin-dashboard equivalent of checkBillingMpesaStatusManually. */
+export async function checkBillingMpesaStatusManuallyAsAdmin(input: unknown): Promise<BillingMpesaStatusResponse> {
+  const parsed = billingMpesaAdminStatusSchema.parse(input);
+  const existing = await findBillingTransactionForTenant(parsed.tenantId, parsed.checkoutRequestId);
+  return checkBillingMpesaStatusCore(existing);
+}
+
+async function checkBillingMpesaStatusCore(existing: BillingTransactionRow): Promise<BillingMpesaStatusResponse> {
   if (existing.status !== "pending") {
     return toStatusResponse(existing);
   }

@@ -21,3 +21,21 @@ export const billingMpesaStatusSchema = z.object({
   checkoutRequestId: z.string().trim().min(1),
 });
 export type BillingMpesaStatusInput = z.infer<typeof billingMpesaStatusSchema>;
+
+/** Admin-dashboard equivalent of the two schemas above — a SUPER_ADMIN triggering/checking a
+ * billing STK push on a client's behalf (e.g. over a support call), so it identifies the tenant
+ * directly by id (the admin is already looking at that tenant's page) instead of a license key.
+ * requireSuperAdmin at the route layer is what actually authorizes this — these schemas only
+ * validate shape. */
+export const billingMpesaAdminStkPushSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  phone: z.string().trim().min(9, "Enter a valid phone number"),
+  periodCount: z.coerce.number().int().min(1).max(24),
+});
+export type BillingMpesaAdminStkPushInput = z.infer<typeof billingMpesaAdminStkPushSchema>;
+
+export const billingMpesaAdminStatusSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  checkoutRequestId: z.string().trim().min(1),
+});
+export type BillingMpesaAdminStatusInput = z.infer<typeof billingMpesaAdminStatusSchema>;

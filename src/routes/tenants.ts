@@ -97,3 +97,11 @@ tenantsRouter.post("/:id/payments", requireSuperAdmin, async (req, res) => {
   const payment = await subscriptionPaymentService.recordPayment(req.params.id as string, req.body, req.account);
   res.status(201).json(payment);
 });
+
+// Same visibility as GET /:id/payments above — the computed paid/overdue/due/future calendar,
+// not a separate stored resource.
+tenantsRouter.get("/:id/payment-schedule", async (req, res) => {
+  requireAccount(req);
+  const schedule = await subscriptionPaymentService.getPaymentSchedule(req.params.id as string, req.account);
+  res.json(schedule);
+});

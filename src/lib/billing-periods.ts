@@ -98,6 +98,13 @@ function isPeriodInFuture(periodDate: Date, billingCycle: BillingCycle, now: Dat
   return periodDate.getFullYear() > now.getFullYear();
 }
 
+function isPeriodCurrent(periodDate: Date, billingCycle: BillingCycle, now: Date): boolean {
+  if (billingCycle === "MONTHLY") {
+    return periodDate.getFullYear() === now.getFullYear() && periodDate.getMonth() === now.getMonth();
+  }
+  return periodDate.getFullYear() === now.getFullYear();
+}
+
 function periodLabel(periodDate: Date, billingCycle: BillingCycle): string {
   if (billingCycle === "MONTHLY") {
     return periodDate.toLocaleDateString("en-US", { month: "long", year: "numeric" });
@@ -108,7 +115,11 @@ function periodLabel(periodDate: Date, billingCycle: BillingCycle): string {
 export type BillingPeriodEntry = {
   key: string;
   label: string;
-  status: "paid" | "pending" | "future";
+  /** "overdue" — unpaid and strictly before the current period (red, genuinely late).
+   * "due" — unpaid and IS the current period (amber, due now but not yet late).
+   * "future" — after the current period (grey, not applicable yet).
+   * "paid" — settled (green). */
+  status: "paid" | "overdue" | "due" | "future";
 };
 
 /** The "Jan ✅ Feb ✅ Mar ❌" computed grid — same logic the admin dashboard's PaymentCalendar.tsx
@@ -143,7 +154,13 @@ export function computePaymentSchedule(
     entries.push({
       key,
       label: periodLabel(cursor, billingCycle),
-      status: paidPeriods.has(key) ? "paid" : isPeriodInFuture(cursor, billingCycle, now) ? "future" : "pending",
+      status: paidPeriods.has(key)
+        ? "paid"
+        : isPeriodInFuture(cursor, billingCycle, now)
+          ? "future"
+          : isPeriodCurrent(cursor, billingCycle, now)
+            ? "due"
+            : "overdue",
     });
     cursor = nextPeriodAfter(cursor, billingCycle);
   }
