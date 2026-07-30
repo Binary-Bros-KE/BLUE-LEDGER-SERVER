@@ -73,6 +73,11 @@ export async function loginMobile(input: unknown): Promise<MobileLoginResult> {
     tx.employee.findFirst({ where: { tenantId, employeeCode: { equals: parsed.employeeCode, mode: "insensitive" } } }),
   );
   if (!employee) {
+    // Server-side only — the client always sees the same generic message either way (never reveal
+    // whether a code exists to an unauthenticated caller). Distinguishing "no such employee" from
+    // "wrong PIN" here is exactly what makes this diagnosable via `pm2 logs` without weakening the
+    // login endpoint's own response.
+    console.error(`[mobile-auth] login failed: no employee found for code '${parsed.employeeCode}' under tenant ${tenantId}`);
     throw new HttpError(401, "Invalid employee code or PIN");
   }
   if (employee.status !== "active") {
@@ -81,6 +86,10 @@ export async function loginMobile(input: unknown): Promise<MobileLoginResult> {
 
   const pinValid = employee.pinHash ? verifySecret(parsed.pin, employee.pinHash) : false;
   if (!pinValid) {
+    console.error(
+      `[mobile-auth] login failed: PIN mismatch for employee '${employee.employeeCode}' (id ${employee.id}) — ` +
+        `pinHash present: ${Boolean(employee.pinHash)}, stored format: ${employee.pinHash ? (employee.pinHash.split(":").length === 3 ? "cost:salt:derived" : "salt:derived (legacy)") : "n/a"}`,
+    );
     await recordFailedAttempt(tenantId, employeeCodeKey);
     throw new HttpError(401, "Invalid employee code or PIN");
   }
