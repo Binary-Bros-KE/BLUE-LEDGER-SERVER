@@ -23,8 +23,8 @@ type SalePaymentEntry = {
 type SaleItemEntry = { productId: string; quantity: number; lineTotalCents: number };
 type SaleReturnItemEntry = { productId: string; quantity: number; lineTotalCents: number };
 type PurchasePaymentEntry = { amountCents: number; paidAt: string };
-type SaleServiceChargeEntry = { costCents: number };
-type SaleDeliveryEntry = { costCents: number };
+type SaleServiceChargeEntry = { feeCents: number; costCents: number };
+type SaleDeliveryEntry = { feeCents: number; costCents: number };
 
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
@@ -303,9 +303,23 @@ export async function computeSalesAndProfit(
     }
     grossSalesCents += saleRevenue;
 
+    // Delivery/service-charge FEE (what the customer was charged, e.g. a delivery fee) counted as
+    // real revenue here — matching DESKTOP's own report-service.ts computeNetRevenueCents exactly.
+    // The COST side (e.g. what the rider was actually paid) is deliberately NOT subtracted again
+    // here — it's already deducted once, in full, via deliveryServiceCostsCents below feeding
+    // totalExpensesCents. Before this fix, the fee showed up in Total Revenue (baked into
+    // grandTotalCents) but never anywhere in Net Revenue, while its cost always was — this was the
+    // exact gap that made mobile's Net Revenue disagree with DESKTOP's for the same period.
+    let saleFeeRevenue = 0;
+    for (const charge of asArray<SaleServiceChargeEntry>(sale.serviceCharges)) {
+      saleFeeRevenue += charge.feeCents;
+    }
+    const saleDelivery = sale.delivery as SaleDeliveryEntry | null;
+    if (saleDelivery) saleFeeRevenue += saleDelivery.feeCents;
+
     const fractionPaid =
       sale.invoiceNumber === null ? 1 : sale.grandTotalCents > 0 ? Math.min(1, sale.amountPaidCents / sale.grandTotalCents) : 0;
-    netRevenueCents += (saleRevenue - saleCost) * fractionPaid;
+    netRevenueCents += (saleRevenue + saleFeeRevenue - saleCost) * fractionPaid;
     transactionCount += 1;
   }
   netRevenueCents = Math.round(netRevenueCents);
