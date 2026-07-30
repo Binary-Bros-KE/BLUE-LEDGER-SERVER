@@ -11,8 +11,16 @@ export const mobileLoginSchema = z.object({
 
 export type MobileLoginInput = z.infer<typeof mobileLoginSchema>;
 
+// The requesting device's own UTC offset in minutes — same sign/units as JS's own
+// Date.prototype.getTimezoneOffset() (e.g. Nairobi/UTC+3 sends -180). "today"/"week"/"month" must
+// mean the phone's own local calendar, never the tenant's stored business-record timezone (that
+// field is onboarding data only, not a source of truth for date math) and never the server's own
+// host timezone — this is the one value that makes that possible.
+const timezoneOffsetMinutesField = z.coerce.number().int().min(-720).max(840);
+
 export const mobileDashboardQuerySchema = z.object({
   period: z.enum(["today", "week", "month"]).default("today"),
+  timezoneOffsetMinutes: timezoneOffsetMinutesField,
 });
 
 export type MobileDashboardQueryInput = z.infer<typeof mobileDashboardQuerySchema>;
@@ -40,15 +48,16 @@ export type MobileShareLinkInput = z.infer<typeof mobileShareLinkSchema>;
  * Monthly/Yearly are fixed calendar periods stepped via `anchor` (computed client-side, see
  * APP/src/lib/period.ts), Custom is a plain date range. */
 export const salesReportPeriodQuerySchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("daily"), anchor: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/) }),
-  z.object({ mode: z.literal("weekly"), anchor: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/) }),
-  z.object({ mode: z.literal("monthly"), anchor: z.string().trim().regex(/^\d{4}-\d{2}$/) }),
-  z.object({ mode: z.literal("yearly"), anchor: z.string().trim().regex(/^\d{4}$/) }),
+  z.object({ mode: z.literal("daily"), anchor: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/), timezoneOffsetMinutes: timezoneOffsetMinutesField }),
+  z.object({ mode: z.literal("weekly"), anchor: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/), timezoneOffsetMinutes: timezoneOffsetMinutesField }),
+  z.object({ mode: z.literal("monthly"), anchor: z.string().trim().regex(/^\d{4}-\d{2}$/), timezoneOffsetMinutes: timezoneOffsetMinutesField }),
+  z.object({ mode: z.literal("yearly"), anchor: z.string().trim().regex(/^\d{4}$/), timezoneOffsetMinutes: timezoneOffsetMinutesField }),
   z
     .object({
       mode: z.literal("custom"),
       startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
       endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/),
+      timezoneOffsetMinutes: timezoneOffsetMinutesField,
     })
     .refine((v) => v.startDate <= v.endDate, { message: "startDate must not be after endDate", path: ["endDate"] }),
 ]);

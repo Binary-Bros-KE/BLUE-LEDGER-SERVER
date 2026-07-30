@@ -8,9 +8,11 @@ import { computeSalesAndProfit, type PaymentMethodBreakdownEntry, type SalesTopP
  * (Daily/Weekly/Monthly/Yearly/Custom, steppable through history), same cash-recognition rules
  * (reused directly via computeSalesAndProfit, not re-derived), same period-over-period comparison.
  *
- * One deliberate improvement over DESKTOP: period boundaries are resolved in the TENANT's own
- * timezone (via the same offset trick mobile-metrics-service.ts's resolvePeriodRange already uses),
- * not raw UTC date strings — a Kenyan business's "today" should mean Nairobi's today.
+ * Period boundaries are resolved against the REQUESTING DEVICE's own clock (an explicit
+ * timezoneOffsetMinutes sent with every request, same convention as JS's own
+ * Date.prototype.getTimezoneOffset()) — never the tenant's stored business-record timezone (that
+ * field is onboarding data only) and never this server's own host timezone. A phone's "today" must
+ * mean today wherever the phone actually is right now.
  */
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,46 +21,24 @@ const WINDOW_RADIUS = 5;
 export type SalesReportMode = "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 export type SalesReportPeriodInput =
-  | { mode: "daily" | "weekly" | "monthly" | "yearly"; anchor: string }
-  | { mode: "custom"; startDate: string; endDate: string };
+  | { mode: "daily" | "weekly" | "monthly" | "yearly"; anchor: string; timezoneOffsetMinutes: number }
+  | { mode: "custom"; startDate: string; endDate: string; timezoneOffsetMinutes: number };
 
-function getTimezoneOffsetMs(date: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  })
-    .formatToParts(date)
-    .reduce<Record<string, string>>((acc, part) => {
-      acc[part.type] = part.value;
-      return acc;
-    }, {});
-
-  const asUtc = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    parts.hour === "24" ? 0 : Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second),
-  );
-  return asUtc - date.getTime();
+/** Same "+offset = ahead of UTC" convention as mobile-metrics-service.ts's own
+ * offsetMsFromClientMinutes — kept as a separate copy here rather than a shared import purely
+ * because this file already duplicated the rest of its date helpers from that module; not worth a
+ * cross-file dependency for one line. */
+function offsetMsFromClientMinutes(offsetMinutes: number): number {
+  return -offsetMinutes * 60 * 1000;
 }
 
-/** The UTC instant corresponding to local midnight Y-M-D in `timezone`. */
-function zonedInstant(year: number, month: number, day: number, timezone: string): Date {
+/** The UTC instant corresponding to local midnight Y-M-D on the requesting device. */
+function zonedInstant(year: number, month: number, day: number, offsetMs: number): Date {
   const utcGuess = new Date(Date.UTC(year, month - 1, day));
-  const offsetMs = getTimezoneOffsetMs(utcGuess, timezone);
   return new Date(utcGuess.getTime() - offsetMs);
 }
 
-function zonedParts(date: Date, timezone: string): { year: number; month: number; day: number } {
-  const offsetMs = getTimezoneOffsetMs(date, timezone);
+function zonedParts(date: Date, offsetMs: number): { year: number; month: number; day: number } {
   const zoned = new Date(date.getTime() + offsetMs);
   return { year: zoned.getUTCFullYear(), month: zoned.getUTCMonth() + 1, day: zoned.getUTCDate() };
 }
@@ -96,17 +76,17 @@ function labelFor(dateStr: string, options: Intl.DateTimeFormatOptions): string 
   return new Date(`${dateStr}T00:00:00.000Z`).toLocaleDateString("en-US", { ...options, timeZone: "UTC" });
 }
 
-/** anchor/mode -> a concrete [start, endExclusive) instant range, resolved in the tenant's own
- * timezone. Mirrors DESKTOP's rangeForAnchor, but timezone-real instead of UTC-naive. */
-function resolveFixedRange(mode: Exclude<SalesReportMode, "custom">, anchor: string, timezone: string): ResolvedRange {
+/** anchor/mode -> a concrete [start, endExclusive) instant range, resolved on the requesting
+ * device's own clock. Mirrors DESKTOP's rangeForAnchor, but real-offset instead of UTC-naive. */
+function resolveFixedRange(mode: Exclude<SalesReportMode, "custom">, anchor: string, offsetMs: number): ResolvedRange {
   if (mode === "daily") {
     const [year, month, day] = anchor.split("-").map(Number);
-    const start = zonedInstant(year ?? 0, month ?? 1, day ?? 1, timezone);
+    const start = zonedInstant(year ?? 0, month ?? 1, day ?? 1, offsetMs);
     return { start, endExclusive: new Date(start.getTime() + DAY_MS), startDate: anchor, endDate: anchor, label: labelFor(anchor, { month: "short", day: "numeric", year: "numeric" }) };
   }
   if (mode === "weekly") {
     const [year, month, day] = anchor.split("-").map(Number);
-    const start = zonedInstant(year ?? 0, month ?? 1, day ?? 1, timezone);
+    const start = zonedInstant(year ?? 0, month ?? 1, day ?? 1, offsetMs);
     const endDate = addUtcDays(anchor, 6);
     const label = `${labelFor(anchor, { month: "short", day: "numeric" })} – ${labelFor(endDate, { month: "short", day: "numeric", year: "numeric" })}`;
     return { start, endExclusive: new Date(start.getTime() + 7 * DAY_MS), startDate: anchor, endDate, label };
@@ -115,10 +95,10 @@ function resolveFixedRange(mode: Exclude<SalesReportMode, "custom">, anchor: str
     const [year, month] = anchor.split("-").map(Number);
     const y = year ?? 0;
     const m = month ?? 1;
-    const start = zonedInstant(y, m, 1, timezone);
+    const start = zonedInstant(y, m, 1, offsetMs);
     const nextYear = m === 12 ? y + 1 : y;
     const nextMonth = m === 12 ? 1 : m + 1;
-    const endExclusive = zonedInstant(nextYear, nextMonth, 1, timezone);
+    const endExclusive = zonedInstant(nextYear, nextMonth, 1, offsetMs);
     const lastDay = new Date(Date.UTC(nextYear, nextMonth - 1, 0)).getUTCDate();
     return {
       start,
@@ -131,19 +111,19 @@ function resolveFixedRange(mode: Exclude<SalesReportMode, "custom">, anchor: str
   // yearly
   const year = Number(anchor);
   return {
-    start: zonedInstant(year, 1, 1, timezone),
-    endExclusive: zonedInstant(year + 1, 1, 1, timezone),
+    start: zonedInstant(year, 1, 1, offsetMs),
+    endExclusive: zonedInstant(year + 1, 1, 1, offsetMs),
     startDate: `${anchor}-01-01`,
     endDate: `${anchor}-12-31`,
     label: anchor,
   };
 }
 
-function resolveCustomRange(startDate: string, endDate: string, timezone: string): ResolvedRange {
+function resolveCustomRange(startDate: string, endDate: string, offsetMs: number): ResolvedRange {
   const [sy, sm, sd] = startDate.split("-").map(Number);
   const [ey, em, ed] = endDate.split("-").map(Number);
-  const start = zonedInstant(sy ?? 0, sm ?? 1, sd ?? 1, timezone);
-  const endDayStart = zonedInstant(ey ?? 0, em ?? 1, ed ?? 1, timezone);
+  const start = zonedInstant(sy ?? 0, sm ?? 1, sd ?? 1, offsetMs);
+  const endDayStart = zonedInstant(ey ?? 0, em ?? 1, ed ?? 1, offsetMs);
   return {
     start,
     endExclusive: new Date(endDayStart.getTime() + DAY_MS),
@@ -153,9 +133,9 @@ function resolveCustomRange(startDate: string, endDate: string, timezone: string
   };
 }
 
-function resolveRange(input: SalesReportPeriodInput, timezone: string): ResolvedRange {
-  if (input.mode === "custom") return resolveCustomRange(input.startDate, input.endDate, timezone);
-  return resolveFixedRange(input.mode, input.anchor, timezone);
+function resolveRange(input: SalesReportPeriodInput, offsetMs: number): ResolvedRange {
+  if (input.mode === "custom") return resolveCustomRange(input.startDate, input.endDate, offsetMs);
+  return resolveFixedRange(input.mode, input.anchor, offsetMs);
 }
 
 function previousRangeOf(range: ResolvedRange): { start: Date; endExclusive: Date } {
@@ -187,8 +167,8 @@ export type SalesReportOverview = {
 };
 
 export async function getSalesReportOverview(tenantId: string, input: SalesReportPeriodInput): Promise<SalesReportOverview> {
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, currency: true } });
-  const range = resolveRange(input, tenant.timezone);
+  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
+  const range = resolveRange(input, offsetMsFromClientMinutes(input.timezoneOffsetMinutes));
   const previous = previousRangeOf(range);
 
   return withTenantContext(tenantId, async (tx) => {
@@ -240,16 +220,16 @@ function shiftAnchor(mode: Exclude<SalesReportMode, "custom">, anchor: string, s
   return String(Number(anchor) + steps);
 }
 
-function currentAnchorForMode(mode: Exclude<SalesReportMode, "custom">, timezone: string, now: Date): string {
-  const { year, month, day } = zonedParts(now, timezone);
+function currentAnchorForMode(mode: Exclude<SalesReportMode, "custom">, offsetMs: number, now: Date): string {
+  const { year, month, day } = zonedParts(now, offsetMs);
   if (mode === "daily") return `${year}-${pad2(month)}-${pad2(day)}`;
   if (mode === "weekly") return mondayOfDateString(`${year}-${pad2(month)}-${pad2(day)}`);
   if (mode === "monthly") return `${year}-${pad2(month)}`;
   return String(year);
 }
 
-function windowAnchors(mode: Exclude<SalesReportMode, "custom">, anchor: string, timezone: string): string[] {
-  const maxAnchor = currentAnchorForMode(mode, timezone, new Date());
+function windowAnchors(mode: Exclude<SalesReportMode, "custom">, anchor: string, offsetMs: number): string[] {
+  const maxAnchor = currentAnchorForMode(mode, offsetMs, new Date());
   const result: string[] = [];
   for (let step = -WINDOW_RADIUS; step <= WINDOW_RADIUS; step++) {
     const shifted = shiftAnchor(mode, anchor, step);
@@ -265,24 +245,24 @@ function resolveGroupBy(startDate: string, endDate: string): "day" | "week" | "m
   return "month";
 }
 
-function generateCustomBuckets(startDate: string, endDate: string, groupBy: "day" | "week" | "month", timezone: string): ResolvedRange[] {
+function generateCustomBuckets(startDate: string, endDate: string, groupBy: "day" | "week" | "month", offsetMs: number): ResolvedRange[] {
   const buckets: ResolvedRange[] = [];
   if (groupBy === "day") {
     let cursor = startDate;
     while (cursor <= endDate) {
-      buckets.push(resolveFixedRange("daily", cursor, timezone));
+      buckets.push(resolveFixedRange("daily", cursor, offsetMs));
       cursor = addUtcDays(cursor, 1);
     }
   } else if (groupBy === "week") {
     let cursor = mondayOfDateString(startDate);
     while (cursor <= endDate) {
-      buckets.push(resolveFixedRange("weekly", cursor, timezone));
+      buckets.push(resolveFixedRange("weekly", cursor, offsetMs));
       cursor = addUtcDays(cursor, 7);
     }
   } else {
     let cursor = startDate.slice(0, 7);
     while (`${cursor}-01` <= endDate) {
-      buckets.push(resolveFixedRange("monthly", cursor, timezone));
+      buckets.push(resolveFixedRange("monthly", cursor, offsetMs));
       const [year, month] = cursor.split("-").map(Number);
       cursor = month === 12 ? `${(year ?? 0) + 1}-01` : `${year}-${pad2((month ?? 1) + 1)}`;
     }
@@ -295,13 +275,12 @@ function generateCustomBuckets(startDate: string, endDate: string, groupBy: "day
  * across the exact range. Every point reuses computeSalesAndProfit — the exact same cash-basis
  * figure the overview card's Total Revenue uses — so the selected/highlighted point always matches. */
 export async function getSalesTrend(tenantId: string, input: SalesReportPeriodInput): Promise<SalesTrendResult> {
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
-  const timezone = tenant.timezone;
+  const offsetMs = offsetMsFromClientMinutes(input.timezoneOffsetMinutes);
 
   if (input.mode === "custom") {
-    const range = resolveCustomRange(input.startDate, input.endDate, timezone);
+    const range = resolveCustomRange(input.startDate, input.endDate, offsetMs);
     const groupBy = resolveGroupBy(range.startDate, range.endDate);
-    const buckets = generateCustomBuckets(range.startDate, range.endDate, groupBy, timezone);
+    const buckets = generateCustomBuckets(range.startDate, range.endDate, groupBy, offsetMs);
 
     const points = await withTenantContext(tenantId, async (tx) =>
       Promise.all(
@@ -315,12 +294,12 @@ export async function getSalesTrend(tenantId: string, input: SalesReportPeriodIn
   }
 
   const mode = input.mode;
-  const anchors = windowAnchors(mode, input.anchor, timezone);
+  const anchors = windowAnchors(mode, input.anchor, offsetMs);
 
   const points = await withTenantContext(tenantId, async (tx) =>
     Promise.all(
       anchors.map(async (anchor) => {
-        const range = resolveFixedRange(mode, anchor, timezone);
+        const range = resolveFixedRange(mode, anchor, offsetMs);
         const { sales } = await computeSalesAndProfit(tx, tenantId, { start: range.start, endExclusive: range.endExclusive });
         return {
           periodLabel: range.label,
@@ -361,8 +340,7 @@ export type SalesReportBreakdowns = { byStorefront: SalesByStorefrontRow[]; byEm
  * Overview card's cash-basis Total Revenue (an invoice counts here the moment it's completed, not
  * only once actually paid). */
 export async function getSalesBreakdowns(tenantId: string, input: SalesReportPeriodInput): Promise<SalesReportBreakdowns> {
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true } });
-  const range = resolveRange(input, tenant.timezone);
+  const range = resolveRange(input, offsetMsFromClientMinutes(input.timezoneOffsetMinutes));
 
   return withTenantContext(tenantId, async (tx) => {
     const [voids, sales] = await Promise.all([

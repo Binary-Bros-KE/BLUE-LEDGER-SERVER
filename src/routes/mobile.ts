@@ -46,7 +46,7 @@ mobileRouter.get("/me", requireMobileAuth, requireOwnerAppAccess, async (req, re
 
 mobileRouter.get("/dashboard", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileDashboardQuerySchema.parse(req.query);
-  const result = await mobileMetricsService.getOwnerDashboard(req.mobileSession!.tenantId, parsed.period);
+  const result = await mobileMetricsService.getOwnerDashboard(req.mobileSession!.tenantId, parsed.period, parsed.timezoneOffsetMinutes);
   res.json(result);
 });
 

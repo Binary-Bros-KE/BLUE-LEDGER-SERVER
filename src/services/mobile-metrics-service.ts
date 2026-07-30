@@ -30,40 +30,17 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-/** Returns the ms offset such that `date.getTime() + offset` reads as the same wall-clock moment
- * in `timeZone`. All four tenant timezone choices (Kenya/Uganda/Tanzania/Ethiopia) are fixed-offset
- * (no DST), so this is exact for this app's real timezone list, and a reasonable approximation
- * (computed from "now") for any DST zone too. */
-function getTimezoneOffsetMs(date: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  })
-    .formatToParts(date)
-    .reduce<Record<string, string>>((acc, part) => {
-      acc[part.type] = part.value;
-      return acc;
-    }, {});
-
-  const asUtc = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    parts.hour === "24" ? 0 : Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second),
-  );
-  return asUtc - date.getTime();
+/** The ms offset such that `date.getTime() + offset` reads as the requesting device's own wall-clock
+ * moment — derived from the client-supplied `offsetMinutes` (same value as JS's own
+ * Date.prototype.getTimezoneOffset(), sign-inverted here to match this module's "+offset = ahead of
+ * UTC" convention), NEVER from the tenant's stored business-record timezone or this server's own
+ * host timezone. A phone's offset is effectively constant for the days-long windows this covers, so
+ * one value per request is all that's needed — no IANA zone/DST lookup required. */
+function offsetMsFromClientMinutes(offsetMinutes: number): number {
+  return -offsetMinutes * 60 * 1000;
 }
 
-function startOfDayInZone(reference: Date, timeZone: string): Date {
-  const offsetMs = getTimezoneOffsetMs(reference, timeZone);
+function startOfDayInZone(reference: Date, offsetMs: number): Date {
   const zonedNow = new Date(reference.getTime() + offsetMs);
   const zonedMidnight = new Date(Date.UTC(zonedNow.getUTCFullYear(), zonedNow.getUTCMonth(), zonedNow.getUTCDate()));
   return new Date(zonedMidnight.getTime() - offsetMs);
@@ -73,10 +50,13 @@ export type MobilePeriod = "today" | "week" | "month";
 
 export type PeriodRange = { start: Date; endExclusive: Date };
 
-/** Resolves a client-selected period to a concrete [start, endExclusive) instant range in the
- * tenant's own timezone — a Kenyan business's "today" must mean Nairobi's today, not UTC's. */
-export function resolvePeriodRange(period: MobilePeriod, timezone: string, now: Date = new Date()): PeriodRange {
-  const todayStart = startOfDayInZone(now, timezone);
+/** Resolves a client-selected period to a concrete [start, endExclusive) instant range on the
+ * REQUESTING DEVICE's own clock — a business owner's "today" must mean today wherever their phone
+ * actually is right now, not the tenant's stored onboarding timezone and not the server's own host
+ * timezone. */
+export function resolvePeriodRange(period: MobilePeriod, offsetMinutes: number, now: Date = new Date()): PeriodRange {
+  const offsetMs = offsetMsFromClientMinutes(offsetMinutes);
+  const todayStart = startOfDayInZone(now, offsetMs);
   const tomorrowStart = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000);
 
   if (period === "today") {
@@ -84,7 +64,6 @@ export function resolvePeriodRange(period: MobilePeriod, timezone: string, now: 
   }
 
   if (period === "week") {
-    const offsetMs = getTimezoneOffsetMs(now, timezone);
     const zonedToday = new Date(todayStart.getTime() + offsetMs);
     const dayOfWeek = zonedToday.getUTCDay(); // 0=Sun..6=Sat
     const daysSinceMonday = (dayOfWeek + 6) % 7;
@@ -93,7 +72,6 @@ export function resolvePeriodRange(period: MobilePeriod, timezone: string, now: 
   }
 
   // month
-  const offsetMs = getTimezoneOffsetMs(now, timezone);
   const zonedToday = new Date(todayStart.getTime() + offsetMs);
   const monthStartZoned = new Date(Date.UTC(zonedToday.getUTCFullYear(), zonedToday.getUTCMonth(), 1));
   const monthStart = new Date(monthStartZoned.getTime() - offsetMs);
@@ -466,9 +444,9 @@ async function computeOutstandingCredit(
  * transaction covering every RLS-protected read (sales, expenses, products, customers, etc.),
  * exactly the discipline that fixed the earlier Storefronts-empty-query bug (see
  * tenant-service.ts's findTenantLocations). */
-export async function getOwnerDashboard(tenantId: string, period: MobilePeriod): Promise<OwnerDashboardResult> {
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { timezone: true, currency: true } });
-  const range = resolvePeriodRange(period, tenant.timezone);
+export async function getOwnerDashboard(tenantId: string, period: MobilePeriod, timezoneOffsetMinutes: number): Promise<OwnerDashboardResult> {
+  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
+  const range = resolvePeriodRange(period, timezoneOffsetMinutes);
 
   const { sales, profit, stock, credit } = await withTenantContext(tenantId, async (tx) => {
     const [{ sales, profit }, stock, credit] = await Promise.all([
