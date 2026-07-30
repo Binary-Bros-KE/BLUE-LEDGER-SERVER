@@ -810,6 +810,7 @@ model Product {
   description          String?
   categoryId           String?
   storefrontId         String?
+  unitOfMeasure        String?
   buyingPriceCents     Int
   sellingPriceCents    Int
   wholesalePriceCents  Int?
