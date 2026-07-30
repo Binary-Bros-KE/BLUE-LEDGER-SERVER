@@ -1,7 +1,12 @@
 import type { SubscriptionPayment } from "@prisma/client";
 import type { AuthenticatedAccount } from "../middleware/auth.js";
 import { NotFoundError } from "../lib/http-error.js";
-import { computePaymentSchedule, computeTrueNextDueDate, type BillingCycle } from "../lib/billing-periods.js";
+import {
+  computePaymentSchedule,
+  computeTrueNextDueDate,
+  resolveBillingAnchorDate,
+  type BillingCycle
+} from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
 import { subscriptionPaymentCreateSchema } from "../schemas/subscription-payment.js";
 import { reactivateIfPaymentOverdue } from "./license-service.js";
@@ -42,7 +47,8 @@ export async function getPaymentSchedule(tenantId: string, actor: AuthenticatedA
   });
   const paidPeriods = new Set(paidPayments.map((payment) => payment.billingPeriod));
 
-  const periods = computePaymentSchedule(subscription.startDate, subscription.billingCycle as BillingCycle, paidPeriods);
+  const anchorDate = resolveBillingAnchorDate(subscription.startDate, tenant.license?.trialEndsAt ?? null);
+  const periods = computePaymentSchedule(anchorDate, subscription.billingCycle as BillingCycle, paidPeriods);
   const pricePerPeriodCents =
     subscription.billingCycle === "MONTHLY"
       ? subscription.priceCents
@@ -73,7 +79,10 @@ export async function recordPayment(
   actor: AuthenticatedAccount,
 ): Promise<SubscriptionPayment> {
   const parsed = subscriptionPaymentCreateSchema.parse(input);
-  const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, include: { subscription: true } });
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    include: { subscription: true, license: true }
+  });
   if (!tenant) {
     throw new NotFoundError("Tenant not found");
   }
@@ -99,8 +108,9 @@ export async function recordPayment(
       select: { billingPeriod: true },
     });
     const paidPeriods = new Set(allPaid.map((p) => p.billingPeriod));
+    const anchorDate = resolveBillingAnchorDate(tenant.subscription.startDate, tenant.license?.trialEndsAt ?? null);
     const newNextDueDate = computeTrueNextDueDate(
-      tenant.subscription.startDate,
+      anchorDate,
       tenant.subscription.billingCycle as BillingCycle,
       paidPeriods,
     );

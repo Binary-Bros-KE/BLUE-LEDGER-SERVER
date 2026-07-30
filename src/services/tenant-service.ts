@@ -1,7 +1,7 @@
 import type { License, Location, Outlet, Plan, Subscription, Tenant } from "@prisma/client";
 import type { AuthenticatedAccount } from "../middleware/auth.js";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
-import { computeInitialNextDueDate } from "../lib/billing-periods.js";
+import { computeInitialNextDueDate, resolveBillingAnchorDate } from "../lib/billing-periods.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { tenantCreateSchema, tenantUpdateSchema } from "../schemas/tenant.js";
@@ -89,7 +89,12 @@ export async function createTenant(input: unknown, actor: AuthenticatedAccount):
     throw new HttpError(400, "Selected plan doesn't belong to this outlet");
   }
 
-  const nextDueDate = computeInitialNextDueDate(parsed.startDate, parsed.billingCycle);
+  // A trial tenant owes nothing until their trial actually ends — anchoring the first due date to
+  // trialEndsAt (not the raw startDate) is what stops a brand-new trial from immediately showing as
+  // "due now" in the payment calendar. licenseStatus "ACTIVE" (no trial at all) falls straight
+  // through to startDate, unchanged from before this existed.
+  const billingAnchorDate = resolveBillingAnchorDate(parsed.startDate, parsed.trialEndsAt);
+  const nextDueDate = computeInitialNextDueDate(billingAnchorDate, parsed.billingCycle);
   const hasMaintenance = parsed.maintenanceFeeCents !== null;
   const supportStatus = parsed.billingCycle === "ONCE" && !hasMaintenance ? "LIFETIME" : "ACTIVE";
 
@@ -111,7 +116,7 @@ export async function createTenant(input: unknown, actor: AuthenticatedAccount):
     });
 
     await tx.license.create({
-      data: { tenantId: created.id, status: "TRIAL" },
+      data: { tenantId: created.id, status: parsed.licenseStatus, trialEndsAt: parsed.trialEndsAt },
     });
 
     await tx.subscription.create({

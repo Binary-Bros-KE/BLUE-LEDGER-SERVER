@@ -7,7 +7,12 @@ import {
   queryStkStatus,
   type TillCredentials,
 } from "../lib/mpesa-client.js";
-import { computeAdvancePayment, computeTrueNextDueDate, type BillingCycle } from "../lib/billing-periods.js";
+import {
+  computeAdvancePayment,
+  computeTrueNextDueDate,
+  resolveBillingAnchorDate,
+  type BillingCycle
+} from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
 import {
   billingMpesaAdminStatusSchema,
@@ -127,9 +132,10 @@ async function applySuccessfulBillingPayment(transaction: {
   amountCents: number;
   mpesaReceiptNumber: string | null;
 }): Promise<void> {
-  const [subscription, tenant] = await Promise.all([
+  const [subscription, tenant, license] = await Promise.all([
     prisma.subscription.findUnique({ where: { tenantId: transaction.tenantId } }),
     prisma.tenant.findUnique({ where: { id: transaction.tenantId }, select: { currency: true } }),
+    prisma.license.findUnique({ where: { tenantId: transaction.tenantId }, select: { trialEndsAt: true } }),
   ]);
   if (!subscription || !tenant || transaction.periods.length === 0) return;
 
@@ -156,7 +162,8 @@ async function applySuccessfulBillingPayment(transaction: {
     select: { billingPeriod: true },
   });
   const paidPeriods = new Set(allPaid.map((p) => p.billingPeriod));
-  const newNextDueDate = computeTrueNextDueDate(subscription.startDate, subscription.billingCycle as BillingCycle, paidPeriods);
+  const anchorDate = resolveBillingAnchorDate(subscription.startDate, license?.trialEndsAt ?? null);
+  const newNextDueDate = computeTrueNextDueDate(anchorDate, subscription.billingCycle as BillingCycle, paidPeriods);
 
   await prisma.subscription.update({
     where: { tenantId: transaction.tenantId },

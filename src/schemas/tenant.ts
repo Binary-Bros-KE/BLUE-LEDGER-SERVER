@@ -18,6 +18,7 @@ const BUSINESS_TYPES = [
 const CURRENCIES = ["KES", "UGX", "TZS", "USD"] as const;
 const SUBSCRIPTION_TYPES = ["MONTHLY", "LIFETIME", "CUSTOM"] as const;
 const BILLING_CYCLES = ["MONTHLY", "YEARLY", "ONCE"] as const;
+const INITIAL_LICENSE_STATUSES = ["TRIAL", "ACTIVE"] as const;
 
 // Bare per-field validators, shared between create and update, WITHOUT defaults — a field's
 // default only makes sense at creation. Applying it to an update too would mean "the admin didn't
@@ -73,6 +74,16 @@ export const tenantCreateSchema = z.object({
   priceCents: z.coerce.number().int().min(0),
   maintenanceFeeCents: z.coerce.number().int().min(0).nullable().optional().transform((v) => (v ? v : null)),
   startDate: z.coerce.date().default(() => new Date()),
+
+  // Defaults preserve the exact prior behavior (every tenant used to be hardcoded TRIAL with no end
+  // date at all, which is the bug this schema change exists to fix) for any caller that doesn't pass
+  // these explicitly. licenseStatus "ACTIVE" means no trial at all — billing starts from startDate
+  // immediately, same as before this field existed.
+  licenseStatus: z.enum(INITIAL_LICENSE_STATUSES).default("TRIAL"),
+  trialEndsAt: z.coerce.date().nullable().optional().transform((value) => value ?? null)
+}).refine((value) => value.licenseStatus !== "TRIAL" || value.trialEndsAt !== null, {
+  message: "Set a trial end date, or switch this tenant to Active",
+  path: ["trialEndsAt"]
 });
 
 export type TenantCreateInput = z.infer<typeof tenantCreateSchema>;

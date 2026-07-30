@@ -19,6 +19,31 @@
 
 export type BillingCycle = "MONTHLY" | "YEARLY" | "ONCE";
 
+/** The date billing periods should actually be computed FROM. A trial tenant owes nothing until
+ * their trial ends — Subscription.startDate is when they signed up, not when paid billing begins,
+ * and computeInitialNextDueDate/computePaymentSchedule have no concept of "trial" on their own. Every
+ * caller that seeds or recomputes a due date must resolve this FIRST and pass the result in as
+ * `startDate`, rather than the subscription's raw startDate. trialEndsAt is a permanent historical
+ * fact once set (when THIS tenant's trial ended) — it must keep anchoring the schedule the same way
+ * even after the billing scheduler flips License.status from TRIAL to ACTIVE once that date passes,
+ * or the calendar would visibly reshuffle the moment that sweep runs. That's why this only compares
+ * dates and never looks at the current license status at all.
+ *
+ * Returns the day AFTER trialEndsAt, not trialEndsAt itself — computeInitialNextDueDate truncates
+ * MONTHLY to the 1st of whatever month it's given, so passing trialEndsAt directly (e.g. July 31)
+ * would still resolve to July 1 and show that same month as immediately due, defeating the entire
+ * point. Stepping one day past it applies the exact same "no free first month" policy regular
+ * (non-trial) subscriptions already use, just re-anchored to whichever month the trial actually
+ * ended in — a trial ending July 31 owes nothing for July and first becomes due in August; one
+ * ending mid-month (July 15) owes for the rest of that same month, same as a non-trial tenant
+ * starting mid-month always has. */
+export function resolveBillingAnchorDate(startDate: Date, trialEndsAt: Date | null): Date {
+  if (!trialEndsAt || trialEndsAt <= startDate) return startDate;
+  const dayAfterTrial = new Date(trialEndsAt);
+  dayAfterTrial.setDate(dayAfterTrial.getDate() + 1);
+  return dayAfterTrial;
+}
+
 /** The very first due date a brand-new subscription gets, computed once at tenant creation (seeds
  * Subscription.nextDueDate) — and ALSO the exact anchor computePaymentSchedule below starts its
  * calendar from, via this same function, so the two can never disagree about which period is the

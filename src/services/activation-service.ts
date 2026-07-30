@@ -1,7 +1,7 @@
 import type { Device, License, Plan, Subscription, Tenant } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { assertLicenseUsable } from "../lib/license-guard.js";
-import { type BillingPeriodEntry, computePaymentSchedule } from "../lib/billing-periods.js";
+import { type BillingPeriodEntry, computePaymentSchedule, resolveBillingAnchorDate } from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
 import {
   activationHeartbeatSchema,
@@ -349,7 +349,8 @@ export async function getPaymentSchedule(input: unknown): Promise<PaymentSchedul
   });
   const paidPeriods = new Set(paidPayments.map((payment) => payment.billingPeriod));
 
-  const periods = computePaymentSchedule(subscription.startDate, subscription.billingCycle, paidPeriods);
+  const anchorDate = resolveBillingAnchorDate(subscription.startDate, license.trialEndsAt);
+  const periods = computePaymentSchedule(anchorDate, subscription.billingCycle, paidPeriods);
   const pricePerPeriodCents =
     subscription.billingCycle === "MONTHLY"
       ? subscription.priceCents

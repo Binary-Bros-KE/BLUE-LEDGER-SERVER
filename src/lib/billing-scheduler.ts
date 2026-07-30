@@ -48,8 +48,12 @@ export async function runBillingSweep(): Promise<void> {
     data: { status: "ACTIVE" },
   });
 
+  // Scoped to an ACTIVE license, same as the auto-suspend step below — a still-in-trial tenant's
+  // nextDueDate is already correctly anchored past their trialEndsAt (see resolveBillingAnchorDate),
+  // but a defensive gate here too means this can never flag PAST_DUE against a trial tenant even if
+  // some other bug ever left an un-anchored nextDueDate in the past.
   const pastDueResult = await prisma.subscription.updateMany({
-    where: { nextDueDate: { lt: now }, status: "ACTIVE" },
+    where: { nextDueDate: { lt: now }, status: "ACTIVE", tenant: { license: { status: "ACTIVE" } } },
     data: { status: "PAST_DUE" },
   });
 
