@@ -19,6 +19,14 @@ import { tenantsRouter } from "./routes/tenants.js";
 
 export const app = express();
 
+// Trust exactly one hop — the reverse proxy in front of this app (Caddy on the same VPS). Without
+// this, Express refuses to trust the X-Forwarded-For header Caddy sets, which breaks
+// express-rate-limit's ability to identify real client IPs (every request looks like it's coming
+// from the proxy itself) and throws a ValidationError on every single request. `1` (not `true`) is
+// deliberate — it trusts only the immediate connecting proxy, not an arbitrary chain, so a client
+// can't spoof their own X-Forwarded-For and have it trusted.
+app.set("trust proxy", 1);
+
 app.use(helmet());
 app.use(cors({ origin: env.CORS_ORIGINS }));
 app.use(morgan("dev"));
