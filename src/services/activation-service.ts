@@ -89,6 +89,7 @@ export type ActivationResult = BusinessProfileFields & {
   timezone: string;
   licenseStatus: string;
   subscriptionType: string | null;
+  subscriptionStartDate: string | null;
   planName: string;
   maxBranches: number;
   maxUsers: number;
@@ -159,6 +160,7 @@ export async function registerDevice(input: unknown): Promise<ActivationResult> 
     timezone: tenant.timezone,
     licenseStatus: license.status,
     subscriptionType: tenant.subscription.subscriptionType,
+    subscriptionStartDate: tenant.subscription.startDate.toISOString(),
     planName: tenant.subscription.plan.name,
     maxBranches: tenant.subscription.plan.maxBranches,
     maxUsers: tenant.subscription.plan.maxUsers,
@@ -173,6 +175,7 @@ export type HeartbeatResult = BusinessProfileFields & {
   licenseStatus: string;
   nextDueDate: string | null;
   subscriptionType: string | null;
+  subscriptionStartDate: string | null;
   planName: string;
   maxBranches: number;
   maxUsers: number;
@@ -219,6 +222,7 @@ export async function heartbeat(input: unknown): Promise<HeartbeatResult> {
     licenseStatus: license.status,
     nextDueDate: subscription?.nextDueDate?.toISOString() ?? null,
     subscriptionType: subscription?.subscriptionType ?? null,
+    subscriptionStartDate: subscription?.startDate?.toISOString() ?? null,
     planName: subscription?.plan.name ?? "",
     maxBranches: subscription?.plan.maxBranches ?? 1,
     maxUsers: subscription?.plan.maxUsers ?? 1,

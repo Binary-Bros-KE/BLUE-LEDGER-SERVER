@@ -15,8 +15,13 @@ const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 const GRACE_PERIOD_DAYS = 30;
 
 /**
- * Three-part sweep, all idempotent (safe to re-run every hour forever):
+ * Four-part sweep, all idempotent (safe to re-run every hour forever):
  *
+ * 0. Any TRIAL license whose trialEndsAt has passed flips to ACTIVE — without this, a tenant whose
+ *    trial genuinely ended stayed in TRIAL forever (License.status never changed on its own), which
+ *    also meant DESKTOP's grace-period warnings correctly stayed silent during the trial but would
+ *    then ALSO stay silent forever afterward, since nothing ever moved them out of "trial" — billing
+ *    enforcement could only ever start if a super admin manually flipped the status by hand.
  * 1. Any ACTIVE subscription whose nextDueDate has passed gets flagged PAST_DUE — pure visibility,
  *    every billing cycle, no enforcement action. Nothing in this codebase ever set this
  *    automatically before; it was purely a value an admin could manually pick.
@@ -37,6 +42,11 @@ const GRACE_PERIOD_DAYS = 30;
 export async function runBillingSweep(): Promise<void> {
   const now = new Date();
   const graceExpiryCutoff = new Date(now.getTime() - GRACE_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+
+  const trialEndedResult = await prisma.license.updateMany({
+    where: { status: "TRIAL", trialEndsAt: { lt: now } },
+    data: { status: "ACTIVE" },
+  });
 
   const pastDueResult = await prisma.subscription.updateMany({
     where: { nextDueDate: { lt: now }, status: "ACTIVE" },
@@ -64,9 +74,9 @@ export async function runBillingSweep(): Promise<void> {
     });
   }
 
-  if (pastDueResult.count > 0 || recoveredResult.count > 0 || overdueMonthly.length > 0) {
+  if (trialEndedResult.count > 0 || pastDueResult.count > 0 || recoveredResult.count > 0 || overdueMonthly.length > 0) {
     console.log(
-      `[billing-scheduler] ${pastDueResult.count} newly PAST_DUE, ${recoveredResult.count} recovered to ACTIVE, ${overdueMonthly.length} MONTHLY license(s) auto-suspended for PAYMENT_OVERDUE.`,
+      `[billing-scheduler] ${trialEndedResult.count} trial(s) ended -> ACTIVE, ${pastDueResult.count} newly PAST_DUE, ${recoveredResult.count} recovered to ACTIVE, ${overdueMonthly.length} MONTHLY license(s) auto-suspended for PAYMENT_OVERDUE.`,
     );
   }
 }
