@@ -28,6 +28,10 @@ datasource db {
 enum AccountRole {
   SUPER_ADMIN
   MARKETER
+  /// Added alongside MARKETER, not a replacement — existing accounts stored with MARKETER are
+  /// untouched; this exists purely so new accounts can be created under a better-fitting label.
+  /// Everywhere outside an explicit admin-vs-not check treats the two identically.
+  DISTRIBUTOR
 }
 
 /// Gates whether the desktop app is even allowed to run at all — the fundamental entitlement to
@@ -619,6 +623,7 @@ model Supplier {
   phone1                 String
   phone2                 String?
   email                  String?
+  kraPin                 String?
   website                String?
   country                String?
   county                 String?
@@ -654,6 +659,7 @@ model Customer {
   name                String
   phone               String
   email               String?
+  kraPin              String?
   physicalAddress     String?
   creditLimitCents    Int?
   /// Deliberately stopped syncing (Phase 2 finding): this changes as a SIDE EFFECT of sales/payments

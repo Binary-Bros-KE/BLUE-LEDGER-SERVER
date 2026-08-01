@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-const ACCOUNT_ROLES = ["SUPER_ADMIN", "MARKETER"] as const;
+// DISTRIBUTOR was added alongside MARKETER, not as a replacement — existing accounts already
+// stored with role="MARKETER" are untouched; DISTRIBUTOR exists purely so new accounts can be
+// created under a better-fitting label. Both are outlet-scoped, non-admin roles — see the refine
+// below, which treats them identically.
+const ACCOUNT_ROLES = ["SUPER_ADMIN", "MARKETER", "DISTRIBUTOR"] as const;
 
 const nameField = z.string().trim().min(1, "Name is required").max(200);
 const emailField = z.string().trim().toLowerCase().email("Enter a valid email");
@@ -20,20 +24,21 @@ const outletIdForCreate = z
  * omit-vs-null distinction the tenant schema draws between create/update optional fields. */
 const outletIdForUpdate = z.string().trim().min(1).nullable().optional();
 
-/** role defaults to MARKETER — the common case ("any other normal account" per the brief);
- * outletId is required at this layer for MARKETER (see the refine below), enforced again for
- * updates in account-service.ts since a PATCH only carries the fields it actually changes. */
+/** role defaults to DISTRIBUTOR — the common case ("any other normal account" per the brief);
+ * outletId is required at this layer for any non-SUPER_ADMIN role (see the refine below), enforced
+ * again for updates in account-service.ts since a PATCH only carries the fields it actually
+ * changes. */
 export const accountCreateSchema = z
   .object({
     name: nameField,
     email: emailField,
     password: passwordField,
-    role: z.enum(ACCOUNT_ROLES).default("MARKETER"),
+    role: z.enum(ACCOUNT_ROLES).default("DISTRIBUTOR"),
     outletId: outletIdForCreate,
     isActive: z.boolean().default(true),
   })
-  .refine((data) => data.role !== "MARKETER" || data.outletId !== null, {
-    message: "A marketer account must be assigned to an outlet",
+  .refine((data) => data.role === "SUPER_ADMIN" || data.outletId !== null, {
+    message: "This account must be assigned to an outlet",
     path: ["outletId"],
   });
 

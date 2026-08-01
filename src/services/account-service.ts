@@ -76,8 +76,8 @@ export async function updateAccount(id: string, input: unknown): Promise<PublicA
   // with whatever this update actually touches), not just what's in this one request.
   const effectiveRole = parsed.role ?? existing.role;
   const effectiveOutletId = parsed.outletId !== undefined ? parsed.outletId : existing.outletId;
-  if (effectiveRole === "MARKETER" && !effectiveOutletId) {
-    throw new HttpError(400, "A marketer account must be assigned to an outlet");
+  if (effectiveRole !== "SUPER_ADMIN" && !effectiveOutletId) {
+    throw new HttpError(400, "This account must be assigned to an outlet");
   }
   if (effectiveOutletId) {
     await assertOutletExists(effectiveOutletId);
