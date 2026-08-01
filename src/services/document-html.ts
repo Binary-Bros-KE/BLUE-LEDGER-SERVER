@@ -1,3 +1,4 @@
+import { formatDocumentDate, formatDocumentDateTime } from "../lib/document-date.js";
 import { formatMoney } from "./share-service.js";
 import type {
   SharedDeliveryNoteResult,
@@ -25,20 +26,11 @@ function escapeHtml(value: string): string {
 }
 
 function formatDate(value: string | null): string {
-  if (!value) return "-";
-  try {
-    return new Date(value).toLocaleDateString();
-  } catch {
-    return value;
-  }
+  return formatDocumentDate(value);
 }
 
 function formatDateTime(value: string): string {
-  try {
-    return new Date(value).toLocaleString();
-  } catch {
-    return value;
-  }
+  return formatDocumentDateTime(value);
 }
 
 const PAYMENT_STATUS_LABEL: Record<string, string> = {

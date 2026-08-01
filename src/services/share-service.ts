@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { env } from "../env.js";
+import { formatDocumentDate, formatDocumentDateTime } from "../lib/document-date.js";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -601,7 +602,7 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
       KIND_EMOJI[doc.documentKind],
       KIND_LABEL[doc.documentKind],
       doc.documentNumber ?? "-",
-      new Date(doc.dateLabel).toLocaleDateString(),
+      formatDocumentDate(doc.dateLabel),
       url,
     );
   }
@@ -618,11 +619,11 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
 
   lines.push(SEPARATOR);
   lines.push(`${KIND_LABEL[doc.documentKind]}: ${doc.documentNumber ?? "-"}`);
-  lines.push(`Date: ${new Date(doc.dateLabel).toLocaleString()}`);
+  lines.push(`Date: ${formatDocumentDateTime(doc.dateLabel)}`);
   lines.push(`Served by: ${doc.employeeName} · Branch: ${doc.branchName}`);
   if (doc.customerName) lines.push(`Customer: ${doc.customerName}`);
-  if (doc.dueDate) lines.push(`Due: ${new Date(doc.dueDate).toLocaleDateString()}`);
-  if (doc.validUntil) lines.push(`Valid until: ${new Date(doc.validUntil).toLocaleDateString()}`);
+  if (doc.dueDate) lines.push(`Due: ${formatDocumentDate(doc.dueDate)}`);
+  if (doc.validUntil) lines.push(`Valid until: ${formatDocumentDate(doc.validUntil)}`);
 
   lines.push(SEPARATOR);
   const allItems = [...doc.items, ...doc.extraLines];
