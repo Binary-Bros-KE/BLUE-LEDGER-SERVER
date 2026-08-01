@@ -5,8 +5,8 @@ import * as planService from "../services/plan-service.js";
 
 export const plansRouter = Router();
 
-// Both roles reach this router — a MARKETER gets a read-only, outlet-scoped view (they need it to
-// pick a plan while creating a client); create/update/delete require requireSuperAdmin below.
+// Both roles reach this router — a MARKETER gets an outlet-scoped view and can create new plans for
+// their own outlet's catalog; update/delete still require requireSuperAdmin below.
 plansRouter.use(requireAuth);
 
 function requireAccount(req: Request): asserts req is Request & { account: AuthenticatedAccount } {
@@ -27,8 +27,9 @@ plansRouter.get("/:id", async (req, res) => {
   res.json(plan);
 });
 
-plansRouter.post("/", requireSuperAdmin, async (req, res) => {
-  const plan = await planService.createPlan(req.body);
+plansRouter.post("/", async (req, res) => {
+  requireAccount(req);
+  const plan = await planService.createPlan(req.body, req.account);
   res.status(201).json(plan);
 });
 

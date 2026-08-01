@@ -41,14 +41,22 @@ export async function getPlanForActor(id: string, actor: AuthenticatedAccount): 
   return plan;
 }
 
-/** SUPER_ADMIN only — enforced at the route layer. */
-export async function createPlan(input: unknown): Promise<Plan> {
+/** Both roles can create — a MARKETER building out their own outlet's plan catalog is the actual
+ * job, same reasoning as tenant creation. Their outletId is always forced to their own account's
+ * outlet regardless of what the request body claims; only SUPER_ADMIN's submitted outletId is
+ * trusted. Update/delete stay SUPER_ADMIN-only (enforced at the route layer) — a marketer can add a
+ * new plan but not edit or retire an existing one. */
+export async function createPlan(input: unknown, actor: AuthenticatedAccount): Promise<Plan> {
   const parsed = planCreateSchema.parse(input);
-  const outlet = await prisma.outlet.findUnique({ where: { id: parsed.outletId } });
+  const outletId = actor.role === "SUPER_ADMIN" ? parsed.outletId : actor.outletId;
+  if (!outletId) {
+    throw new HttpError(400, "No outlet is assigned to your account — contact a super admin");
+  }
+  const outlet = await prisma.outlet.findUnique({ where: { id: outletId } });
   if (!outlet) {
     throw new HttpError(400, "Selected outlet was not found");
   }
-  return prisma.plan.create({ data: parsed });
+  return prisma.plan.create({ data: { ...parsed, outletId } });
 }
 
 export async function updatePlan(id: string, input: unknown): Promise<Plan> {
