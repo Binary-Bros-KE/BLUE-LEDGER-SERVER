@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import cors from "cors";
 import express from "express";
@@ -45,6 +46,27 @@ app.get("/health", (_req, res) => {
 // Node's own HTTP client, not a browser fetch, so helmet's CORS/CORP headers above never apply to
 // it. Manually populated after each `npm run dist:win` — see RELEASES_DIR's own env.ts comment.
 app.use("/releases", express.static(path.resolve(env.RELEASES_DIR)));
+
+// A stable link for installing on a NEW machine (a browser, not electron-updater, on the client's
+// own computer) — no USB drive needed. Deliberately reads latest.yml's own `path:` line instead of
+// hardcoding a version, so this URL never goes stale as new versions get uploaded — it always
+// redirects to whatever electron-updater itself currently considers "latest".
+app.get("/download", (_req, res) => {
+  const latestYmlPath = path.resolve(env.RELEASES_DIR, "latest.yml");
+  let installerFileName: string | null = null;
+  try {
+    const contents = fs.readFileSync(latestYmlPath, "utf8");
+    const match = /^path:\s*(\S+)\s*$/m.exec(contents);
+    installerFileName = match?.[1] ?? null;
+  } catch {
+    installerFileName = null;
+  }
+  if (!installerFileName) {
+    res.status(503).send("No release is published yet — try again shortly.");
+    return;
+  }
+  res.redirect(`/releases/${installerFileName}`);
+});
 
 app.use("/auth", authRouter);
 app.use("/tenants", tenantsRouter);
