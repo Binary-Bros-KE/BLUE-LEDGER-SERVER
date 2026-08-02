@@ -973,6 +973,11 @@ model Expense {
   deviceId String
 
   expenseNumber       String
+  /// "general" (operational expenses — rent, wifi, salaries-as-expense) or "local_purchase" (small
+  /// day-to-day buys a Cashier can CRUD, see DESKTOP's local-purchase-service.ts). Same table/model
+  /// as before, just discriminated — avoids duplicating expense_categories, sync wiring, and
+  /// Reports/Transactions integration for what is otherwise an identical shape.
+  kind                String  @default("general")
   expenseDate         String
   categoryId          String
   amountCents         Int

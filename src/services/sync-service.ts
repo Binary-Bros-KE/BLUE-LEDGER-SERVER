@@ -188,6 +188,19 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
         }
 
         const data = sanitizeRow(row, parsed.tenantId, parsed.deviceId, parsed.entity);
+
+        // Held ("pending") sales are meant to be local-only (see migrate.ts's held_sales_local_only
+        // migration, DESKTOP) — every up-to-date device already refuses to enqueue one for push at
+        // all. This is the backstop for any device that ISN'T up to date yet (still running
+        // pre-fix code, or simply hasn't restarted to pick up the update): reject it here too,
+        // at the one chokepoint every device shares, instead of relying on every client being
+        // current. Reporting "ok" (rather than "error") lets the stale device's outbox clear the
+        // row normally instead of retrying it forever — the row just never actually lands.
+        if (parsed.entity === "sales" && data.saleStatus === "pending") {
+          results.push({ id, status: "ok" });
+          continue;
+        }
+
         await delegate.upsert({ where: { id }, create: { id, ...data }, update: data });
         results.push({ id, status: "ok" });
       } catch (err) {
