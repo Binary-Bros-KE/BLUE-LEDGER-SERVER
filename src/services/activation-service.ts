@@ -57,6 +57,8 @@ type BusinessProfileFields = {
   physicalAddress: string | null;
   ownerPhone: string | null;
   ownerEmail: string | null;
+  vatRatePercent: number;
+  pricesTaxInclusive: boolean;
 };
 
 function extractBusinessProfileFields(tenant: Tenant): BusinessProfileFields & { businessProfileUpdatedAt: string | null } {
@@ -78,6 +80,8 @@ function extractBusinessProfileFields(tenant: Tenant): BusinessProfileFields & {
     physicalAddress: tenant.physicalAddress,
     ownerPhone: tenant.ownerPhone,
     ownerEmail: tenant.ownerEmail,
+    vatRatePercent: tenant.vatRatePercent,
+    pricesTaxInclusive: tenant.pricesTaxInclusive,
     businessProfileUpdatedAt: tenant.businessProfileUpdatedAt?.toISOString() ?? null,
   };
 }

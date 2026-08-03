@@ -1,6 +1,7 @@
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { computeSalesAndProfit, type PaymentMethodBreakdownEntry, type SalesTopProduct } from "./mobile-metrics-service.js";
+import { computeTaxBreakdown, type TaxBreakdownEntry, type TaxType } from "../lib/tax-breakdown.js";
 
 /**
  * Ports DESKTOP's Sales Report (report-service.ts's getSalesFinancialOverview/getSalesTrendWindow/
@@ -407,5 +408,101 @@ export async function getSalesBreakdowns(tenantId: string, input: SalesReportPer
       .sort((a, b) => b.revenueCents - a.revenueCents);
 
     return { byStorefront, byEmployee };
+  });
+}
+
+type TaxSaleItemEntry = { productId: string; quantity: number; taxType: string; taxAmountCents: number; lineTotalCents: number };
+
+export type TaxTopProductRow = {
+  productId: string;
+  productName: string;
+  sku: string;
+  taxType: TaxType;
+  quantitySold: number;
+  netCents: number;
+  taxCents: number;
+  grossCents: number;
+};
+
+export type MobileTaxReport = {
+  vatRatePercent: number;
+  byCategory: TaxBreakdownEntry[];
+  totalNetCents: number;
+  totalTaxCents: number;
+  totalGrossCents: number;
+  topTaxedProducts: TaxTopProductRow[];
+};
+
+const TOP_TAXED_LIMIT = 10;
+
+/** Tax collected by category for one period — the Owner App's own (deliberately lighter) mirror of
+ * DESKTOP's Tax Report. Same accrual-based sale selection as getSalesBreakdowns above (completedAt
+ * range, live/non-voided, paid-or-non-invoice); unlike DESKTOP's report this does NOT net out
+ * approved returns against the item's own tax split — a documented simplification for this
+ * supplementary mobile view, not the tenant's authoritative tax record (DESKTOP's Tax Report is). */
+export async function getSalesTaxBreakdown(tenantId: string, input: SalesReportPeriodInput): Promise<MobileTaxReport> {
+  const range = resolveRange(input, offsetMsFromClientMinutes(input.timezoneOffsetMinutes));
+
+  return withTenantContext(tenantId, async (tx) => {
+    const [tenant, voids, sales] = await Promise.all([
+      tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true } }),
+      tx.saleVoid.findMany({ where: { tenantId, status: "approved" }, select: { saleId: true } }),
+      tx.sale.findMany({
+        where: {
+          tenantId,
+          saleStatus: "completed",
+          transactionType: { in: ["retail_sale", "wholesale_sale", "invoice"] },
+          paymentStatus: { not: "cancelled" },
+          completedAt: { gte: range.start, lt: range.endExclusive },
+          OR: [{ invoiceNumber: null }, { amountPaidCents: { gt: 0 } }],
+        },
+        select: { id: true, items: true },
+      }),
+    ]);
+    const voidedSaleIds = new Set(voids.map((v) => v.saleId));
+    const liveSales = sales.filter((s) => !voidedSaleIds.has(s.id));
+
+    const items = liveSales.flatMap((sale) => (Array.isArray(sale.items) ? (sale.items as unknown as TaxSaleItemEntry[]) : []));
+    const productIds = [...new Set(items.map((i) => i.productId))];
+    const products = await tx.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, sku: true } });
+    const productById = new Map(products.map((p) => [p.id, p]));
+
+    const byCategory = computeTaxBreakdown(items);
+
+    const byProduct = new Map<string, TaxTopProductRow>();
+    for (const item of items) {
+      if (item.taxType !== "vat") continue; // only standard-rated products ever collect tax
+      const product = productById.get(item.productId);
+      const key = item.productId;
+      const existing = byProduct.get(key);
+      const netCents = item.lineTotalCents - item.taxAmountCents;
+      if (existing) {
+        existing.quantitySold += item.quantity;
+        existing.netCents += netCents;
+        existing.taxCents += item.taxAmountCents;
+        existing.grossCents += item.lineTotalCents;
+      } else {
+        byProduct.set(key, {
+          productId: item.productId,
+          productName: product?.name ?? "Unknown product",
+          sku: product?.sku ?? "",
+          taxType: "vat",
+          quantitySold: item.quantity,
+          netCents,
+          taxCents: item.taxAmountCents,
+          grossCents: item.lineTotalCents,
+        });
+      }
+    }
+    const topTaxedProducts = [...byProduct.values()].sort((a, b) => b.taxCents - a.taxCents).slice(0, TOP_TAXED_LIMIT);
+
+    return {
+      vatRatePercent: tenant.vatRatePercent,
+      byCategory,
+      totalNetCents: byCategory.reduce((sum, c) => sum + c.netCents, 0),
+      totalTaxCents: byCategory.reduce((sum, c) => sum + c.taxCents, 0),
+      totalGrossCents: byCategory.reduce((sum, c) => sum + c.grossCents, 0),
+      topTaxedProducts,
+    };
   });
 }

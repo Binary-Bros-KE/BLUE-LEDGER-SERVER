@@ -1,5 +1,6 @@
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
+import { computeTaxBreakdown, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
 
 export type MobilePurchaseListItem = {
   id: string;
@@ -23,6 +24,7 @@ type RawPurchaseItem = {
   receivedQuantity: number;
   unitCostCents: number;
   discountAmountCents: number;
+  taxType: string;
   taxAmountCents: number;
   lineTotalCents: number;
 };
@@ -71,6 +73,8 @@ export type MobilePurchaseDetail = {
   subtotalCents: number;
   discountAmountCents: number;
   taxAmountCents: number;
+  taxBreakdown: TaxBreakdownEntry[];
+  vatRatePercent: number;
   grandTotalCents: number;
   amountPaidCents: number;
   payments: MobilePurchasePayment[];
@@ -121,7 +125,7 @@ export async function listPurchases(tenantId: string, locationId: string | null)
 }
 
 export async function getPurchase(tenantId: string, purchaseId: string): Promise<MobilePurchaseDetail | null> {
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
+  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true, vatRatePercent: true } });
 
   return withTenantContext(tenantId, async (tx) => {
     const purchase = await tx.purchase.findUnique({ where: { id: purchaseId } });
@@ -161,6 +165,8 @@ export async function getPurchase(tenantId: string, purchaseId: string): Promise
       subtotalCents: purchase.subtotalCents,
       discountAmountCents: purchase.discountAmountCents,
       taxAmountCents: purchase.taxAmountCents,
+      taxBreakdown: computeTaxBreakdown(items),
+      vatRatePercent: tenant.vatRatePercent,
       grandTotalCents: purchase.grandTotalCents,
       amountPaidCents: purchase.amountPaidCents,
       payments: asArray<RawPurchasePayment>(purchase.payments).map((payment) => ({

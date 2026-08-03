@@ -1,4 +1,5 @@
 import { formatDocumentDate, formatDocumentDateTime } from "../lib/document-date.js";
+import { taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
 import { formatMoney } from "./share-service.js";
 import type {
   SharedDeliveryNoteResult,
@@ -23,6 +24,35 @@ import type {
 
 function escapeHtml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/** Ported from DESKTOP's printer-service.ts (buildTaxBreakdownHtml) — the tax breakdown every
+ * document renders below its main totals, never contributing to the total itself. */
+function buildTaxBreakdownHtml(
+  breakdown: TaxBreakdownEntry[],
+  vatRatePercent: number,
+  money: (cents: number) => string,
+): string {
+  if (breakdown.length === 0) return "";
+  const rows = breakdown
+    .map(
+      (entry) => `
+      <tr>
+        <td>${escapeHtml(taxBreakdownLabel(entry.taxType, vatRatePercent))}</td>
+        <td class="right">${money(entry.netCents)}</td>
+        <td class="right">${money(entry.taxCents)}</td>
+        <td class="right">${money(entry.grossCents)}</td>
+      </tr>`,
+    )
+    .join("");
+  return `
+    <p class="tax-breakdown-title">Tax Breakdown</p>
+    <table class="tax-breakdown">
+      <thead>
+        <tr><th>Category</th><th class="right">Net</th><th class="right">Tax</th><th class="right">Gross</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
 }
 
 function formatDate(value: string | null): string {
@@ -142,6 +172,9 @@ function buildReceiptDocumentHtml(doc: SharedDocumentResult): string {
   .payment { margin-top: 20px; }
   .payment p { margin: 2px 0; }
   .footer { margin-top: 32px; text-align: center; color: #83795f; font-size: 11px; }
+  .tax-breakdown-title { margin-top: 20px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
+  table.tax-breakdown { margin-top: 6px; }
+  table.tax-breakdown th, table.tax-breakdown td { font-size: 12px; }
 </style>
 </head>
 <body>
@@ -192,9 +225,10 @@ function buildReceiptDocumentHtml(doc: SharedDocumentResult): string {
     <table class="totals">
       <tr><td>Subtotal</td><td class="right">${money(doc.subtotalCents)}</td></tr>
       ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td class="right">-${money(doc.discountAmountCents)}</td></tr>` : ""}
-      <tr><td>Tax</td><td class="right">${money(doc.taxAmountCents)}</td></tr>
       <tr class="grand"><td>Total</td><td class="right">${money(doc.grandTotalCents)}</td></tr>
     </table>
+
+    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
 
     <div class="payment">
       <p class="label" style="font-size:10px;text-transform:uppercase;color:#83795f;font-weight:bold;">Payment</p>
@@ -210,9 +244,10 @@ function buildReceiptDocumentHtml(doc: SharedDocumentResult): string {
 </html>`;
 }
 
-/** Renders items, then extra-charge rows (service charges + delivery fee) with dashed discount/tax
- * columns — mirrors DESKTOP's buildExtraChargeRows exactly (those aren't real product lines, so
- * their Discount/Tax columns are always "-", never a real 0). */
+/** Renders items, then extra-charge rows (service charges + delivery fee) with a dashed discount
+ * column — mirrors DESKTOP's buildExtraChargeRows exactly (those aren't real product lines, so
+ * their Discount column is always "-", never a real 0). Tax is deliberately NOT a per-item column
+ * here — see buildTaxBreakdownHtml, the one place tax is actually shown, below the totals. */
 function buildItemAndExtraRows(items: SharedLineItem[], extraLines: SharedLineItem[], money: (cents: number | null) => string): string {
   const itemRows = items
     .map(
@@ -223,7 +258,6 @@ function buildItemAndExtraRows(items: SharedLineItem[], extraLines: SharedLineIt
         <td class="center">${item.quantity}</td>
         <td class="right">${money(item.unitPriceCents)}</td>
         <td class="right">${item.discountAmountCents > 0 ? `-${money(item.discountAmountCents)}` : "-"}</td>
-        <td class="right">${money(item.taxAmountCents)}</td>
         <td class="right">${money(item.lineTotalCents)}</td>
       </tr>`,
     )
@@ -237,7 +271,6 @@ function buildItemAndExtraRows(items: SharedLineItem[], extraLines: SharedLineIt
         <td>${escapeHtml(line.name)}</td>
         <td class="center">1</td>
         <td class="right">${money(line.unitPriceCents)}</td>
-        <td class="right">-</td>
         <td class="right">-</td>
         <td class="right">${money(line.lineTotalCents)}</td>
       </tr>`,
@@ -292,6 +325,9 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
   .totals .balance td { font-size: 15px; font-weight: bold; color: #ad3a29; }
   .notes { margin-top: 24px; padding: 12px; background: #f1ede1; border-radius: 8px; }
   .footer { margin-top: 32px; text-align: center; color: #83795f; font-size: 11px; }
+  .tax-breakdown-title { margin-top: 20px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
+  table.tax-breakdown { margin-top: 6px; }
+  table.tax-breakdown th, table.tax-breakdown td { font-size: 12px; }
 </style>
 </head>
 <body>
@@ -338,7 +374,6 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
           <th class="center">Qty</th>
           <th class="right">Unit Price</th>
           <th class="right">Discount</th>
-          <th class="right">Tax</th>
           <th class="right">Line Total</th>
         </tr>
       </thead>
@@ -348,11 +383,12 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
     <table class="totals">
       <tr><td>Subtotal</td><td class="right">${money(doc.subtotalCents)}</td></tr>
       ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td class="right">-${money(doc.discountAmountCents)}</td></tr>` : ""}
-      <tr><td>Tax</td><td class="right">${money(doc.taxAmountCents)}</td></tr>
       <tr class="grand"><td>Total</td><td class="right">${money(doc.grandTotalCents)}</td></tr>
       <tr><td>Amount Paid</td><td class="right">${money(doc.grandTotalCents !== null && doc.balanceDueCents !== null ? doc.grandTotalCents - doc.balanceDueCents : null)}</td></tr>
       <tr class="balance"><td>Balance Due</td><td class="right">${money(doc.balanceDueCents)}</td></tr>
     </table>
+
+    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
 
     ${
       doc.payments.length > 0
@@ -408,6 +444,9 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
   .signature { flex: 1; }
   .signature .line { border-top: 1px solid #999; margin-top: 40px; padding-top: 4px; font-size: 11px; color: #83795f; }
   .footer { margin-top: 32px; text-align: center; color: #83795f; font-size: 11px; }
+  .tax-breakdown-title { margin-top: 20px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
+  table.tax-breakdown { margin-top: 6px; }
+  table.tax-breakdown th, table.tax-breakdown td { font-size: 12px; }
 </style>
 </head>
 <body>
@@ -452,7 +491,6 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
           <th class="center">Qty</th>
           <th class="right">Unit Price</th>
           <th class="right">Discount</th>
-          <th class="right">Tax</th>
           <th class="right">Line Total</th>
         </tr>
       </thead>
@@ -462,9 +500,10 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
     <table class="totals">
       <tr><td>Subtotal</td><td class="right">${money(doc.subtotalCents)}</td></tr>
       ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td class="right">-${money(doc.discountAmountCents)}</td></tr>` : ""}
-      <tr><td>Tax</td><td class="right">${money(doc.taxAmountCents)}</td></tr>
       <tr class="grand"><td>Total</td><td class="right">${money(doc.grandTotalCents)}</td></tr>
     </table>
+
+    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
 
     ${doc.notes ? `<div class="notes"><strong>Notes</strong><p>${escapeHtml(doc.notes)}</p></div>` : ""}
 

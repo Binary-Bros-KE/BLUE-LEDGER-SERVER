@@ -448,6 +448,18 @@ model Tenant {
   ownerPhone                 String?
   ownerEmail                 String?
 
+  /// The tenant's own standard consumption-tax rate (e.g. Kenya VAT = 16) — deliberately NOT
+  /// hardcoded, since this app is headed for other East African markets with their own rates
+  /// (Uganda/Tanzania 18%, Ethiopia 15%). Every product picks one of exactly three categories
+  /// (standard/exempted/zero-rated); this is the % applied to "standard" only — the other two are
+  /// always 0 by definition.
+  vatRatePercent     Float   @default(16)
+  /// Whether product prices already include tax (Kenya's norm — a marked price of 400 already
+  /// contains VAT) or exclude it (tax added on top at sale time). Only the inclusive path's
+  /// calculation is actually implemented today — this flag exists so the schema doesn't need
+  /// another migration once an exclusive-pricing market is actually onboarded.
+  pricesTaxInclusive Boolean @default(true)
+
   /// When a device last successfully PUSHED a business-profile edit here (POST /activation/profile)
   /// — deliberately NOT the same as this row's own `updatedAt`, which also bumps for a dozen
   /// unrelated reasons (device registration, every heartbeat's lastCloudSync touch, etc.) and so
@@ -823,6 +835,10 @@ model Product {
   wholesaleMinQuantity Int
   minimumPriceCents    Int?
   taxRate              Float
+  /// One of "vat" (standard-rated, uses the tenant's own vatRatePercent), "exempted", or
+  /// "zero_rated" — replaces taxRate as the actual calculation driver going forward (taxRate is
+  /// kept, unused by new code, rather than dropped: no destructive migration on live data).
+  taxType              String  @default("vat")
   reorderLevel         Int
   trackStock           Boolean
   allowNegativeStock   Boolean
@@ -929,7 +945,8 @@ model Sale {
   /// sale/invoice) — carries straight through as Json.
   payments            Json
   /// sale_items rows for this sale — {id, productId, quantity, unitPriceCents,
-  /// discountAmountCents, taxAmountCents, lineTotalCents, createdAt}[].
+  /// discountAmountCents, taxType, taxAmountCents, lineTotalCents, createdAt}[]. taxType is a
+  /// snapshot of the category ("vat"/"exempted"/"zero_rated") applied at sale time.
   items               Json
   /// sale_service_charges rows for this sale — {id, name, feeCents, costCents, createdAt}[].
   serviceCharges      Json
@@ -1159,6 +1176,8 @@ model Purchase {
   supplierInvoiceNumber String?
   locationId            String
   status                String
+  /// Legacy whole-order tag — superseded by items[].taxType (see below), never written by new
+  /// clients. Kept only so pre-existing purchase orders still have something on record.
   taxType               String
   subtotalCents         Int
   discountAmountCents   Int
@@ -1175,7 +1194,7 @@ model Purchase {
   orderedAt             DateTime?
   receivedAt            DateTime?
   /// purchase_items rows — {id, productId, orderedQuantity, receivedQuantity, unitCostCents,
-  /// discountAmountCents, taxAmountCents, lineTotalCents, createdAt, updatedAt}[].
+  /// discountAmountCents, taxType, taxAmountCents, lineTotalCents, createdAt, updatedAt}[].
   items                 Json
 
   localCreatedAt DateTime

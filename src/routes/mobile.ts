@@ -139,6 +139,12 @@ mobileRouter.get("/sales-report/breakdowns", requireMobileAuth, requireOwnerAppA
   res.json(result);
 });
 
+mobileRouter.get("/sales-report/tax", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const parsed = salesReportPeriodQuerySchema.parse(req.query);
+  const result = await mobileSalesReportService.getSalesTaxBreakdown(req.mobileSession!.tenantId, parsed);
+  res.json(result);
+});
+
 mobileRouter.get("/products", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const result = await mobileInventoryService.listProducts(req.mobileSession!.tenantId);
   res.json(result);

@@ -83,6 +83,8 @@ export const activationProfileUpdateSchema = z.object({
   physicalAddress: pushOptionalText(500),
   ownerPhone: pushOptionalText(50),
   ownerEmail: pushOptionalText(200),
+  vatRatePercent: z.coerce.number().min(0).max(100).optional(),
+  pricesTaxInclusive: z.boolean().optional(),
 });
 
 export type ActivationProfileUpdateInput = z.infer<typeof activationProfileUpdateSchema>;

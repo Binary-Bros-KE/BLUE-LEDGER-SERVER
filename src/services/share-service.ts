@@ -5,6 +5,7 @@ import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { createShareLinkSchema } from "../schemas/share.js";
+import { computeTaxBreakdown, taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
 
 const SHARE_LINK_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000; // ~1 year, matching the user's own ask
 
@@ -102,6 +103,8 @@ export type SharedLineItem = {
   lineTotalCents: number;
 };
 
+export type { TaxBreakdownEntry } from "../lib/tax-breakdown.js";
+
 export type SharedPayment = {
   receivedAt: string;
   paymentMethodName: string;
@@ -127,7 +130,11 @@ export type SharedDocumentResult = {
   extraLines: SharedLineItem[];
   subtotalCents: number;
   discountAmountCents: number;
+  /** Reporting-only — already included in subtotalCents (prices are tax-inclusive), never added
+   * into grandTotalCents. See taxBreakdown for the printable category breakdown. */
   taxAmountCents: number;
+  taxBreakdown: TaxBreakdownEntry[];
+  vatRatePercent: number;
   grandTotalCents: number;
   paymentMethodName: string | null;
   paymentReference: string | null;
@@ -213,6 +220,7 @@ type RawItem = {
   quantity: number;
   unitPriceCents: number;
   discountAmountCents: number;
+  taxType: string;
   taxAmountCents: number;
   lineTotalCents: number;
 };
@@ -323,7 +331,7 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
 export async function buildSharedDocument(tenantId: string, entity: "sale" | "quotation", entityId: string): Promise<SharedDocumentResult | null> {
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { name: true, physicalAddress: true, contactPhone: true, currency: true },
+    select: { name: true, physicalAddress: true, contactPhone: true, currency: true, vatRatePercent: true },
   });
   if (!tenantRow) return null;
 
@@ -366,6 +374,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         subtotalCents: sale.subtotalCents,
         discountAmountCents: sale.discountAmountCents,
         taxAmountCents: sale.taxAmountCents,
+        taxBreakdown: computeTaxBreakdown(items),
+        vatRatePercent: tenantRow.vatRatePercent,
         grandTotalCents: sale.grandTotalCents,
         paymentMethodName: paymentMethod?.name ?? null,
         paymentReference: sale.paymentReference,
@@ -429,6 +439,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       subtotalCents: quotation.subtotalCents,
       discountAmountCents: quotation.discountAmountCents,
       taxAmountCents: quotation.taxAmountCents,
+      taxBreakdown: computeTaxBreakdown(items),
+      vatRatePercent: tenantRow.vatRatePercent,
       grandTotalCents: quotation.grandTotalCents,
       paymentMethodName: null,
       paymentReference: null,
@@ -458,7 +470,7 @@ async function buildSharedDeliveryNote(
 ): Promise<SharedDeliveryNoteResult | null> {
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { name: true, physicalAddress: true, contactPhone: true, currency: true },
+    select: { name: true, physicalAddress: true, contactPhone: true, currency: true, vatRatePercent: true },
   });
   if (!tenantRow) return null;
 
@@ -522,7 +534,7 @@ async function buildSharedDeliveryNote(
 export async function buildSharedStatement(tenantId: string, customerId: string): Promise<SharedStatementResult | null> {
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { name: true, physicalAddress: true, contactPhone: true, currency: true },
+    select: { name: true, physicalAddress: true, contactPhone: true, currency: true, vatRatePercent: true },
   });
   if (!tenantRow) return null;
 
@@ -636,10 +648,17 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
   lines.push(SEPARATOR);
   lines.push(`Subtotal: ${money(doc.subtotalCents)}`);
   if (doc.discountAmountCents > 0) lines.push(`Discount: -${money(doc.discountAmountCents)}`);
-  lines.push(`Tax: ${money(doc.taxAmountCents)}`);
   lines.push(`*TOTAL: ${money(doc.grandTotalCents)}*`);
   if (doc.balanceDueCents !== null && doc.balanceDueCents > 0) {
     lines.push(`⚠️ *Balance Due: ${money(doc.balanceDueCents)}*`);
+  }
+
+  if (doc.taxBreakdown.length > 0) {
+    lines.push(SEPARATOR);
+    lines.push("*Tax Breakdown*");
+    for (const entry of doc.taxBreakdown) {
+      lines.push(`${taxBreakdownLabel(entry.taxType, doc.vatRatePercent)}: Net ${money(entry.netCents)} / Tax ${money(entry.taxCents)}`);
+    }
   }
 
   if (doc.paymentMethodName || doc.paymentReference || doc.amountReceivedCents !== null) {
