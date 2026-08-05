@@ -945,8 +945,11 @@ model Sale {
   /// sale/invoice) — carries straight through as Json.
   payments            Json
   /// sale_items rows for this sale — {id, productId, quantity, unitPriceCents,
-  /// discountAmountCents, taxType, taxAmountCents, lineTotalCents, createdAt}[]. taxType is a
-  /// snapshot of the category ("vat"/"exempted"/"zero_rated") applied at sale time.
+  /// discountAmountCents, taxType, taxAmountCents, lineTotalCents, isLocallySourced,
+  /// localCostCents, localSupplierId, createdAt}[]. taxType is a snapshot of the category
+  /// ("vat"/"exempted"/"zero_rated") applied at sale time. isLocallySourced/localCostCents/
+  /// localSupplierId mark a line bought from another shop on the spot rather than this shop's
+  /// own stock — localCostCents/localSupplierId are only meaningful when isLocallySourced is true.
   items               Json
   /// sale_service_charges rows for this sale — {id, name, feeCents, costCents, createdAt}[].
   serviceCharges      Json
