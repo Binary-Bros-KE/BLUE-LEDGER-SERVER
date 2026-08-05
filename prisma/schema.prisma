@@ -897,6 +897,18 @@ model Location {
   notes               String?
   receiptHeader       String?
   receiptFooter       String?
+  /// Invoices/quotations used to just borrow receiptHeader/receiptFooter (and had no header of
+  /// their own at all) — these give each document type its own, same per-storefront-overrides
+  /// pattern as the receipt pair above. showProductImagesOn* only ever affects DESKTOP's own
+  /// downloaded/printed PDF (see that column's own doc comment in DESKTOP's location.ts) — synced
+  /// here purely so every device sharing this storefront sees the same toggle, never read by
+  /// share-service.ts/document-html.ts (product images are local-file-only, can't reach this DB).
+  invoiceHeader                   String?
+  invoiceFooter                   String?
+  quotationHeader                 String?
+  quotationFooter                 String?
+  showProductImagesOnInvoices     Boolean @default(false)
+  showProductImagesOnQuotations   Boolean @default(false)
 
   localCreatedAt DateTime
   localUpdatedAt DateTime

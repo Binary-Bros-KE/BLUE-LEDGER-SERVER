@@ -273,13 +273,31 @@ type TenantBusinessDefaults = { name: string; physicalAddress: string | null; co
 
 /** Ports printer-service.ts's resolveDocumentBusiness — the document's own storefront overrides
  * the tenant-wide Business Profile defaults, falling back when the storefront hasn't set its own.
- * Tenant-level receiptHeader/receiptFooter don't exist in the synced schema at all (only the
- * Location-level ones do) — a real gap, not something to silently paper over, so those two simply
- * have no tenant-wide fallback here; a document whose storefront hasn't set its own header/footer
- * just shows none, same as it would locally in that same case. */
+ * Tenant-level header/footer fields don't exist in the synced schema at all (only the Location-level
+ * ones do) — a real gap, not something to silently paper over, so there's no tenant-wide fallback
+ * here; a document whose storefront hasn't set its own header/footer just shows none, same as it
+ * would locally in that same case.
+ *
+ * `documentKind` picks WHICH pair of header/footer columns applies — receipts, invoices, and
+ * quotations each have their own now (see DESKTOP's printer-service.ts resolveDocumentBusiness for
+ * the same three-way split); the returned field names stay receiptHeader/receiptFooter regardless
+ * of kind purely because SharedDocumentResult/the WhatsApp message builder were already written
+ * against those names before quotations/invoices got their own — they just mean "this document's
+ * header/footer" now. */
 function resolveBusinessInfo(
-  location: { locationName: string; physicalAddress: string | null; phone: string | null; receiptHeader: string | null; receiptFooter: string | null } | null,
+  location: {
+    locationName: string;
+    physicalAddress: string | null;
+    phone: string | null;
+    receiptHeader: string | null;
+    receiptFooter: string | null;
+    invoiceHeader: string | null;
+    invoiceFooter: string | null;
+    quotationHeader: string | null;
+    quotationFooter: string | null;
+  } | null,
   tenant: TenantBusinessDefaults,
+  documentKind: "receipt" | "invoice" | "quotation",
 ): {
   businessName: string;
   physicalAddress: string | null;
@@ -288,12 +306,18 @@ function resolveBusinessInfo(
   receiptFooter: string | null;
   currency: string;
 } {
+  const [header, footer] =
+    documentKind === "invoice"
+      ? [location?.invoiceHeader, location?.invoiceFooter]
+      : documentKind === "quotation"
+        ? [location?.quotationHeader, location?.quotationFooter]
+        : [location?.receiptHeader, location?.receiptFooter];
   return {
     businessName: location?.locationName ?? tenant.name,
     physicalAddress: location?.physicalAddress ?? tenant.physicalAddress,
     primaryPhone: location?.phone ?? tenant.contactPhone,
-    receiptHeader: location?.receiptHeader ?? null,
-    receiptFooter: location?.receiptFooter ?? null,
+    receiptHeader: header ?? null,
+    receiptFooter: footer ?? null,
     currency: tenant.currency,
   };
 }
@@ -351,7 +375,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       const productById = new Map(products.map((p) => [p.id, p]));
 
       const isInvoice = sale.invoiceNumber !== null;
-      const business = resolveBusinessInfo(location, tenantRow);
+      const business = resolveBusinessInfo(location, tenantRow, isInvoice ? "invoice" : "receipt");
 
       return {
         documentKind: isInvoice ? "invoice" : "receipt",
@@ -416,7 +440,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
-    const business = resolveBusinessInfo(location, tenantRow);
+    const business = resolveBusinessInfo(location, tenantRow, "quotation");
 
     return {
       documentKind: "quotation",
@@ -488,9 +512,13 @@ async function buildSharedDeliveryNote(
       tx.location.findUnique({ where: { id: parent.locationId } }),
       delivery.riderId ? tx.rider.findUnique({ where: { id: delivery.riderId } }) : Promise.resolve(null),
     ]);
-    const business = resolveBusinessInfo(location, tenantRow);
-
     const isInvoice = parentEntity === "sale" && (parent as { invoiceNumber: string | null }).invoiceNumber !== null;
+    const business = resolveBusinessInfo(
+      location,
+      tenantRow,
+      parentEntity === "quotation" ? "quotation" : isInvoice ? "invoice" : "receipt",
+    );
+
     const sourceDocumentLabel = parentEntity === "quotation" ? "Quotation" : isInvoice ? "Invoice" : "Receipt";
     const sourceDocumentNumber =
       parentEntity === "quotation"
