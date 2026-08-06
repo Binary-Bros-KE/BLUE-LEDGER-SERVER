@@ -741,6 +741,15 @@ model Employee {
   // meaningless/stale the moment it left the device), photoPath (a local file path — no shared
   // cloud image storage exists yet).
 
+  /// A saved starting point for DESKTOP's "Process Salary" form only — never read anywhere else,
+  /// and editing/removing a line while processing one salary never touches these. Nullable so the
+  /// migration adding these columns needed no backfill for existing employee rows; DESKTOP's own
+  /// SQLite side keeps the Json columns NOT NULL DEFAULT '[]' and always pushes a real array (never
+  /// an explicit null), so these only stay null here until an existing employee row is next synced.
+  defaultBasicSalaryCents Int?
+  defaultAllowancesJson   Json?
+  defaultDeductionsJson   Json?
+
   localCreatedAt DateTime
   localUpdatedAt DateTime
   syncedAt       DateTime @default(now())
