@@ -3,7 +3,7 @@ import path from "node:path";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
-import morgan from "morgan";
+import morgan from "morgan"; 
 import { env } from "./env.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { accountsRouter } from "./routes/accounts.js";
