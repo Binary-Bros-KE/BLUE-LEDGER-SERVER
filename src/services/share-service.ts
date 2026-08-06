@@ -333,7 +333,10 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
     lineTotalCents: charge.feeCents,
   }));
   const deliveryRow = delivery as RawDelivery;
-  const deliveryLine = deliveryRow
+  // A seller who absorbs the delivery cost themselves charges the customer nothing for it — skip
+  // the line entirely rather than show "Delivery Fee: 0.00" (mirrors DESKTOP's own receipt.ts /
+  // printer-service.ts change).
+  const deliveryLine = deliveryRow && deliveryRow.feeCents > 0
     ? [
         {
           name: "Delivery Fee",

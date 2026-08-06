@@ -109,7 +109,7 @@ export type ExpensesAndProfit = {
   expensesCents: number;
   purchasesPaidCents: number;
   salariesPaidCents: number;
-  deliveryServiceCostsCents: number;
+  serviceChargeCostsCents: number;
   totalExpensesCents: number;
   netRevenueCents: number;
   netProfitCents: number;
@@ -306,10 +306,12 @@ export async function computeSalesAndProfit(
     // Delivery/service-charge FEE (what the customer was charged, e.g. a delivery fee) counted as
     // real revenue here — matching DESKTOP's own report-service.ts computeNetRevenueCents exactly.
     // The COST side (e.g. what the rider was actually paid) is deliberately NOT subtracted again
-    // here — it's already deducted once, in full, via deliveryServiceCostsCents below feeding
-    // totalExpensesCents. Before this fix, the fee showed up in Total Revenue (baked into
-    // grandTotalCents) but never anywhere in Net Revenue, while its cost always was — this was the
-    // exact gap that made mobile's Net Revenue disagree with DESKTOP's for the same period.
+    // here — service-charge cost is deducted once via serviceChargeCostsCents below feeding
+    // totalExpensesCents; delivery cost is booked as a real "Delivery Costs" expense instead (see
+    // DESKTOP's expense-service.ts createDeliveryCostExpenseIfNeeded), already counted via
+    // expensesCents. Before this fix, the fee showed up in Total Revenue (baked into grandTotalCents)
+    // but never anywhere in Net Revenue, while its cost always was — this was the exact gap that made
+    // mobile's Net Revenue disagree with DESKTOP's for the same period.
     let saleFeeRevenue = 0;
     for (const charge of asArray<SaleServiceChargeEntry>(sale.serviceCharges)) {
       saleFeeRevenue += charge.feeCents;
@@ -326,8 +328,9 @@ export async function computeSalesAndProfit(
 
   const topProducts = [...productMap.values()].sort((a, b) => b.revenueCents - a.revenueCents).slice(0, TOP_PRODUCTS_LIMIT);
 
-  // --- Total expenses: general categorized expenses + suppliers paid + salaries paid + hidden
-  // service-charge/delivery costs on completed sales in range. ---
+  // --- Total expenses: general categorized expenses (now including any auto-booked "Delivery
+  // Costs" rows) + suppliers paid + salaries paid + hidden service-charge cost on completed sales
+  // in range. Delivery cost is NOT summed separately here anymore — see the comment above. ---
   let purchasesPaidCents = 0;
   for (const purchase of purchases) {
     for (const payment of asArray<PurchasePaymentEntry>(purchase.payments)) {
@@ -337,18 +340,16 @@ export async function computeSalesAndProfit(
     }
   }
 
-  let deliveryServiceCostsCents = 0;
+  let serviceChargeCostsCents = 0;
   for (const sale of liveSales) {
     for (const charge of asArray<SaleServiceChargeEntry>(sale.serviceCharges)) {
-      deliveryServiceCostsCents += charge.costCents;
+      serviceChargeCostsCents += charge.costCents;
     }
-    const delivery = sale.delivery as SaleDeliveryEntry | null;
-    if (delivery) deliveryServiceCostsCents += delivery.costCents;
   }
 
   const expensesCents = expenseAgg._sum.amountCents ?? 0;
   const salariesPaidCents = salaries._sum.netPayCents ?? 0;
-  const totalExpensesCents = expensesCents + purchasesPaidCents + salariesPaidCents + deliveryServiceCostsCents;
+  const totalExpensesCents = expensesCents + purchasesPaidCents + salariesPaidCents + serviceChargeCostsCents;
   const netProfitCents = netRevenueCents - totalExpensesCents;
 
   return {
@@ -357,7 +358,7 @@ export async function computeSalesAndProfit(
       expensesCents,
       purchasesPaidCents,
       salariesPaidCents,
-      deliveryServiceCostsCents,
+      serviceChargeCostsCents,
       totalExpensesCents,
       netRevenueCents,
       netProfitCents,
