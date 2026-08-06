@@ -536,6 +536,7 @@ model Tenant {
   purchases         Purchase[]
   stockMovements    StockMovement[]
   stockRequests     StockRequest[]
+  stockReceipts     StockReceipt[]
   mainStoreAllocations MainStoreAllocation[]
   mpesaTillSettings    MpesaTillSettings[]
   mpesaTransactions    MpesaTransaction[]
@@ -1288,6 +1289,32 @@ model StockRequest {
 
   @@index([tenantId])
   @@map("stock_requests")
+}
+
+/// A batch "Goods Received Note" — many products received into one location at once. previousQuantity/
+/// newQuantity inside each items[] entry are frozen at creation (never recomputed), so a reprint months
+/// later shows exactly what was true at the moment of receiving, same convention as StockRequest.items.
+model StockReceipt {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  receiptNumber          String
+  locationId              String
+  allocationStorefrontId String?
+  receivedBy              String
+  notes                   String?
+  /// stock_receipt_items rows — {id, productId, quantityReceived, previousQuantity, newQuantity,
+  /// createdAt}[]. Never independently edited after creation, so a plain replace-all on pull is safe.
+  items                   Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("stock_receipts")
 }
 
 /// Directly synced (its OWN push/pull), NOT reconstructed by replaying StockMovement — unlike

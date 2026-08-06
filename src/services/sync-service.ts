@@ -32,6 +32,7 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
   purchases: (tx) => tx.purchase,
   stock_movements: (tx) => tx.stockMovement,
   stock_requests: (tx) => tx.stockRequest,
+  stock_receipts: (tx) => tx.stockReceipt,
   main_store_allocations: (tx) => tx.mainStoreAllocation,
 };
 
