@@ -388,11 +388,10 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
       <tr class="balance"><td>Balance Due</td><td class="right">${money(doc.balanceDueCents)}</td></tr>
     </table>
 
-    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
-
     ${
       doc.payments.length > 0
-        ? `<table>
+        ? `<p class="tax-breakdown-title">Payments Made</p>
+    <table>
       <thead>
         <tr><th>Date</th><th>Method</th><th>Reference</th><th>Received By</th><th class="right">Amount</th></tr>
       </thead>
@@ -400,6 +399,8 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
     </table>`
         : ""
     }
+
+    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
 
     ${doc.notes ? `<div class="notes"><strong>Notes</strong><p>${escapeHtml(doc.notes)}</p></div>` : ""}
 
