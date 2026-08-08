@@ -126,6 +126,23 @@ const NATURAL_KEY_FIELDS: Partial<Record<SyncEntityName, string>> = {
   main_store_allocations: "bucketKey",
 };
 
+/** stock_movements.locationId/productId are deliberately plain opaque strings, not Prisma relations
+ * (same reasoning as Employee.roleId/Product.categoryId elsewhere in this schema — see StockMovement's
+ * own model comment) — meaning Postgres enforces NO foreign key on them at all. Confirmed live: a
+ * device with a stale local copy of a stock_movement kept re-pushing a locationId for a storefront
+ * that no longer exists for this tenant, silently overwriting a manual admin correction on the
+ * server's own row on every retry, because nothing here ever checked it — DESKTOP's own SQLite FK
+ * constraint only ever caught this on the PULL side (a device other than the one still re-pushing the
+ * bad value), never on push, and Postgres never enforced it either. Checked here instead, same
+ * pattern as NATURAL_KEY_FIELDS above: one small declarative table of ref fields to validate before
+ * the upsert runs. */
+const REQUIRED_REF_FIELDS: Partial<Record<SyncEntityName, Array<{ field: string; delegate: (tx: Prisma.TransactionClient) => unknown }>>> = {
+  stock_movements: [
+    { field: "locationId", delegate: (tx) => tx.location },
+    { field: "productId", delegate: (tx) => tx.product },
+  ],
+};
+
 export type PushRowResult =
   | { id: string; status: "ok" }
   | { id: string; status: "error"; error: string }
@@ -200,6 +217,32 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
         if (parsed.entity === "sales" && data.saleStatus === "pending") {
           results.push({ id, status: "ok" });
           continue;
+        }
+
+        // See REQUIRED_REF_FIELDS above — reject (silently, from the pushing device's point of view)
+        // any row whose ref field points at something that doesn't exist for this tenant, instead of
+        // upserting it and corrupting whatever's currently stored.
+        const requiredRefs = REQUIRED_REF_FIELDS[parsed.entity];
+        if (requiredRefs) {
+          let brokenRef: string | null = null;
+          for (const ref of requiredRefs) {
+            const value = row[ref.field];
+            if (typeof value !== "string") continue; // nullable ref left unset — not this check's concern
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see pushRows' own delegate cast above.
+            const refDelegate = ref.delegate(tx) as any;
+            const exists = await refDelegate.findUnique({ where: { id: value }, select: { id: true } });
+            if (!exists) {
+              brokenRef = `${ref.field}=${value}`;
+              break;
+            }
+          }
+          if (brokenRef) {
+            console.error(
+              `[sync] Rejected ${parsed.entity} row ${id} from device ${parsed.deviceId}: ${brokenRef} does not exist for this tenant.`,
+            );
+            results.push({ id, status: "ok" });
+            continue;
+          }
         }
 
         await delegate.upsert({ where: { id }, create: { id, ...data }, update: data });
