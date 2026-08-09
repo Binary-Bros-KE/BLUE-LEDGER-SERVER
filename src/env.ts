@@ -30,7 +30,13 @@ const envSchema = z.object({
   // server moves.
   PESAPAL_CONSUMER_KEY: z.string().min(1, "PESAPAL_CONSUMER_KEY is required"),
   PESAPAL_CONSUMER_SECRET: z.string().min(1, "PESAPAL_CONSUMER_SECRET is required"),
-  PESAPAL_DEBUG: z.coerce.boolean().default(false),
+  // NOT z.coerce.boolean() — that does a plain JS Boolean(value), so the STRING "false" (truthy,
+  // non-empty) coerces to `true`. Found live: PESAPAL_DEBUG=false was silently routing live
+  // credentials at Pesapal's SANDBOX endpoint, which rejected them outright.
+  PESAPAL_DEBUG: z
+    .string()
+    .default("false")
+    .transform((value) => value.toLowerCase() === "true"),
   // Filled in once, after calling POST /billing-pesapal/admin/register-ipn against this server's own
   // /billing-pesapal/ipn URL (see that route's own comment) — Pesapal requires an IPN be registered
   // and referenced by id on every order, and the id from a DIFFERENT project's IPN URL is useless here.
