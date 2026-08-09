@@ -153,9 +153,9 @@ model Outlet {
   location String?
   notes    String?
 
-  accounts Account[]
-  tenants  Tenant[]
-  plans    Plan[]
+  accounts      Account[]
+  tenants       Tenant[]
+  plans         Plan[]
   mpesaSettings OutletMpesaSettings?
 
   createdAt DateTime @default(now())
@@ -325,6 +325,22 @@ model Subscription {
 
   supportExpiry DateTime?
   supportStatus SupportStatus @default(ACTIVE)
+
+  /// The Pesapal recurring "account_number" this tenant enrolled under (see
+  /// billing-pesapal-service.ts's buildPesapalAccountNumber) — how a future, Pesapal-initiated
+  /// recurring auto-charge (which arrives as an IPN with no corresponding PesapalTransaction row
+  /// already waiting for it) gets traced back to a tenant. Set the first time "Setup Auto Billing" is
+  /// used; @unique because Pesapal requires the account_number itself to be unique per merchant.
+  pesapalAccountNumber          String?   @unique
+  /// Per the product's own documented limitation: there is no way to know a tenant genuinely
+  /// completed Pesapal's own recurring-checkbox flow (it lives entirely on Pesapal's hosted page,
+  /// outside anything we control) until the FIRST recurring-flagged IPN actually lands — this only
+  /// ever flips true from applySuccessfulPesapalPayment, never set optimistically at submit time.
+  pesapalAutoBillingEnabled     Boolean   @default(false)
+  pesapalAutoBillingActivatedAt DateTime?
+  /// Pesapal's own subscription_transaction_info.status string, stored as-received for support/audit
+  /// visibility — never parsed or branched on.
+  pesapalRecurringStatus        String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -505,12 +521,12 @@ model Tenant {
   /// Internal notes for the Blue Ledger team; never shown to the tenant.
   notes String?
 
-  license      License?
-  subscription Subscription?
-  payments     SubscriptionPayment[]
-  devices      Device[]
+  license             License?
+  subscription        Subscription?
+  payments            SubscriptionPayment[]
+  devices             Device[]
   mobileLoginAttempts MobileLoginAttempt[]
-  shareLinks   ShareLink[]
+  shareLinks          ShareLink[]
 
   // Synced business-data entities (Phase 1) — see the sync-model block at the end of this file.
   categories     Category[]
@@ -521,26 +537,27 @@ model Tenant {
   employees      Employee[]
   roles          Role[]
 
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  products          Product[]
-  locations         Location[]
-  sales             Sale[]
-  expenseCategories ExpenseCategory[]
-  expenses          Expense[]
-  salaries          Salary[]
-  recurringBills    RecurringBill[]
-  saleVoids         SaleVoid[]
-  saleReturns       SaleReturn[]
-  quotations        Quotation[]
-  purchases         Purchase[]
-  stockMovements    StockMovement[]
-  stockRequests     StockRequest[]
-  stockReceipts     StockReceipt[]
-  mainStoreAllocations MainStoreAllocation[]
-  mpesaTillSettings    MpesaTillSettings[]
-  mpesaTransactions    MpesaTransaction[]
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  products                 Product[]
+  locations                Location[]
+  sales                    Sale[]
+  expenseCategories        ExpenseCategory[]
+  expenses                 Expense[]
+  salaries                 Salary[]
+  recurringBills           RecurringBill[]
+  saleVoids                SaleVoid[]
+  saleReturns              SaleReturn[]
+  quotations               Quotation[]
+  purchases                Purchase[]
+  stockMovements           StockMovement[]
+  stockRequests            StockRequest[]
+  stockReceipts            StockReceipt[]
+  mainStoreAllocations     MainStoreAllocation[]
+  mpesaTillSettings        MpesaTillSettings[]
+  mpesaTransactions        MpesaTransaction[]
   billingMpesaTransactions BillingMpesaTransaction[]
+  pesapalTransactions      PesapalTransaction[]
 
   @@map("tenants")
 }
@@ -872,53 +889,53 @@ model Location {
   tenant   Tenant @relation(fields: [tenantId], references: [id])
   deviceId String
 
-  locationCode        String
-  locationName        String
-  displayName         String?
-  locationType        String
-  phone               String?
-  alternativePhone    String?
-  email               String?
-  country             String?
-  county              String?
-  city                String?
-  physicalAddress     String?
-  buildingName        String?
-  floorRoom           String?
-  postalAddress       String?
-  latitude            Float?
-  longitude           Float?
-  googleMapsLink      String?
-  managerName         String?
-  managerPhone        String?
-  managerEmail        String?
-  openingTime         String?
-  closingTime         String?
-  workingDays         String?
-  defaultTaxRate      Float?
-  allowNegativeStock  Boolean
-  priceLevel          String?
-  isInventoryLocation Boolean
-  canReceiveStock     Boolean
-  canSellStock        Boolean
-  canTransferStock    Boolean
-  status              String
-  description         String?
-  notes               String?
-  receiptHeader       String?
-  receiptFooter       String?
+  locationCode                  String
+  locationName                  String
+  displayName                   String?
+  locationType                  String
+  phone                         String?
+  alternativePhone              String?
+  email                         String?
+  country                       String?
+  county                        String?
+  city                          String?
+  physicalAddress               String?
+  buildingName                  String?
+  floorRoom                     String?
+  postalAddress                 String?
+  latitude                      Float?
+  longitude                     Float?
+  googleMapsLink                String?
+  managerName                   String?
+  managerPhone                  String?
+  managerEmail                  String?
+  openingTime                   String?
+  closingTime                   String?
+  workingDays                   String?
+  defaultTaxRate                Float?
+  allowNegativeStock            Boolean
+  priceLevel                    String?
+  isInventoryLocation           Boolean
+  canReceiveStock               Boolean
+  canSellStock                  Boolean
+  canTransferStock              Boolean
+  status                        String
+  description                   String?
+  notes                         String?
+  receiptHeader                 String?
+  receiptFooter                 String?
   /// Invoices/quotations used to just borrow receiptHeader/receiptFooter (and had no header of
   /// their own at all) — these give each document type its own, same per-storefront-overrides
   /// pattern as the receipt pair above. showProductImagesOn* only ever affects DESKTOP's own
   /// downloaded/printed PDF (see that column's own doc comment in DESKTOP's location.ts) — synced
   /// here purely so every device sharing this storefront sees the same toggle, never read by
   /// share-service.ts/document-html.ts (product images are local-file-only, can't reach this DB).
-  invoiceHeader                   String?
-  invoiceFooter                   String?
-  quotationHeader                 String?
-  quotationFooter                 String?
-  showProductImagesOnInvoices     Boolean @default(false)
-  showProductImagesOnQuotations   Boolean @default(false)
+  invoiceHeader                 String?
+  invoiceFooter                 String?
+  quotationHeader               String?
+  quotationFooter               String?
+  showProductImagesOnInvoices   Boolean @default(false)
+  showProductImagesOnQuotations Boolean @default(false)
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
@@ -1310,13 +1327,13 @@ model StockReceipt {
   deviceId String
 
   receiptNumber          String
-  locationId              String
+  locationId             String
   allocationStorefrontId String?
-  receivedBy              String
-  notes                   String?
+  receivedBy             String
+  notes                  String?
   /// stock_receipt_items rows — {id, productId, quantityReceived, previousQuantity, newQuantity,
   /// createdAt}[]. Never independently edited after creation, so a plain replace-all on pull is safe.
-  items                   Json
+  items                  Json
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
@@ -1369,9 +1386,9 @@ model MainStoreAllocation {
 /// in the same request, never handed back to DESKTOP at all. Confirmed with the user directly —
 /// this was a real security tradeoff, not an assumption.
 model MpesaTillSettings {
-  id       String @id @default(uuid())
-  tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  id         String @id @default(uuid())
+  tenantId   String
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
   /// Opaque reference to the tenant's own `locations` row, same "no cross-entity Prisma relation"
   /// convention as every other synced-business-entity reference in this schema (e.g. Sale.locationId).
   locationId String @unique
@@ -1381,16 +1398,16 @@ model MpesaTillSettings {
   /// mpesa-client.ts, never configured per-tenant (they never change).
   environment String @default("sandbox")
 
-  consumerKey    String
-  consumerSecret String
-  passkey        String
+  consumerKey      String
+  consumerSecret   String
+  passkey          String
   /// BusinessShortCode — the value the STK password is built from and sent as the top-level
   /// request field. For many Till setups this is IDENTICAL to tillNumber below, but Safaricom does
   /// not guarantee that for every merchant account type, so the two are kept as separate fields
   /// rather than assumed equal.
-  shortcode String
+  shortcode        String
   /// PartyB — the actual Till Number the customer's payment posts to.
-  tillNumber String
+  tillNumber       String
   /// STK's own "AccountReference" field, shown to the customer on their phone (e.g. the business
   /// name) — optional, sensible default applied at push time if left blank.
   accountReference String @default("")
@@ -1416,9 +1433,9 @@ model MpesaTillSettings {
 /// opaque id) must be able to look this row up BEFORE any tenant context is known. Isolation is
 /// enforced by an explicit tenantId-match check in mpesa-service.ts after the lookup instead.
 model MpesaTransaction {
-  id       String @id @default(uuid())
-  tenantId String
-  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  id         String @id @default(uuid())
+  tenantId   String
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
   locationId String
 
   merchantRequestId String
@@ -1503,4 +1520,56 @@ model BillingMpesaTransaction {
   @@index([tenantId])
   @@index([checkoutRequestId])
   @@map("billing_mpesa_transactions")
+}
+
+/// Same role as BillingMpesaTransaction (a tenant paying Blue Ledger for their OWN subscription) but
+/// for Pesapal (Card/PayPal) — a hosted-checkout redirect flow instead of a phone-prompt push, so the
+/// tracked fields differ slightly (orderTrackingId instead of checkoutRequestId, no phone) but the
+/// role is identical: created "pending" at order-submit time, flipped by the IPN handler (or a manual
+/// status check), and `periods` is fixed at submit time for the same reason documented on
+/// BillingMpesaTransaction — the callback must apply exactly what was pushed, not whatever
+/// nextDueDate happens to be by the time it arrives.
+///
+/// Deliberately NOT RLS-protected — same reasoning as BillingMpesaTransaction: Pesapal's IPN carries
+/// no tenantId, only this row's own orderTrackingId (or, for a recurring auto-charge Pesapal
+/// initiates on its own schedule, the account_number — see Subscription.pesapalAccountNumber),  so
+/// the IPN handler needs a tenant-blind first lookup. Isolation is the same explicit tenantId-match
+/// check after the lookup instead.
+model PesapalTransaction {
+  id       String @id @default(uuid())
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  orderTrackingId   String @unique
+  merchantReference String
+
+  amountCents Int
+  /// billingPeriod keys this order covers, in order — see BillingMpesaTransaction.periods.
+  periods     String[]
+
+  /// pending | success | failed | reversed | invalid — Pesapal's own status_code vocabulary, mapped
+  /// via mapPesapalStatus (pesapal-client.ts) so every caller agrees on wording.
+  status String @default("pending")
+
+  /// Pesapal's own reported payment_method string (e.g. "Visa", "Mastercard", "PayPal") — display
+  /// only, never used for branching logic (Card and PayPal share this exact model/flow).
+  paymentMethodDetail String?
+  confirmationCode    String?
+
+  /// True if this specific order was submitted with account_number + subscription_details (the
+  /// "Setup Auto Billing" flow) — NOT the same as the recurring auto-charges that follow, which never
+  /// have their own row created at submit time (see handlePesapalIPN's account_number fallback path).
+  isRecurringSetup Boolean @default(false)
+
+  initiatedByDeviceId String?
+
+  /// Throttles the manual "Check Status Now" action, same as BillingMpesaTransaction.lastQueriedAt.
+  lastQueriedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([orderTrackingId])
+  @@map("pesapal_transactions")
 }

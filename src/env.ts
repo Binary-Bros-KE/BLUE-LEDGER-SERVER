@@ -23,6 +23,18 @@ const envSchema = z.object({
   // served as plain static files (see app.ts), which is all electron-updater's "generic" provider
   // needs. Relative paths resolve against SERVER's own working directory.
   RELEASES_DIR: z.string().min(1).default("./releases"),
+  // Pesapal (Card/PayPal) platform-billing credentials — one shared Blue Ledger merchant account,
+  // unlike M-Pesa's per-Outlet OutletMpesaSettings, so these live here rather than in the DB. The
+  // IPN/callback URLs are deliberately NOT separate env vars — both are built from SERVER_PUBLIC_URL
+  // above, same as the M-Pesa callback URL, so there's one less thing to keep in sync when the
+  // server moves.
+  PESAPAL_CONSUMER_KEY: z.string().min(1, "PESAPAL_CONSUMER_KEY is required"),
+  PESAPAL_CONSUMER_SECRET: z.string().min(1, "PESAPAL_CONSUMER_SECRET is required"),
+  PESAPAL_DEBUG: z.coerce.boolean().default(false),
+  // Filled in once, after calling POST /billing-pesapal/admin/register-ipn against this server's own
+  // /billing-pesapal/ipn URL (see that route's own comment) — Pesapal requires an IPN be registered
+  // and referenced by id on every order, and the id from a DIFFERENT project's IPN URL is useless here.
+  PESAPAL_IPN_ID: z.string().min(1, "PESAPAL_IPN_ID is required — see billing-pesapal.ts's register-ipn route"),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -326,6 +326,12 @@ export type PaymentScheduleResult = {
   currency: string;
   periods: BillingPeriodEntry[];
   nextDueDate: string | null;
+  /** Per billing-pesapal-service.ts's own documented limitation: only ever true once the FIRST
+   * recurring-flagged Pesapal IPN has actually landed — there is no way to know a tenant genuinely
+   * completed Pesapal's own recurring checkbox before that. Powers PaymentsRoute.tsx's "Auto-Billing
+   * Active" badge. */
+  pesapalAutoBillingEnabled: boolean;
+  pesapalAutoBillingActivatedAt: string | null;
 };
 
 /** Powers both DESKTOP's own port of the admin dashboard's "Jan ✅ Feb ✅ Mar ❌" PaymentCalendar
@@ -344,7 +350,15 @@ export async function getPaymentSchedule(input: unknown): Promise<PaymentSchedul
 
   const subscription = license.tenant.subscription;
   if (!subscription) {
-    return { billingCycle: "ONCE", pricePerPeriodCents: null, currency: license.tenant.currency, periods: [], nextDueDate: null };
+    return {
+      billingCycle: "ONCE",
+      pricePerPeriodCents: null,
+      currency: license.tenant.currency,
+      periods: [],
+      nextDueDate: null,
+      pesapalAutoBillingEnabled: false,
+      pesapalAutoBillingActivatedAt: null,
+    };
   }
 
   const paidPayments = await prisma.subscriptionPayment.findMany({
@@ -368,5 +382,7 @@ export async function getPaymentSchedule(input: unknown): Promise<PaymentSchedul
     currency: license.tenant.currency,
     periods,
     nextDueDate: subscription.nextDueDate?.toISOString() ?? null,
+    pesapalAutoBillingEnabled: subscription.pesapalAutoBillingEnabled,
+    pesapalAutoBillingActivatedAt: subscription.pesapalAutoBillingActivatedAt?.toISOString() ?? null,
   };
 }

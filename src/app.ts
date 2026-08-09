@@ -10,6 +10,7 @@ import { accountsRouter } from "./routes/accounts.js";
 import { activationRouter } from "./routes/activation.js";
 import { authRouter } from "./routes/auth.js";
 import { billingMpesaRouter } from "./routes/billing-mpesa.js";
+import { billingPesapalRouter } from "./routes/billing-pesapal.js";
 import { mobileRouter } from "./routes/mobile.js";
 import { mpesaRouter } from "./routes/mpesa.js";
 import { outletsRouter } from "./routes/outlets.js";
@@ -159,6 +160,7 @@ app.use("/mobile", mobileRouter);
 app.use("/share", shareRouter);
 app.use("/mpesa", mpesaRouter);
 app.use("/billing-mpesa", billingMpesaRouter);
+app.use("/billing-pesapal", billingPesapalRouter);
 
 // Must be registered last — Express only treats a 4-arg function as an error handler.
 app.use(errorHandler);
