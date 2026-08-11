@@ -55,12 +55,119 @@ function buildTaxBreakdownHtml(
     </table>`;
 }
 
+/** Shared by buildReceiptDocumentHtml/buildInvoiceDocumentHtml/buildQuotationDocumentHtml — mirrors
+ * DESKTOP's own LETTERHEAD_STYLES constant (printer-service.ts) byte-for-byte; kept in sync by hand,
+ * no code sharing is possible across the Electron-main/Express runtime boundary. See that constant's
+ * own doc comment for why `.items-frame`'s min-height/spacer/margin-top:auto combination exists (the
+ * field-reported "the bordered box should fill the page even with one item" request) and why it's
+ * 500px, not the originally-tuned 640px (that overflowed onto a 2nd page once "Payments Made" + "Tax
+ * Breakdown" — both rendered below this frame — pushed total page height past A4 on a real invoice;
+ * 500px was verified against that same real scenario — 7 items + both extra tables — and fits one
+ * page with a comfortable margin).
+ * `.bill-to`/`.doc-vat`/`.payment-terms`/`table.meta-table` are the same extraction-from-`.meta` DESKTOP's
+ * comment describes.
+ *
+ * `.items-frame`'s flex/min-height treatment is applied CONDITIONALLY via a `.fill-page` modifier
+ * class — see DESKTOP's own doc comment for the full story: Electron's printToPDF cannot reliably
+ * fragment a flex container across more than one physical page (it silently drops content beyond
+ * where it gives up), so a document whose item table genuinely needs 2+ pages must stay a plain
+ * block/border, not flex. pdf-service.ts's renderHtmlToPdf toggles the class the same way
+ * renderHtmlToPdfBuffer does on DESKTOP (measure the frame's natural height, add `.fill-page` only if
+ * it's already under 500px) — this SERVER path renders via Puppeteer's own CDP printToPDF, which
+ * fragments flex containers correctly even unconditionally (verified), but the toggle is applied here
+ * too anyway so both copies of this template stay behaviorally identical, not just visually. */
+const LETTERHEAD_STYLES = `
+  * { box-sizing: border-box; }
+  /* Every border in this file is the same 1.5px/#d1d5db — see DESKTOP's own copy for why: a thinner
+     hairline risked landing on a fractional pixel once rasterized, visibly thinning out (confirmed
+     live on a table's own outer right edge) at some zoom levels while other edges stayed crisp — a
+     real anti-aliasing artifact of sub-pixel border position, so it'd show up printed too. */
+  /* No body padding — see DESKTOP's own copy for why: edge whitespace now comes entirely from
+     renderHtmlToPdf's real print margins (all four sides), not CSS padding, since CSS padding on a
+     box that fragments across a physical page break isn't guaranteed to keep providing left/right
+     whitespace on continuation pages. */
+  body { font-family: Arial, Helvetica, sans-serif; color: #1c1710; margin: 0; padding: 0; font-size: 12px; }
+  /* max-width was 720px — see DESKTOP's own copy for why 700px: at 720px there was zero slack
+     against the ~717px actually available once the 0.4in print margins are subtracted, so the
+     rightmost border landed right at (very slightly past) the page's own edge and got clipped. */
+  .sheet { max-width: 700px; margin: 0 auto; }
+  .header { border-bottom: 1.5px solid #d1d5db; }
+  .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+  .logo { display: block; height: auto; max-height: 60px; width: auto; max-width: 200px; object-fit: contain; margin-bottom: 6px; }
+  .business-name { font-size: 19px; font-weight: bold; color: #1c1710; margin: 0; }
+  .muted { color: #555; font-size: 11px; }
+  .invoice-title, .doc-title { font-size: 27px; font-weight: bold; text-align: right; color: #1c1710; margin: 0; letter-spacing: 1.5px; }
+  .badge { display: inline-block; margin-top: 6px; padding: 3px 10px; border-radius: 999px; font-size: 10px; font-weight: bold; text-transform: uppercase; background: #f1ede1; color: #1c1710; }
+
+  /* Sits inside .header, below .header-row but ABOVE the header's own border-bottom rule — see
+     DESKTOP's own copy for why margin-bottom is small (3px) rather than matching the 14px gap above. */
+  .doc-vat { margin: 10px 0 3px; font-size: 10px; font-style: italic; color: #555; }
+  .bill-to { margin-top: 12px; }
+  .bill-to .label { font-size: 9px; text-transform: uppercase; color: #83795f; font-weight: bold; }
+  .bill-to .name { font-size: 13px; font-weight: bold; margin: 2px 0 0; }
+
+  table.meta-table { width: 100%; border-collapse: collapse; margin-top: 8px; border: 1.5px solid #d1d5db; }
+  table.meta-table th { background: #f0f0f0; color: #1c1710; text-transform: uppercase; font-size: 9px; font-weight: bold; padding: 6px 8px; text-align: left; border-bottom: 1.5px solid #d1d5db; }
+  table.meta-table th + th, table.meta-table td + td { border-left: 1.5px solid #d1d5db; }
+  table.meta-table td { padding: 6px 8px; font-size: 11px; font-weight: 600; }
+  .payment-terms { margin-top: 8px; font-size: 10.5px; font-style: italic; color: #555; }
+
+  /* box-decoration-break: clone — see DESKTOP's own copy for why: without it, a bordered box that
+     fragments across a page break only shows its border at the very start/end of the whole box, not
+     on each individual page fragment, making it look cut open instead of continuing cleanly. */
+  .items-frame { border: 1.5px solid #d1d5db; margin-top: 12px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .items-frame.fill-page { display: flex; flex-direction: column; min-height: 500px; }
+  table.items-table { width: 100%; border-collapse: collapse; }
+  table.items-table th { text-align: left; font-size: 10px; text-transform: uppercase; font-weight: bold; padding: 7px 8px; border-bottom: 1.5px solid #d1d5db; background: #f0f0f0; }
+  table.items-table th + th, table.items-table td + td { border-left: 1.5px solid #d1d5db; }
+  table.items-table td { padding: 7px 8px; vertical-align: top; font-size: 11px; border-bottom: 1.5px solid #d1d5db; }
+  .items-spacer { flex: 1 1 auto; }
+  .center { text-align: center; }
+  .right { text-align: right; white-space: nowrap; }
+
+  table.totals-table { width: 100%; border-collapse: collapse; margin-top: auto; border-top: 1.5px solid #d1d5db; }
+  table.totals-table td { padding: 5px 8px; font-size: 11px; }
+  table.totals-table td:first-child { text-align: left; font-weight: bold; width: 70%; }
+  table.totals-table td:last-child { text-align: right; }
+  table.totals-table tr.grand td { font-weight: bold; font-size: 13px; border-top: 1.5px solid #d1d5db; }
+  table.totals-table tr.balance td { font-weight: bold; font-size: 13px; color: #ad3a29; }
+
+  .tax-breakdown-title { margin-top: 16px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
+  table.tax-breakdown { width: 100%; border-collapse: collapse; margin-top: 6px; border: 1.5px solid #d1d5db; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  table.tax-breakdown th { font-size: 10px; text-transform: uppercase; font-weight: bold; padding: 6px 8px; border-bottom: 1.5px solid #d1d5db; background: #f0f0f0; text-align: left; }
+  table.tax-breakdown th + th, table.tax-breakdown td + td { border-left: 1.5px solid #d1d5db; }
+  table.tax-breakdown td { padding: 5px 8px; font-size: 11px; }
+
+  .payment { margin-top: 16px; }
+  .payment p { margin: 2px 0; }
+  .notes { margin-top: 16px; padding: 10px 12px; background: #f1ede1; border-radius: 4px; }
+  .terms { margin-top: 14px; font-size: 11px; color: #666; }
+  .signatures { display: flex; gap: 40px; margin-top: 48px; }
+  .signature { flex: 1; }
+  .signature .line { border-top: 1.5px solid #d1d5db; margin-top: 40px; padding-top: 4px; font-size: 11px; color: #83795f; }
+  .footer { margin-top: 20px; text-align: center; color: #83795f; font-size: 11px; }
+  .item-cell { display: flex; align-items: center; gap: 8px; }
+  .item-thumb { width: 96px; height: 96px; object-fit: contain; border-radius: 4px; flex: none; background: #f1ede1; }
+`;
+
 function formatDate(value: string | null): string {
   return formatDocumentDate(value);
 }
 
 function formatDateTime(value: string): string {
   return formatDocumentDateTime(value);
+}
+
+/** Mirrors DESKTOP's printer-service.ts daysBetween — whole days between two ISO dates, rounded,
+ * used for the computed "Payment Terms: Payment due within N days" / "Quotation expires within N
+ * days" line. Null (skip the line) if either date is missing. */
+function daysBetween(startIso: string | null, endIso: string | null): number | null {
+  if (!startIso || !endIso) return null;
+  const diffMs = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (!Number.isFinite(diffMs)) return null;
+  // Clamped at 0 — see DESKTOP's own printer-service.ts daysBetween for why (same-day due dates can
+  // round to -1 from time-of-day noise alone).
+  return Math.max(0, Math.round(diffMs / (1000 * 60 * 60 * 24)));
 }
 
 const PAYMENT_STATUS_LABEL: Record<string, string> = {
@@ -78,14 +185,6 @@ const QUOTATION_STATUS_LABEL: Record<string, string> = {
   rejected: "Rejected",
   expired: "Expired",
   converted: "Converted",
-};
-
-const TRANSACTION_TYPE_LABEL: Record<string, string> = {
-  retail_sale: "Retail Sale",
-  wholesale_sale: "Wholesale Sale",
-  invoice: "Invoice",
-  return: "Return",
-  exchange: "Exchange",
 };
 
 /** Used for BOTH the HTML <title> (so a browser's own "Save as PDF" dialog suggests a sensible
@@ -150,83 +249,59 @@ function buildReceiptDocumentHtml(doc: SharedDocumentResult): string {
 <head>
 <meta charset="utf-8" />
 <title>${escapeHtml(documentFilenameBase(doc))}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: Arial, Helvetica, sans-serif; color: #1c1710; margin: 0; padding: 48px; font-size: 13px; }
-  .sheet { max-width: 720px; margin: 0 auto; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #061e64; padding-bottom: 16px; }
-  .business-name { font-size: 20px; font-weight: bold; color: #061e64; margin: 0; }
-  .muted { color: #666; font-size: 11px; }
-  .invoice-title { font-size: 26px; font-weight: bold; text-align: right; color: #061e64; margin: 0; letter-spacing: 1px; }
-  .meta { display: flex; justify-content: space-between; margin-top: 20px; gap: 24px; }
-  .meta-block p { margin: 2px 0; }
-  .meta-block .label { font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; font-size: 10px; text-transform: uppercase; color: #83795f; border-bottom: 2px solid #ddd5c2; padding: 6px 4px; }
-  td { padding: 8px 4px; border-bottom: 1px solid #eee; vertical-align: top; }
-  .center { text-align: center; }
-  .right { text-align: right; white-space: nowrap; }
-  .totals { width: 260px; margin-left: auto; margin-top: 16px; }
-  .totals td { border-bottom: none; padding: 3px 4px; }
-  .totals .grand td { font-size: 15px; font-weight: bold; border-top: 2px solid #061e64; padding-top: 8px; }
-  .payment { margin-top: 20px; }
-  .payment p { margin: 2px 0; }
-  .footer { margin-top: 32px; text-align: center; color: #83795f; font-size: 11px; }
-  .tax-breakdown-title { margin-top: 20px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table.tax-breakdown { margin-top: 6px; }
-  table.tax-breakdown th, table.tax-breakdown td { font-size: 12px; }
-</style>
+<style>${LETTERHEAD_STYLES}</style>
 </head>
 <body>
   <div class="sheet">
     <div class="header">
-      <div>
-        <p class="business-name">${escapeHtml(doc.businessName)}</p>
-        ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
-        ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
-        ${doc.receiptHeader ? `<p class="muted">${escapeHtml(doc.receiptHeader)}</p>` : ""}
-      </div>
-      <div>
-        <p class="invoice-title">RECEIPT</p>
-        <p class="muted" style="text-align:right;">${escapeHtml(doc.documentNumber ?? "-")}</p>
-      </div>
-    </div>
-
-    <div class="meta">
-      <div class="meta-block">
-        <p class="label">Sold To</p>
-        <p><strong>${escapeHtml(doc.customerName ?? "Walk-in Customer")}</strong></p>
-      </div>
-      <div class="meta-block">
-        <p class="label">Date</p>
-        <p>${formatDateTime(doc.dateLabel)}</p>
-      </div>
-      <div class="meta-block">
-        <p class="label">Storefront</p>
-        <p>${escapeHtml(doc.branchName)}</p>
-        <p class="label" style="margin-top:10px;">Served By</p>
-        <p>${escapeHtml(doc.employeeName)}</p>
+      <div class="header-row">
+        <div>
+          <p class="business-name">${escapeHtml(doc.businessName)}</p>
+          ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
+          ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
+          ${doc.receiptHeader ? `<p class="muted">${escapeHtml(doc.receiptHeader)}</p>` : ""}
+        </div>
+        <div>
+          <p class="invoice-title">RECEIPT</p>
+          <p class="muted" style="text-align:right;">${escapeHtml(doc.documentNumber ?? "-")}</p>
+        </div>
       </div>
     </div>
 
-    <table>
+    <div class="bill-to">
+      <p class="label">Sold To</p>
+      <p class="name">${escapeHtml(doc.customerName ?? "Walk-in Customer")}</p>
+    </div>
+
+    <table class="meta-table">
       <thead>
-        <tr>
-          <th>#</th>
-          <th>Product</th>
-          <th class="center">Qty</th>
-          <th class="right">Unit Price</th>
-          <th class="right">Line Total</th>
-        </tr>
+        <tr><th>Date</th><th>Served By</th></tr>
       </thead>
-      <tbody>${itemRows}</tbody>
+      <tbody>
+        <tr><td>${formatDateTime(doc.dateLabel)}</td><td>${escapeHtml(doc.employeeName)}</td></tr>
+      </tbody>
     </table>
 
-    <table class="totals">
-      <tr><td>Subtotal</td><td class="right">${money(doc.subtotalCents)}</td></tr>
-      ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td class="right">-${money(doc.discountAmountCents)}</td></tr>` : ""}
-      <tr class="grand"><td>Total</td><td class="right">${money(doc.grandTotalCents)}</td></tr>
-    </table>
+    <div class="items-frame">
+      <table class="items-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Product</th>
+            <th class="center">Qty</th>
+            <th class="right">Unit Price</th>
+            <th class="right">Line Total</th>
+          </tr>
+        </thead>
+        <tbody>${itemRows}</tbody>
+      </table>
+      <div class="items-spacer"></div>
+      <table class="totals-table">
+        <tr><td>Subtotal</td><td>${money(doc.subtotalCents)}</td></tr>
+        ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td>-${money(doc.discountAmountCents)}</td></tr>` : ""}
+        <tr class="grand"><td>Total</td><td>${money(doc.grandTotalCents)}</td></tr>
+      </table>
+    </div>
 
     ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
 
@@ -302,96 +377,80 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
 <head>
 <meta charset="utf-8" />
 <title>${escapeHtml(documentFilenameBase(doc))}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: Arial, Helvetica, sans-serif; color: #1c1710; margin: 0; padding: 48px; font-size: 13px; }
-  .sheet { max-width: 720px; margin: 0 auto; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #061e64; padding-bottom: 16px; }
-  .business-name { font-size: 20px; font-weight: bold; color: #061e64; margin: 0; }
-  .muted { color: #666; font-size: 11px; }
-  .invoice-title { font-size: 26px; font-weight: bold; text-align: right; color: #061e64; margin: 0; letter-spacing: 1px; }
-  .badge { display: inline-block; margin-top: 6px; padding: 3px 10px; border-radius: 999px; font-size: 10px; font-weight: bold; text-transform: uppercase; background: #f1ede1; color: #1c1710; }
-  .meta { display: flex; justify-content: space-between; margin-top: 20px; gap: 24px; }
-  .meta-block p { margin: 2px 0; }
-  .meta-block .label { font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; font-size: 10px; text-transform: uppercase; color: #83795f; border-bottom: 2px solid #ddd5c2; padding: 6px 4px; }
-  td { padding: 8px 4px; border-bottom: 1px solid #eee; vertical-align: top; }
-  .center { text-align: center; }
-  .right { text-align: right; white-space: nowrap; }
-  .totals { width: 260px; margin-left: auto; margin-top: 16px; }
-  .totals td { border-bottom: none; padding: 3px 4px; }
-  .totals .grand td { font-size: 15px; font-weight: bold; border-top: 2px solid #061e64; padding-top: 8px; }
-  .totals .balance td { font-size: 15px; font-weight: bold; color: #ad3a29; }
-  .notes { margin-top: 24px; padding: 12px; background: #f1ede1; border-radius: 8px; }
-  .footer { margin-top: 32px; text-align: center; color: #83795f; font-size: 11px; }
-  .tax-breakdown-title { margin-top: 20px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table.tax-breakdown { margin-top: 6px; }
-  table.tax-breakdown th, table.tax-breakdown td { font-size: 12px; }
-</style>
+<style>${LETTERHEAD_STYLES}</style>
 </head>
 <body>
   <div class="sheet">
     <div class="header">
-      <div>
-        <p class="business-name">${escapeHtml(doc.businessName)}</p>
-        ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
-        ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
+      <div class="header-row">
+        <div>
+          <p class="business-name">${escapeHtml(doc.businessName)}</p>
+          ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
+          ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
+        </div>
+        <div>
+          <p class="invoice-title">INVOICE</p>
+          <p class="muted" style="text-align:right;">${escapeHtml(doc.documentNumber ?? "-")}</p>
+          <div style="text-align:right;"><span class="badge">${escapeHtml(PAYMENT_STATUS_LABEL[doc.paymentStatus ?? ""] ?? doc.paymentStatus ?? "-")}</span></div>
+        </div>
       </div>
-      <div>
-        <p class="invoice-title">INVOICE</p>
-        <p class="muted" style="text-align:right;">${escapeHtml(doc.documentNumber ?? "-")}</p>
-        <div style="text-align:right;"><span class="badge">${escapeHtml(PAYMENT_STATUS_LABEL[doc.paymentStatus ?? ""] ?? doc.paymentStatus ?? "-")}</span></div>
-      </div>
+      ${doc.businessKraPin ? `<p class="doc-vat">Our VAT No. ${escapeHtml(doc.businessKraPin)}</p>` : ""}
     </div>
 
-    <div class="meta">
-      <div class="meta-block">
-        <p class="label">Bill To</p>
-        <p><strong>${escapeHtml(doc.customerName ?? "Walk-in Customer")}</strong></p>
-        <p class="label" style="margin-top:10px;">Transaction Type</p>
-        <p>${escapeHtml(TRANSACTION_TYPE_LABEL[doc.transactionType ?? ""] ?? doc.transactionType ?? "-")}</p>
-      </div>
-      <div class="meta-block">
-        <p class="label">Invoice Date</p>
-        <p>${formatDate(doc.dateLabel)}</p>
-        <p class="label" style="margin-top:10px;">Due Date</p>
-        <p>${formatDate(doc.dueDate)}</p>
-      </div>
-      <div class="meta-block">
-        <p class="label">Storefront</p>
-        <p>${escapeHtml(doc.branchName)}</p>
-        <p class="label" style="margin-top:10px;">Issued By</p>
-        <p>${escapeHtml(doc.employeeName)}</p>
-      </div>
+    <div class="bill-to">
+      <p class="label">Billed To:</p>
+      <p class="name">${escapeHtml(doc.customerName ?? "Walk-in Customer")}</p>
     </div>
 
-    <table>
+    <table class="meta-table">
       <thead>
-        <tr>
-          <th>#</th>
-          <th>Product</th>
-          <th class="center">Qty</th>
-          <th class="right">Unit Price</th>
-          <th class="right">Discount</th>
-          <th class="right">Line Total</th>
-        </tr>
+        <tr><th>Invoice Date</th><th>Due Date</th><th>Issued By</th><th>Your VAT No.</th></tr>
       </thead>
-      <tbody>${itemRows}</tbody>
+      <tbody>
+        <tr>
+          <td>${formatDate(doc.dateLabel)}</td>
+          <td>${formatDate(doc.dueDate)}</td>
+          <td>${escapeHtml(doc.employeeName)}</td>
+          <td>${escapeHtml(doc.customerKraPin ?? "-")}</td>
+        </tr>
+      </tbody>
     </table>
 
-    <table class="totals">
-      <tr><td>Subtotal</td><td class="right">${money(doc.subtotalCents)}</td></tr>
-      ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td class="right">-${money(doc.discountAmountCents)}</td></tr>` : ""}
-      <tr class="grand"><td>Total</td><td class="right">${money(doc.grandTotalCents)}</td></tr>
-      <tr><td>Amount Paid</td><td class="right">${money(doc.grandTotalCents !== null && doc.balanceDueCents !== null ? doc.grandTotalCents - doc.balanceDueCents : null)}</td></tr>
-      <tr class="balance"><td>Balance Due</td><td class="right">${money(doc.balanceDueCents)}</td></tr>
-    </table>
+    ${
+      (() => {
+        const days = daysBetween(doc.dateLabel, doc.dueDate);
+        return days === null ? "" : `<p class="payment-terms">Payment Terms: Payment due within ${days} day${days === 1 ? "" : "s"}</p>`;
+      })()
+    }
+
+    <div class="items-frame">
+      <table class="items-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Product</th>
+            <th class="center">Qty</th>
+            <th class="right">Unit Price</th>
+            <th class="right">Discount</th>
+            <th class="right">Line Total</th>
+          </tr>
+        </thead>
+        <tbody>${itemRows}</tbody>
+      </table>
+      <div class="items-spacer"></div>
+      <table class="totals-table">
+        <tr><td>Subtotal</td><td>${money(doc.subtotalCents)}</td></tr>
+        ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td>-${money(doc.discountAmountCents)}</td></tr>` : ""}
+        <tr class="grand"><td>Total</td><td>${money(doc.grandTotalCents)}</td></tr>
+        <tr><td>Amount Paid</td><td>${money(doc.grandTotalCents !== null && doc.balanceDueCents !== null ? doc.grandTotalCents - doc.balanceDueCents : null)}</td></tr>
+        <tr class="balance"><td>Balance Due</td><td>${money(doc.balanceDueCents)}</td></tr>
+      </table>
+    </div>
 
     ${
       doc.payments.length > 0
         ? `<p class="tax-breakdown-title">Payments Made</p>
-    <table>
+    <table class="tax-breakdown">
       <thead>
         <tr><th>Date</th><th>Method</th><th>Reference</th><th>Received By</th><th class="right">Amount</th></tr>
       </thead>
@@ -419,90 +478,71 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
 <head>
 <meta charset="utf-8" />
 <title>${escapeHtml(documentFilenameBase(doc))}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: Arial, Helvetica, sans-serif; color: #1c1710; margin: 0; padding: 48px; font-size: 13px; }
-  .sheet { max-width: 720px; margin: 0 auto; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #061e64; padding-bottom: 16px; }
-  .business-name { font-size: 20px; font-weight: bold; color: #061e64; margin: 0; }
-  .muted { color: #666; font-size: 11px; }
-  .doc-title { font-size: 26px; font-weight: bold; text-align: right; color: #061e64; margin: 0; letter-spacing: 1px; }
-  .badge { display: inline-block; margin-top: 6px; padding: 3px 10px; border-radius: 999px; font-size: 10px; font-weight: bold; text-transform: uppercase; background: #f1ede1; color: #1c1710; }
-  .meta { display: flex; justify-content: space-between; margin-top: 20px; gap: 24px; }
-  .meta-block p { margin: 2px 0; }
-  .meta-block .label { font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; font-size: 10px; text-transform: uppercase; color: #83795f; border-bottom: 2px solid #ddd5c2; padding: 6px 4px; }
-  td { padding: 8px 4px; border-bottom: 1px solid #eee; vertical-align: top; }
-  .center { text-align: center; }
-  .right { text-align: right; white-space: nowrap; }
-  .totals { width: 260px; margin-left: auto; margin-top: 16px; }
-  .totals td { border-bottom: none; padding: 3px 4px; }
-  .totals .grand td { font-size: 15px; font-weight: bold; border-top: 2px solid #061e64; padding-top: 8px; }
-  .notes { margin-top: 24px; padding: 12px; background: #f1ede1; border-radius: 8px; }
-  .terms { margin-top: 16px; font-size: 11px; color: #666; }
-  .signatures { display: flex; gap: 40px; margin-top: 56px; }
-  .signature { flex: 1; }
-  .signature .line { border-top: 1px solid #999; margin-top: 40px; padding-top: 4px; font-size: 11px; color: #83795f; }
-  .footer { margin-top: 32px; text-align: center; color: #83795f; font-size: 11px; }
-  .tax-breakdown-title { margin-top: 20px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table.tax-breakdown { margin-top: 6px; }
-  table.tax-breakdown th, table.tax-breakdown td { font-size: 12px; }
-</style>
+<style>${LETTERHEAD_STYLES}</style>
 </head>
 <body>
   <div class="sheet">
     <div class="header">
-      <div>
-        <p class="business-name">${escapeHtml(doc.businessName)}</p>
-        ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
-        ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
-      </div>
-      <div>
-        <p class="doc-title">QUOTATION</p>
-        <p class="muted" style="text-align:right;">${escapeHtml(doc.documentNumber ?? "-")}</p>
-        <div style="text-align:right;"><span class="badge">${escapeHtml(QUOTATION_STATUS_LABEL[doc.quotationStatus ?? ""] ?? doc.quotationStatus ?? "-")}</span></div>
-      </div>
-    </div>
-
-    <div class="meta">
-      <div class="meta-block">
-        <p class="label">Quoted To</p>
-        <p><strong>${escapeHtml(doc.customerName ?? "-")}</strong></p>
-      </div>
-      <div class="meta-block">
-        <p class="label">Date Prepared</p>
-        <p>${formatDate(doc.dateLabel)}</p>
-        <p class="label" style="margin-top:10px;">Valid Until</p>
-        <p>${formatDate(doc.validUntil)}</p>
-      </div>
-      <div class="meta-block">
-        <p class="label">Storefront</p>
-        <p>${escapeHtml(doc.branchName)}</p>
-        <p class="label" style="margin-top:10px;">Prepared By</p>
-        <p>${escapeHtml(doc.employeeName)}</p>
+      <div class="header-row">
+        <div>
+          <p class="business-name">${escapeHtml(doc.businessName)}</p>
+          ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
+          ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
+        </div>
+        <div>
+          <p class="doc-title">QUOTATION</p>
+          <p class="muted" style="text-align:right;">${escapeHtml(doc.documentNumber ?? "-")}</p>
+          <div style="text-align:right;"><span class="badge">${escapeHtml(QUOTATION_STATUS_LABEL[doc.quotationStatus ?? ""] ?? doc.quotationStatus ?? "-")}</span></div>
+        </div>
       </div>
     </div>
 
-    <table>
+    <div class="bill-to">
+      <p class="label">Quoted To</p>
+      <p class="name">${escapeHtml(doc.customerName ?? "-")}</p>
+    </div>
+
+    <table class="meta-table">
       <thead>
-        <tr>
-          <th>#</th>
-          <th>Product</th>
-          <th class="center">Qty</th>
-          <th class="right">Unit Price</th>
-          <th class="right">Discount</th>
-          <th class="right">Line Total</th>
-        </tr>
+        <tr><th>Date Prepared</th><th>Valid Until</th><th>Prepared By</th></tr>
       </thead>
-      <tbody>${itemRows}</tbody>
+      <tbody>
+        <tr>
+          <td>${formatDate(doc.dateLabel)}</td>
+          <td>${formatDate(doc.validUntil)}</td>
+          <td>${escapeHtml(doc.employeeName)}</td>
+        </tr>
+      </tbody>
     </table>
 
-    <table class="totals">
-      <tr><td>Subtotal</td><td class="right">${money(doc.subtotalCents)}</td></tr>
-      ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td class="right">-${money(doc.discountAmountCents)}</td></tr>` : ""}
-      <tr class="grand"><td>Total</td><td class="right">${money(doc.grandTotalCents)}</td></tr>
-    </table>
+    ${
+      (() => {
+        const days = daysBetween(doc.dateLabel, doc.validUntil);
+        return days === null ? "" : `<p class="payment-terms">Quotation expires within ${days} day${days === 1 ? "" : "s"}</p>`;
+      })()
+    }
+
+    <div class="items-frame">
+      <table class="items-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Product</th>
+            <th class="center">Qty</th>
+            <th class="right">Unit Price</th>
+            <th class="right">Discount</th>
+            <th class="right">Line Total</th>
+          </tr>
+        </thead>
+        <tbody>${itemRows}</tbody>
+      </table>
+      <div class="items-spacer"></div>
+      <table class="totals-table">
+        <tr><td>Subtotal</td><td>${money(doc.subtotalCents)}</td></tr>
+        ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td>-${money(doc.discountAmountCents)}</td></tr>` : ""}
+        <tr class="grand"><td>Total</td><td>${money(doc.grandTotalCents)}</td></tr>
+      </table>
+    </div>
 
     ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
 
@@ -643,83 +683,67 @@ function buildStatementDocumentHtml(doc: SharedStatementResult): string {
 <head>
 <meta charset="utf-8" />
 <title>${escapeHtml(documentFilenameBase(doc))}</title>
-<style>
-  * { box-sizing: border-box; }
-  body { font-family: Arial, Helvetica, sans-serif; color: #1c1710; margin: 0; padding: 48px; font-size: 13px; }
-  .sheet { max-width: 720px; margin: 0 auto; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #061e64; padding-bottom: 16px; }
-  .business-name { font-size: 20px; font-weight: bold; color: #061e64; margin: 0; }
-  .muted { color: #666; font-size: 11px; }
-  .invoice-title { font-size: 26px; font-weight: bold; text-align: right; color: #061e64; margin: 0; letter-spacing: 1px; }
-  .meta { display: flex; justify-content: space-between; margin-top: 20px; gap: 24px; }
-  .meta-block p { margin: 2px 0; }
-  .meta-block .label { font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table { width: 100%; border-collapse: collapse; margin-top: 20px; }
-  th { text-align: left; font-size: 10px; text-transform: uppercase; color: #83795f; border-bottom: 2px solid #ddd5c2; padding: 6px 4px; }
-  td { padding: 8px 4px; border-bottom: 1px solid #eee; vertical-align: top; }
-  .center { text-align: center; }
-  .right { text-align: right; white-space: nowrap; }
-  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 10px; font-weight: bold; text-transform: uppercase; background: #f1ede1; color: #1c1710; }
-  .totals { width: 260px; margin-left: auto; margin-top: 16px; }
-  .totals td { border-bottom: none; padding: 3px 4px; }
-  .totals .grand td { font-size: 15px; font-weight: bold; border-top: 2px solid #061e64; padding-top: 8px; color: #ad3a29; }
-  .footer { margin-top: 32px; text-align: center; color: #83795f; font-size: 11px; }
-</style>
+<style>${LETTERHEAD_STYLES}</style>
 </head>
 <body>
   <div class="sheet">
     <div class="header">
-      <div>
-        <p class="business-name">${escapeHtml(doc.businessName)}</p>
-        ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
-        ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
-      </div>
-      <div>
-        <p class="invoice-title">STATEMENT</p>
-        <p class="muted" style="text-align:right;">${formatDate(doc.generatedAt)}</p>
+      <div class="header-row">
+        <div>
+          <p class="business-name">${escapeHtml(doc.businessName)}</p>
+          ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
+          ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
+        </div>
+        <div>
+          <p class="invoice-title">STATEMENT</p>
+          <p class="muted" style="text-align:right;">${formatDate(doc.generatedAt)}</p>
+        </div>
       </div>
     </div>
 
-    <div class="meta">
-      <div class="meta-block">
-        <p class="label">Statement For</p>
-        <p><strong>${escapeHtml(doc.customerName)}</strong></p>
-        <p>${escapeHtml(doc.customerPhone)}</p>
-        ${doc.customerEmail ? `<p>${escapeHtml(doc.customerEmail)}</p>` : ""}
-      </div>
-      ${
-        doc.creditLimitCents !== null && availableCreditCents !== null
-          ? `<div class="meta-block">
-        <p class="label">Credit Limit</p>
-        <p>${money(doc.creditLimitCents)}</p>
-        <p class="label" style="margin-top:10px;">Available Credit</p>
-        <p>${money(availableCreditCents)}</p>
-      </div>`
-          : ""
-      }
+    <div class="bill-to">
+      <p class="label">Statement For</p>
+      <p class="name">${escapeHtml(doc.customerName)}</p>
+      <p class="muted">${escapeHtml(doc.customerPhone)}</p>
+      ${doc.customerEmail ? `<p class="muted">${escapeHtml(doc.customerEmail)}</p>` : ""}
     </div>
 
-    <table>
+    ${
+      doc.creditLimitCents !== null && availableCreditCents !== null
+        ? `<table class="meta-table">
       <thead>
-        <tr>
-          <th>#</th>
-          <th>Invoice</th>
-          <th>Date</th>
-          <th>Due</th>
-          <th class="right">Total</th>
-          <th class="right">Paid</th>
-          <th class="right">Balance</th>
-          <th>Status</th>
-        </tr>
+        <tr><th>Credit Limit</th><th>Available Credit</th></tr>
       </thead>
-      <tbody>${rows}</tbody>
-    </table>
+      <tbody>
+        <tr><td>${money(doc.creditLimitCents)}</td><td>${money(availableCreditCents)}</td></tr>
+      </tbody>
+    </table>`
+        : ""
+    }
 
-    <table class="totals">
-      <tr><td>Total Invoiced</td><td class="right">${money(doc.totalInvoicedCents)}</td></tr>
-      <tr><td>Total Paid</td><td class="right">${money(doc.totalPaidCents)}</td></tr>
-      <tr class="grand"><td>Total Outstanding</td><td class="right">${money(doc.totalOutstandingCents)}</td></tr>
-    </table>
+    <div class="items-frame">
+      <table class="items-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Invoice</th>
+            <th>Date</th>
+            <th>Due</th>
+            <th class="right">Total</th>
+            <th class="right">Paid</th>
+            <th class="right">Balance</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="items-spacer"></div>
+      <table class="totals-table">
+        <tr><td>Total Invoiced</td><td>${money(doc.totalInvoicedCents)}</td></tr>
+        <tr><td>Total Paid</td><td>${money(doc.totalPaidCents)}</td></tr>
+        <tr class="balance"><td>Total Outstanding</td><td>${money(doc.totalOutstandingCents)}</td></tr>
+      </table>
+    </div>
 
     <div class="footer">Generated by ${escapeHtml(doc.businessName)} — please settle outstanding invoices at your earliest convenience.</div>
   </div>

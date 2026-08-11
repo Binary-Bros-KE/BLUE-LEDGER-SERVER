@@ -126,6 +126,11 @@ export type SharedDocumentResult = {
   employeeName: string;
   branchName: string;
   customerName: string | null;
+  /** The tenant's own KRA PIN — shown as "Our VAT No." on the invoice PDF only. See
+   * document-html.ts's buildInvoiceDocumentHtml. */
+  businessKraPin: string | null;
+  /** The customer's own KRA PIN, if on file — shown as "Your VAT No." on the invoice PDF only. */
+  customerKraPin: string | null;
   items: SharedLineItem[];
   extraLines: SharedLineItem[];
   subtotalCents: number;
@@ -358,7 +363,7 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
 export async function buildSharedDocument(tenantId: string, entity: "sale" | "quotation", entityId: string): Promise<SharedDocumentResult | null> {
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { name: true, physicalAddress: true, contactPhone: true, currency: true, vatRatePercent: true },
+    select: { name: true, physicalAddress: true, contactPhone: true, currency: true, vatRatePercent: true, kraPin: true },
   });
   if (!tenantRow) return null;
 
@@ -388,6 +393,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         employeeName: employee ? `${employee.firstName} ${employee.lastName}`.trim() : "—",
         branchName: location?.locationName ?? "—",
         customerName: customer?.name ?? null,
+        businessKraPin: tenantRow.kraPin,
+        customerKraPin: customer?.kraPin ?? null,
         items: items.map((item) => ({
           name: productById.get(item.productId)?.name ?? "Unknown product",
           sku: productById.get(item.productId)?.sku ?? null,
@@ -453,6 +460,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       employeeName: employee ? `${employee.firstName} ${employee.lastName}`.trim() : "—",
       branchName: location?.locationName ?? "—",
       customerName: customer?.name ?? null,
+      businessKraPin: tenantRow.kraPin,
+      customerKraPin: customer?.kraPin ?? null,
       items: items.map((item) => ({
         name: productById.get(item.productId)?.name ?? "Unknown product",
         sku: productById.get(item.productId)?.sku ?? null,
