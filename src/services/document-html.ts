@@ -78,7 +78,7 @@ function buildTaxBreakdownHtml(
  * too anyway so both copies of this template stay behaviorally identical, not just visually. */
 const LETTERHEAD_STYLES = `
   * { box-sizing: border-box; }
-  /* Every border in this file is the same 1.5px/#d1d5db — see DESKTOP's own copy for why: a thinner
+  /* Every border in this file is the same 1.5px/#4b5563 — see DESKTOP's own copy for why: a thinner
      hairline risked landing on a fractional pixel once rasterized, visibly thinning out (confirmed
      live on a table's own outer right edge) at some zoom levels while other edges stayed crisp — a
      real anti-aliasing artifact of sub-pixel border position, so it'd show up printed too. */
@@ -91,7 +91,7 @@ const LETTERHEAD_STYLES = `
      against the ~717px actually available once the 0.4in print margins are subtracted, so the
      rightmost border landed right at (very slightly past) the page's own edge and got clipped. */
   .sheet { max-width: 700px; margin: 0 auto; }
-  .header { border-bottom: 1.5px solid #d1d5db; }
+  .header { border-bottom: 1.5px solid #4b5563; }
   .header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
   .logo { display: block; height: auto; max-height: 60px; width: auto; max-width: 200px; object-fit: contain; margin-bottom: 6px; }
   .business-name { font-size: 19px; font-weight: bold; color: #1c1710; margin: 0; }
@@ -106,36 +106,36 @@ const LETTERHEAD_STYLES = `
   .bill-to .label { font-size: 9px; text-transform: uppercase; color: #83795f; font-weight: bold; }
   .bill-to .name { font-size: 13px; font-weight: bold; margin: 2px 0 0; }
 
-  table.meta-table { width: 100%; border-collapse: collapse; margin-top: 8px; border: 1.5px solid #d1d5db; }
-  table.meta-table th { background: #f0f0f0; color: #1c1710; text-transform: uppercase; font-size: 9px; font-weight: bold; padding: 6px 8px; text-align: left; border-bottom: 1.5px solid #d1d5db; }
-  table.meta-table th + th, table.meta-table td + td { border-left: 1.5px solid #d1d5db; }
+  table.meta-table { width: 100%; border-collapse: collapse; margin-top: 8px; border: 1.5px solid #4b5563; }
+  table.meta-table th { background: #f0f0f0; color: #1c1710; text-transform: uppercase; font-size: 9px; font-weight: bold; padding: 6px 8px; text-align: left; border-bottom: 1.5px solid #4b5563; }
+  table.meta-table th + th, table.meta-table td + td { border-left: 1.5px solid #4b5563; }
   table.meta-table td { padding: 6px 8px; font-size: 11px; font-weight: 600; }
   .payment-terms { margin-top: 8px; font-size: 10.5px; font-style: italic; color: #555; }
 
   /* box-decoration-break: clone — see DESKTOP's own copy for why: without it, a bordered box that
      fragments across a page break only shows its border at the very start/end of the whole box, not
      on each individual page fragment, making it look cut open instead of continuing cleanly. */
-  .items-frame { border: 1.5px solid #d1d5db; margin-top: 12px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .items-frame { border: 1.5px solid #4b5563; margin-top: 12px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
   .items-frame.fill-page { display: flex; flex-direction: column; min-height: 500px; }
   table.items-table { width: 100%; border-collapse: collapse; }
-  table.items-table th { text-align: left; font-size: 10px; text-transform: uppercase; font-weight: bold; padding: 7px 8px; border-bottom: 1.5px solid #d1d5db; background: #f0f0f0; }
-  table.items-table th + th, table.items-table td + td { border-left: 1.5px solid #d1d5db; }
-  table.items-table td { padding: 7px 8px; vertical-align: top; font-size: 11px; border-bottom: 1.5px solid #d1d5db; }
+  table.items-table th { text-align: left; font-size: 10px; text-transform: uppercase; font-weight: bold; padding: 7px 8px; border-bottom: 1.5px solid #4b5563; background: #f0f0f0; }
+  table.items-table th + th, table.items-table td + td { border-left: 1.5px solid #4b5563; }
+  table.items-table td { padding: 7px 8px; vertical-align: top; font-size: 11px; border-bottom: 1.5px solid #4b5563; }
   .items-spacer { flex: 1 1 auto; }
   .center { text-align: center; }
   .right { text-align: right; white-space: nowrap; }
 
-  table.totals-table { width: 100%; border-collapse: collapse; margin-top: auto; border-top: 1.5px solid #d1d5db; }
+  table.totals-table { width: 100%; border-collapse: collapse; margin-top: auto; border-top: 1.5px solid #4b5563; }
   table.totals-table td { padding: 5px 8px; font-size: 11px; }
   table.totals-table td:first-child { text-align: left; font-weight: bold; width: 70%; }
   table.totals-table td:last-child { text-align: right; }
-  table.totals-table tr.grand td { font-weight: bold; font-size: 13px; border-top: 1.5px solid #d1d5db; }
+  table.totals-table tr.grand td { font-weight: bold; font-size: 13px; border-top: 1.5px solid #4b5563; }
   table.totals-table tr.balance td { font-weight: bold; font-size: 13px; color: #ad3a29; }
 
   .tax-breakdown-title { margin-top: 16px; font-size: 10px; text-transform: uppercase; color: #83795f; font-weight: bold; }
-  table.tax-breakdown { width: 100%; border-collapse: collapse; margin-top: 6px; border: 1.5px solid #d1d5db; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
-  table.tax-breakdown th { font-size: 10px; text-transform: uppercase; font-weight: bold; padding: 6px 8px; border-bottom: 1.5px solid #d1d5db; background: #f0f0f0; text-align: left; }
-  table.tax-breakdown th + th, table.tax-breakdown td + td { border-left: 1.5px solid #d1d5db; }
+  table.tax-breakdown { width: 100%; border-collapse: collapse; margin-top: 6px; border: 1.5px solid #4b5563; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  table.tax-breakdown th { font-size: 10px; text-transform: uppercase; font-weight: bold; padding: 6px 8px; border-bottom: 1.5px solid #4b5563; background: #f0f0f0; text-align: left; }
+  table.tax-breakdown th + th, table.tax-breakdown td + td { border-left: 1.5px solid #4b5563; }
   table.tax-breakdown td { padding: 5px 8px; font-size: 11px; }
 
   .payment { margin-top: 16px; }
@@ -144,7 +144,7 @@ const LETTERHEAD_STYLES = `
   .terms { margin-top: 14px; font-size: 11px; color: #666; }
   .signatures { display: flex; gap: 40px; margin-top: 48px; }
   .signature { flex: 1; }
-  .signature .line { border-top: 1.5px solid #d1d5db; margin-top: 40px; padding-top: 4px; font-size: 11px; color: #83795f; }
+  .signature .line { border-top: 1.5px solid #4b5563; margin-top: 40px; padding-top: 4px; font-size: 11px; color: #83795f; }
   .footer { margin-top: 20px; text-align: center; color: #83795f; font-size: 11px; }
   .item-cell { display: flex; align-items: center; gap: 8px; }
   .item-thumb { width: 96px; height: 96px; object-fit: contain; border-radius: 4px; flex: none; background: #f1ede1; }
