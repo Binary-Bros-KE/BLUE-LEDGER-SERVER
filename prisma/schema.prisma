@@ -1254,6 +1254,8 @@ model Purchase {
   subtotalCents         Int
   discountAmountCents   Int
   taxAmountCents        Int
+  /// Freight/delivery cost for the whole order — added on top of grandTotalCents, never per-line.
+  shippingCostCents     Int     @default(0)
   grandTotalCents       Int
   paymentMethodId       String?
   paymentReference      String?

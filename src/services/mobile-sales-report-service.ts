@@ -165,6 +165,10 @@ export type SalesReportOverview = {
   averageDailyRevenueCents: number;
   topProducts: SalesTopProduct[];
   paymentSplit: PaymentMethodBreakdownEntry[];
+  /** Purchases (goods + shipping) actually paid to suppliers this period — "Total Capital Invested."
+   * Informational only, never counted inside totalExpensesCents/netProfitCents — see DESKTOP's
+   * report-service.ts (getSalesFinancialOverview) for the shared reasoning. */
+  purchasesPaidCents: number;
 };
 
 export async function getSalesReportOverview(tenantId: string, input: SalesReportPeriodInput): Promise<SalesReportOverview> {
@@ -203,6 +207,7 @@ export async function getSalesReportOverview(tenantId: string, input: SalesRepor
       averageDailyRevenueCents,
       topProducts: current.sales.topProducts,
       paymentSplit: current.sales.paymentMethodBreakdown,
+      purchasesPaidCents: current.profit.purchasesPaidCents,
     };
   });
 }

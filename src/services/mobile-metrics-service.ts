@@ -161,61 +161,70 @@ export async function computeSalesAndProfit(
 ): Promise<{ sales: SalesSnapshot; profit: ExpensesAndProfit }> {
   const { start, endExclusive } = range;
 
-  const [voidedSales, salesInRange, invoiceCandidates, approvedReturnsInRange, expenseAgg, purchases, salaries, productRows, paymentMethods] =
-    await Promise.all([
-      tx.saleVoid.findMany({ where: { tenantId, status: "approved" }, select: { saleId: true } }),
-      tx.sale.findMany({
-        where: {
-          tenantId,
-          saleStatus: "completed",
-          completedAt: { gte: start, lt: endExclusive },
-          OR: [{ invoiceNumber: null }, { amountPaidCents: { gt: 0 } }],
-        },
-        select: {
-          id: true,
-          invoiceNumber: true,
-          grandTotalCents: true,
-          amountPaidCents: true,
-          paymentMethodId: true,
-          items: true,
-          serviceCharges: true,
-          delivery: true,
-        },
-      }),
-      tx.sale.findMany({
-        where: {
-          tenantId,
-          saleStatus: "completed",
-          invoiceNumber: { not: null },
-          paymentStatus: { not: "cancelled" },
-          amountPaidCents: { gt: 0 },
-          completedAt: { lt: endExclusive },
-        },
-        select: { id: true, payments: true },
-      }),
-      tx.saleReturn.findMany({
-        where: { tenantId, status: "approved", approvedAt: { gte: start, lt: endExclusive } },
-        select: { items: true },
-      }),
-      tx.expense.aggregate({
-        where: {
-          tenantId,
-          status: "active",
-          expenseDate: { gte: start.toISOString().slice(0, 10), lte: endExclusive.toISOString().slice(0, 10) },
-        },
-        _sum: { amountCents: true },
-      }),
-      tx.purchase.findMany({
-        where: { tenantId, status: { not: "cancelled" }, amountPaidCents: { gt: 0 } },
-        select: { payments: true },
-      }),
-      tx.salary.aggregate({
-        where: { tenantId, status: "active", localCreatedAt: { gte: start, lt: endExclusive } },
-        _sum: { netPayCents: true },
-      }),
-      tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true } }),
-      tx.paymentMethod.findMany({ where: { tenantId }, select: { id: true, name: true } }),
-    ]);
+  const [
+    voidedSales,
+    salesInRange,
+    invoiceCandidates,
+    approvedReturnsInRange,
+    expenseAgg,
+    purchases,
+    salaries,
+    productRows,
+    paymentMethods,
+  ] = await Promise.all([
+    tx.saleVoid.findMany({ where: { tenantId, status: "approved" }, select: { saleId: true } }),
+    tx.sale.findMany({
+      where: {
+        tenantId,
+        saleStatus: "completed",
+        completedAt: { gte: start, lt: endExclusive },
+        OR: [{ invoiceNumber: null }, { amountPaidCents: { gt: 0 } }],
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        grandTotalCents: true,
+        amountPaidCents: true,
+        paymentMethodId: true,
+        items: true,
+        serviceCharges: true,
+        delivery: true,
+      },
+    }),
+    tx.sale.findMany({
+      where: {
+        tenantId,
+        saleStatus: "completed",
+        invoiceNumber: { not: null },
+        paymentStatus: { not: "cancelled" },
+        amountPaidCents: { gt: 0 },
+        completedAt: { lt: endExclusive },
+      },
+      select: { id: true, payments: true },
+    }),
+    tx.saleReturn.findMany({
+      where: { tenantId, status: "approved", approvedAt: { gte: start, lt: endExclusive } },
+      select: { items: true },
+    }),
+    tx.expense.aggregate({
+      where: {
+        tenantId,
+        status: "active",
+        expenseDate: { gte: start.toISOString().slice(0, 10), lte: endExclusive.toISOString().slice(0, 10) },
+      },
+      _sum: { amountCents: true },
+    }),
+    tx.purchase.findMany({
+      where: { tenantId, status: { not: "cancelled" }, amountPaidCents: { gt: 0 } },
+      select: { payments: true },
+    }),
+    tx.salary.aggregate({
+      where: { tenantId, status: "active", localCreatedAt: { gte: start, lt: endExclusive } },
+      _sum: { netPayCents: true },
+    }),
+    tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true } }),
+    tx.paymentMethod.findMany({ where: { tenantId }, select: { id: true, name: true } }),
+  ]);
 
   const voidedSaleIds = new Set(voidedSales.map((v) => v.saleId));
   const liveSales = salesInRange.filter((s) => !voidedSaleIds.has(s.id));
@@ -349,7 +358,13 @@ export async function computeSalesAndProfit(
 
   const expensesCents = expenseAgg._sum.amountCents ?? 0;
   const salariesPaidCents = salaries._sum.netPayCents ?? 0;
-  const totalExpensesCents = expensesCents + purchasesPaidCents + salariesPaidCents + serviceChargeCostsCents;
+  // Capital (a purchase's goods + shipping, once paid) is deliberately never counted as an
+  // "expense" here — netRevenueCents above already nets out the cost of what actually sold, so
+  // also subtracting the full cash cost of inventory the moment it's bought would double-count it.
+  // Mirrors DESKTOP's report-service.ts (getSalesFinancialOverview) exactly. purchasesPaidCents is
+  // still returned below as its own "Total Capital Invested" figure — informational only, never
+  // folded into profit.
+  const totalExpensesCents = expensesCents + salariesPaidCents + serviceChargeCostsCents;
   const netProfitCents = netRevenueCents - totalExpensesCents;
 
   return {
