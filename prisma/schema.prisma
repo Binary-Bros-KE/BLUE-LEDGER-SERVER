@@ -547,6 +547,7 @@ model Tenant {
   salaries                 Salary[]
   recurringBills           RecurringBill[]
   saleVoids                SaleVoid[]
+  invoiceCancellations     InvoiceCancellation[]
   saleReturns              SaleReturn[]
   quotations               Quotation[]
   purchases                Purchase[]
@@ -1136,6 +1137,35 @@ model SaleVoid {
 
   @@index([tenantId])
   @@map("sale_voids")
+}
+
+/// A cancellation request/action against an INVOICE specifically — same shape as SaleVoid (own
+/// approval-workflow lifecycle, no nested items), but a genuinely separate entity: unlike SaleVoid
+/// (restocks only), cancelling an invoice also reverses any payment already collected against it
+/// (see DESKTOP's invoice-cancellation-service.ts for the full reasoning). Covers both the direct
+/// "Cancel Invoice" action (inserted pre-approved) and the manager-approval "Request Cancel"
+/// workflow (inserted pending, approved/rejected later) — one entity, one lifecycle.
+model InvoiceCancellation {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  saleId      String
+  status      String
+  reason      String
+  notes       String?
+  requestedBy String
+  requestedAt DateTime
+  approvedBy  String?
+  approvedAt  DateTime?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("invoice_cancellations")
 }
 
 /// A return request against a sale — same reasoning as SaleVoid (own lifecycle, own entity), but

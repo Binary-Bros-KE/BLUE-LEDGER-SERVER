@@ -19,6 +19,7 @@ export const SYNC_ENTITY_NAMES = [
   "salaries",
   "recurring_bills",
   "sale_voids",
+  "invoice_cancellations",
   "sale_returns",
   "quotations",
   "purchases",

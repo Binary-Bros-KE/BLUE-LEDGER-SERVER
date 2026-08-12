@@ -27,6 +27,7 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
   salaries: (tx) => tx.salary,
   recurring_bills: (tx) => tx.recurringBill,
   sale_voids: (tx) => tx.saleVoid,
+  invoice_cancellations: (tx) => tx.invoiceCancellation,
   sale_returns: (tx) => tx.saleReturn,
   quotations: (tx) => tx.quotation,
   purchases: (tx) => tx.purchase,
