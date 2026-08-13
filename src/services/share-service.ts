@@ -139,6 +139,9 @@ export type SharedDocumentResult = {
    * into grandTotalCents. See taxBreakdown for the printable category breakdown. */
   taxAmountCents: number;
   taxBreakdown: TaxBreakdownEntry[];
+  /** Whether the Tax Breakdown section should actually render — see the Sale/Quotation Prisma
+   * model's own doc comment. taxBreakdown itself is always computed regardless. */
+  includeTaxBreakdown: boolean;
   vatRatePercent: number;
   grandTotalCents: number;
   paymentMethodName: string | null;
@@ -409,6 +412,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         discountAmountCents: sale.discountAmountCents,
         taxAmountCents: sale.taxAmountCents,
         taxBreakdown: computeTaxBreakdown(items),
+        includeTaxBreakdown: sale.includeTaxBreakdown,
         vatRatePercent: tenantRow.vatRatePercent,
         grandTotalCents: sale.grandTotalCents,
         paymentMethodName: paymentMethod?.name ?? null,
@@ -476,6 +480,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       discountAmountCents: quotation.discountAmountCents,
       taxAmountCents: quotation.taxAmountCents,
       taxBreakdown: computeTaxBreakdown(items),
+      includeTaxBreakdown: quotation.includeTaxBreakdown,
       vatRatePercent: tenantRow.vatRatePercent,
       grandTotalCents: quotation.grandTotalCents,
       paymentMethodName: null,

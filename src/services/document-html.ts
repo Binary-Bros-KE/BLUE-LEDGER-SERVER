@@ -303,7 +303,7 @@ function buildReceiptDocumentHtml(doc: SharedDocumentResult): string {
       </table>
     </div>
 
-    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
+    ${doc.includeTaxBreakdown ? buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents)) : ""}
 
     <div class="payment">
       <p class="label" style="font-size:10px;text-transform:uppercase;color:#83795f;font-weight:bold;">Payment</p>
@@ -459,7 +459,7 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
         : ""
     }
 
-    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
+    ${doc.includeTaxBreakdown ? buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents)) : ""}
 
     ${doc.notes ? `<div class="notes"><strong>Notes</strong><p>${escapeHtml(doc.notes)}</p></div>` : ""}
 
@@ -544,7 +544,7 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
       </table>
     </div>
 
-    ${buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents))}
+    ${doc.includeTaxBreakdown ? buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents)) : ""}
 
     ${doc.notes ? `<div class="notes"><strong>Notes</strong><p>${escapeHtml(doc.notes)}</p></div>` : ""}
 

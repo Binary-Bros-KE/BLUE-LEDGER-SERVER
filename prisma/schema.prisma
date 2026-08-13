@@ -981,6 +981,11 @@ model Sale {
   amountPaidCents     Int
   balanceDueCents     Int
   invoiceNotes        String?
+  /// Whether the "Tax Breakdown" section prints/downloads/shares on this specific document — a
+  /// per-document toggle (default true), not a tenant-wide setting. Read by the /share routes'
+  /// document-html.ts renderer and the JSON share-service.ts response so the public share link
+  /// respects the same choice DESKTOP's own print/download already does.
+  includeTaxBreakdown Boolean @default(true)
   /// Already a JSON-text column locally (a list of individual payment entries against this
   /// sale/invoice) — carries straight through as Json.
   payments            Json
@@ -1218,6 +1223,8 @@ model Quotation {
   grandTotalCents     Int
   validUntil          String
   notes               String?
+  /// Same per-document toggle as Sale.includeTaxBreakdown, the identical concept.
+  includeTaxBreakdown Boolean @default(true)
   convertedSaleId     String?
   convertedAt         DateTime?
   /// quotation_items rows — same shape as Sale.items.
