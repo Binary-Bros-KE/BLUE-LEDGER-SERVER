@@ -158,8 +158,10 @@ export async function computeSalesAndProfit(
   tx: Parameters<Parameters<typeof withTenantContext>[1]>[0],
   tenantId: string,
   range: PeriodRange,
+  locationId?: string | null,
 ): Promise<{ sales: SalesSnapshot; profit: ExpensesAndProfit }> {
   const { start, endExclusive } = range;
+  const locationWhere = locationId ? { locationId } : {};
 
   const [
     voidedSales,
@@ -176,6 +178,7 @@ export async function computeSalesAndProfit(
     tx.sale.findMany({
       where: {
         tenantId,
+        ...locationWhere,
         saleStatus: "completed",
         completedAt: { gte: start, lt: endExclusive },
         OR: [{ invoiceNumber: null }, { amountPaidCents: { gt: 0 } }],
@@ -194,6 +197,7 @@ export async function computeSalesAndProfit(
     tx.sale.findMany({
       where: {
         tenantId,
+        ...locationWhere,
         saleStatus: "completed",
         invoiceNumber: { not: null },
         paymentStatus: { not: "cancelled" },
@@ -204,20 +208,25 @@ export async function computeSalesAndProfit(
     }),
     tx.saleReturn.findMany({
       where: { tenantId, status: "approved", approvedAt: { gte: start, lt: endExclusive } },
-      select: { items: true },
+      select: { saleId: true, items: true },
     }),
     tx.expense.aggregate({
       where: {
         tenantId,
+        // Expense's location analog is storefrontId (nullable — a company-wide expense has none),
+        // unlike Sale/Purchase's non-nullable locationId.
+        ...(locationId ? { storefrontId: locationId } : {}),
         status: "active",
         expenseDate: { gte: start.toISOString().slice(0, 10), lte: endExclusive.toISOString().slice(0, 10) },
       },
       _sum: { amountCents: true },
     }),
     tx.purchase.findMany({
-      where: { tenantId, status: { not: "cancelled" }, amountPaidCents: { gt: 0 } },
+      where: { tenantId, ...locationWhere, status: { not: "cancelled" }, amountPaidCents: { gt: 0 } },
       select: { payments: true },
     }),
+    // Salary has no location field at all (payroll isn't storefront-scoped) — always company-wide,
+    // regardless of the requested locationId.
     tx.salary.aggregate({
       where: { tenantId, status: "active", localCreatedAt: { gte: start, lt: endExclusive } },
       _sum: { netPayCents: true },
@@ -225,6 +234,20 @@ export async function computeSalesAndProfit(
     tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true } }),
     tx.paymentMethod.findMany({ where: { tenantId }, select: { id: true, name: true } }),
   ]);
+
+  // SaleReturn has no locationId of its own (an opaque saleId reference, same convention as its
+  // other FK-avoidance fields elsewhere in this app) — when scoping to one storefront, resolve
+  // which of these returns' underlying sales actually belong to it via one extra lookup, so a
+  // filtered dashboard's refund netting doesn't pull in another storefront's returns.
+  let returnSaleIdsInScope: Set<string> | null = null;
+  if (locationId) {
+    const candidateSaleIds = [...new Set(approvedReturnsInRange.map((r) => r.saleId))];
+    const matchingSales =
+      candidateSaleIds.length > 0
+        ? await tx.sale.findMany({ where: { tenantId, locationId, id: { in: candidateSaleIds } }, select: { id: true } })
+        : [];
+    returnSaleIdsInScope = new Set(matchingSales.map((s) => s.id));
+  }
 
   const voidedSaleIds = new Set(voidedSales.map((v) => v.saleId));
   const liveSales = salesInRange.filter((s) => !voidedSaleIds.has(s.id));
@@ -266,6 +289,7 @@ export async function computeSalesAndProfit(
 
   let refundCents = 0;
   for (const ret of approvedReturnsInRange) {
+    if (returnSaleIdsInScope && !returnSaleIdsInScope.has(ret.saleId)) continue;
     for (const item of asArray<SaleReturnItemEntry>(ret.items)) {
       refundCents += item.lineTotalCents;
     }
@@ -384,13 +408,17 @@ export async function computeSalesAndProfit(
 async function computeStockAlerts(
   tx: Parameters<Parameters<typeof withTenantContext>[1]>[0],
   tenantId: string,
+  locationId?: string | null,
 ): Promise<StockAlerts> {
   const [products, movementSums] = await Promise.all([
     tx.product.findMany({
       where: { tenantId, trackStock: true, status: "active" },
       select: { id: true, name: true, reorderLevel: true },
     }),
-    tx.stockMovement.groupBy({ by: ["productId"], where: { tenantId }, _sum: { quantityChange: true } }),
+    // Scoped to one storefront, "quantity" becomes that location's own stock rather than the
+    // company-wide total across every location — matches DESKTOP's own per-location Inventory
+    // Report philosophy once a storefront filter is applied.
+    tx.stockMovement.groupBy({ by: ["productId"], where: { tenantId, ...(locationId ? { locationId } : {}) }, _sum: { quantityChange: true } }),
   ]);
 
   const quantityByProduct = new Map(movementSums.map((row) => [row.productId, row._sum.quantityChange ?? 0]));
@@ -418,13 +446,24 @@ async function computeStockAlerts(
 async function computeOutstandingCredit(
   tx: Parameters<Parameters<typeof withTenantContext>[1]>[0],
   tenantId: string,
+  locationId?: string | null,
 ): Promise<OutstandingCredit> {
   const [voidedSales, openInvoices, approvedReturns, customers] = await Promise.all([
     tx.saleVoid.findMany({ where: { tenantId, status: "approved" }, select: { saleId: true } }),
     tx.sale.findMany({
-      where: { tenantId, saleStatus: "completed", invoiceNumber: { not: null }, paymentStatus: { notIn: ["paid", "cancelled"] } },
+      where: {
+        tenantId,
+        ...(locationId ? { locationId } : {}),
+        saleStatus: "completed",
+        invoiceNumber: { not: null },
+        paymentStatus: { notIn: ["paid", "cancelled"] },
+      },
       select: { id: true, customerId: true, grandTotalCents: true, amountPaidCents: true },
     }),
+    // Not location-filtered — the loop below only ever looks up a return by an openInvoices.id key,
+    // so a return against an invoice from another storefront simply never matches once openInvoices
+    // is itself scoped above; no separate join needed here (unlike the refund netting in
+    // computeSalesAndProfit, which isn't keyed off an already-filtered id set).
     tx.saleReturn.findMany({ where: { tenantId, status: "approved" }, select: { saleId: true, items: true } }),
     tx.customer.findMany({ where: { tenantId }, select: { id: true, name: true, creditLimitCents: true } }),
   ]);
@@ -474,15 +513,20 @@ async function computeOutstandingCredit(
  * transaction covering every RLS-protected read (sales, expenses, products, customers, etc.),
  * exactly the discipline that fixed the earlier Storefronts-empty-query bug (see
  * tenant-service.ts's findTenantLocations). */
-export async function getOwnerDashboard(tenantId: string, period: MobilePeriod, timezoneOffsetMinutes: number): Promise<OwnerDashboardResult> {
+export async function getOwnerDashboard(
+  tenantId: string,
+  period: MobilePeriod,
+  timezoneOffsetMinutes: number,
+  locationId?: string | null,
+): Promise<OwnerDashboardResult> {
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
   const range = resolvePeriodRange(period, timezoneOffsetMinutes);
 
   const { sales, profit, stock, credit } = await withTenantContext(tenantId, async (tx) => {
     const [{ sales, profit }, stock, credit] = await Promise.all([
-      computeSalesAndProfit(tx, tenantId, range),
-      computeStockAlerts(tx, tenantId),
-      computeOutstandingCredit(tx, tenantId),
+      computeSalesAndProfit(tx, tenantId, range, locationId),
+      computeStockAlerts(tx, tenantId, locationId),
+      computeOutstandingCredit(tx, tenantId, locationId),
     ]);
     return { sales, profit, stock, credit };
   });

@@ -171,6 +171,28 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
     // differently-shaped Prisma models; Zod at the request boundary is the real safety net here.
     const delegate = ENTITY_DELEGATES[parsed.entity](tx) as any;
 
+    // Batch-prefetch every REQUIRED_REF_FIELDS value for this push ONCE, instead of once per row —
+    // the per-row `findUnique` this replaced turned a 200-row stock_movements batch (DESKTOP's own
+    // PUSH_BATCH_SIZE) into up to 400 sequential round trips inside this one transaction, which blew
+    // Prisma's default 5s interactive-transaction timeout on a client with real production volume
+    // (confirmed live: "Transaction already closed... 6055ms passed since the start of the
+    // transaction" for exactly this entity — not a data problem, a request-shape problem). However
+    // large the batch, this is now exactly `requiredRefs.length` findMany calls, not one per row.
+    const requiredRefs = REQUIRED_REF_FIELDS[parsed.entity];
+    const validRefIdsByField = new Map<string, Set<string>>();
+    if (requiredRefs) {
+      for (const ref of requiredRefs) {
+        const values = [
+          ...new Set(parsed.rows.map((row) => row[ref.field]).filter((value): value is string => typeof value === "string")),
+        ];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see pushRows' own delegate cast above.
+        const refDelegate = ref.delegate(tx) as any;
+        const found: Array<{ id: string }> =
+          values.length > 0 ? await refDelegate.findMany({ where: { id: { in: values } }, select: { id: true } }) : [];
+        validRefIdsByField.set(ref.field, new Set(found.map((row) => row.id)));
+      }
+    }
+
     for (const row of parsed.rows) {
       const id = typeof row.id === "string" ? row.id : null;
       if (!id) {
@@ -222,17 +244,14 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
 
         // See REQUIRED_REF_FIELDS above — reject (silently, from the pushing device's point of view)
         // any row whose ref field points at something that doesn't exist for this tenant, instead of
-        // upserting it and corrupting whatever's currently stored.
-        const requiredRefs = REQUIRED_REF_FIELDS[parsed.entity];
+        // upserting it and corrupting whatever's currently stored. Membership check against the
+        // batch-prefetched sets above — no per-row query here.
         if (requiredRefs) {
           let brokenRef: string | null = null;
           for (const ref of requiredRefs) {
             const value = row[ref.field];
             if (typeof value !== "string") continue; // nullable ref left unset — not this check's concern
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see pushRows' own delegate cast above.
-            const refDelegate = ref.delegate(tx) as any;
-            const exists = await refDelegate.findUnique({ where: { id: value }, select: { id: true } });
-            if (!exists) {
+            if (!validRefIdsByField.get(ref.field)!.has(value)) {
               brokenRef = `${ref.field}=${value}`;
               break;
             }

@@ -22,8 +22,8 @@ const WINDOW_RADIUS = 5;
 export type SalesReportMode = "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 export type SalesReportPeriodInput =
-  | { mode: "daily" | "weekly" | "monthly" | "yearly"; anchor: string; timezoneOffsetMinutes: number }
-  | { mode: "custom"; startDate: string; endDate: string; timezoneOffsetMinutes: number };
+  | { mode: "daily" | "weekly" | "monthly" | "yearly"; anchor: string; timezoneOffsetMinutes: number; locationId?: string | undefined }
+  | { mode: "custom"; startDate: string; endDate: string; timezoneOffsetMinutes: number; locationId?: string | undefined };
 
 /** Same "+offset = ahead of UTC" convention as mobile-metrics-service.ts's own
  * offsetMsFromClientMinutes — kept as a separate copy here rather than a shared import purely
@@ -178,8 +178,8 @@ export async function getSalesReportOverview(tenantId: string, input: SalesRepor
 
   return withTenantContext(tenantId, async (tx) => {
     const [current, prior] = await Promise.all([
-      computeSalesAndProfit(tx, tenantId, { start: range.start, endExclusive: range.endExclusive }),
-      computeSalesAndProfit(tx, tenantId, previous),
+      computeSalesAndProfit(tx, tenantId, { start: range.start, endExclusive: range.endExclusive }, input.locationId),
+      computeSalesAndProfit(tx, tenantId, previous, input.locationId),
     ]);
 
     const spanDays = Math.round((range.endExclusive.getTime() - range.start.getTime()) / DAY_MS);
@@ -291,7 +291,7 @@ export async function getSalesTrend(tenantId: string, input: SalesReportPeriodIn
     const points = await withTenantContext(tenantId, async (tx) =>
       Promise.all(
         buckets.map(async (bucket) => {
-          const { sales } = await computeSalesAndProfit(tx, tenantId, { start: bucket.start, endExclusive: bucket.endExclusive });
+          const { sales } = await computeSalesAndProfit(tx, tenantId, { start: bucket.start, endExclusive: bucket.endExclusive }, input.locationId);
           return { periodLabel: bucket.label, periodStart: bucket.startDate, revenueCents: sales.revenueCents, transactionCount: sales.transactionCount, isSelected: false };
         }),
       ),
@@ -306,7 +306,7 @@ export async function getSalesTrend(tenantId: string, input: SalesReportPeriodIn
     Promise.all(
       anchors.map(async (anchor) => {
         const range = resolveFixedRange(mode, anchor, offsetMs);
-        const { sales } = await computeSalesAndProfit(tx, tenantId, { start: range.start, endExclusive: range.endExclusive });
+        const { sales } = await computeSalesAndProfit(tx, tenantId, { start: range.start, endExclusive: range.endExclusive }, input.locationId);
         return {
           periodLabel: range.label,
           periodStart: range.startDate,
@@ -354,6 +354,7 @@ export async function getSalesBreakdowns(tenantId: string, input: SalesReportPer
       tx.sale.findMany({
         where: {
           tenantId,
+          ...(input.locationId ? { locationId: input.locationId } : {}),
           saleStatus: "completed",
           transactionType: { in: ["retail_sale", "wholesale_sale", "invoice"] },
           completedAt: { gte: range.start, lt: range.endExclusive },
@@ -455,6 +456,7 @@ export async function getSalesTaxBreakdown(tenantId: string, input: SalesReportP
       tx.sale.findMany({
         where: {
           tenantId,
+          ...(input.locationId ? { locationId: input.locationId } : {}),
           saleStatus: "completed",
           transactionType: { in: ["retail_sale", "wholesale_sale", "invoice"] },
           paymentStatus: { not: "cancelled" },
