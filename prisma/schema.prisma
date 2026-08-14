@@ -1213,7 +1213,9 @@ model Quotation {
   deviceId String
 
   quotationNumber     String
-  customerId          String
+  /// Null means a walk-in quotation — non-binding, no credit/money at stake, unlike Sale/invoice
+  /// documents which either allow (Sale) or require (an invoice-typed Sale) a real customer.
+  customerId          String?
   locationId          String
   employeeId          String
   status              String

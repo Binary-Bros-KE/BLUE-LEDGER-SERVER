@@ -42,7 +42,7 @@ export async function listQuotations(tenantId: string, locationId: string | null
     return quotations.map((quotation) => ({
       id: quotation.id,
       quotationNumber: quotation.quotationNumber,
-      customerName: customerNameById.get(quotation.customerId) ?? null,
+      customerName: quotation.customerId ? (customerNameById.get(quotation.customerId) ?? null) : null,
       employeeName: employeeNameById.get(quotation.employeeId) ?? "—",
       locationName: locationNameById.get(quotation.locationId) ?? "—",
       locationId: quotation.locationId,

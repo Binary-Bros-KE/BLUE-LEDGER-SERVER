@@ -447,10 +447,12 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
     if (!quotation) return null;
 
     const items = asArray<RawItem>(quotation.items);
+    // Walk-in quotation — see the model's own doc comment. No customer row to look up at all.
+    const customerId = quotation.customerId;
     const [location, employee, customer, products] = await Promise.all([
       tx.location.findUnique({ where: { id: quotation.locationId } }),
       tx.employee.findUnique({ where: { id: quotation.employeeId } }),
-      tx.customer.findUnique({ where: { id: quotation.customerId } }),
+      customerId ? tx.customer.findUnique({ where: { id: customerId } }) : Promise.resolve(null),
       tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
