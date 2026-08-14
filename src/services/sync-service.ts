@@ -125,6 +125,16 @@ const NATURAL_KEY_FIELDS: Partial<Record<SyncEntityName, string>> = {
   // with each other, which would otherwise land as two permanent duplicate rows (see the model's
   // own schema comment).
   main_store_allocations: "bucketKey",
+  // Also not a boot-seeded default — real customer data, entered independently by staff on two
+  // different devices before they'd ever synced with each other. But DESKTOP's own local schema
+  // already enforces UNIQUE(tenantId, phone) as a hard invariant (a phone number IS the customer,
+  // as far as this app is concerned), and this table had no equivalent here — confirmed live: two
+  // devices each created "KIBE BUSIA" / 0722944921 ~80 minutes apart, both pushed fine (nothing here
+  // rejected either), and the SECOND one to reach a third device could never pull in — permanently
+  // blocked by that device's own UNIQUE(tenantId, phone) constraint, no matter how many retries.
+  // Same fix as the five entities above: dedup by the natural key here so a genuine duplicate never
+  // lands as two separate rows in the first place.
+  customers: "phone",
 };
 
 /** stock_movements.locationId/productId are deliberately plain opaque strings, not Prisma relations
@@ -166,112 +176,116 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
   const parsed = syncPushSchema.parse(input);
   const results: PushRowResult[] = [];
 
-  await withTenantContext(parsed.tenantId, async (tx) => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- generic dispatch across
-    // differently-shaped Prisma models; Zod at the request boundary is the real safety net here.
-    const delegate = ENTITY_DELEGATES[parsed.entity](tx) as any;
+  await withTenantContext(
+    parsed.tenantId,
+    async (tx) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- generic dispatch across
+      // differently-shaped Prisma models; Zod at the request boundary is the real safety net here.
+      const delegate = ENTITY_DELEGATES[parsed.entity](tx) as any;
 
-    // Batch-prefetch every REQUIRED_REF_FIELDS value for this push ONCE, instead of once per row —
-    // the per-row `findUnique` this replaced turned a 200-row stock_movements batch (DESKTOP's own
-    // PUSH_BATCH_SIZE) into up to 400 sequential round trips inside this one transaction, which blew
-    // Prisma's default 5s interactive-transaction timeout on a client with real production volume
-    // (confirmed live: "Transaction already closed... 6055ms passed since the start of the
-    // transaction" for exactly this entity — not a data problem, a request-shape problem). However
-    // large the batch, this is now exactly `requiredRefs.length` findMany calls, not one per row.
-    const requiredRefs = REQUIRED_REF_FIELDS[parsed.entity];
-    const validRefIdsByField = new Map<string, Set<string>>();
-    if (requiredRefs) {
-      for (const ref of requiredRefs) {
-        const values = [
-          ...new Set(parsed.rows.map((row) => row[ref.field]).filter((value): value is string => typeof value === "string")),
-        ];
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see pushRows' own delegate cast above.
-        const refDelegate = ref.delegate(tx) as any;
-        const found: Array<{ id: string }> =
-          values.length > 0 ? await refDelegate.findMany({ where: { id: { in: values } }, select: { id: true } }) : [];
-        validRefIdsByField.set(ref.field, new Set(found.map((row) => row.id)));
+      // Batch-prefetch every REQUIRED_REF_FIELDS value for this push ONCE, instead of once per row —
+      // the per-row `findUnique` this replaced turned a 200-row stock_movements batch (DESKTOP's own
+      // PUSH_BATCH_SIZE) into up to 400 sequential round trips inside this one transaction, which blew
+      // Prisma's default 5s interactive-transaction timeout on a client with real production volume
+      // (confirmed live: "Transaction already closed... 6055ms passed since the start of the
+      // transaction" for exactly this entity — not a data problem, a request-shape problem). However
+      // large the batch, this is now exactly `requiredRefs.length` findMany calls, not one per row.
+      const requiredRefs = REQUIRED_REF_FIELDS[parsed.entity];
+      const validRefIdsByField = new Map<string, Set<string>>();
+      if (requiredRefs) {
+        for (const ref of requiredRefs) {
+          const values = [
+            ...new Set(parsed.rows.map((row) => row[ref.field]).filter((value): value is string => typeof value === "string")),
+          ];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see pushRows' own delegate cast above.
+          const refDelegate = ref.delegate(tx) as any;
+          const found: Array<{ id: string }> =
+            values.length > 0 ? await refDelegate.findMany({ where: { id: { in: values } }, select: { id: true } }) : [];
+          validRefIdsByField.set(ref.field, new Set(found.map((row) => row.id)));
+        }
       }
-    }
 
-    for (const row of parsed.rows) {
-      const id = typeof row.id === "string" ? row.id : null;
-      if (!id) {
-        results.push({ id: "(missing)", status: "error", error: "Row missing id" });
-        continue;
-      }
-      try {
-        const naturalKeyField = NATURAL_KEY_FIELDS[parsed.entity];
-        const baseUpdatedAt = typeof row.baseUpdatedAt === "string" ? row.baseUpdatedAt : null;
-
-        // One existence check up front, reused by both the conflict check and the natural-key dedup
-        // below — either needs to know "does a row with this exact id already exist."
-        const existingById =
-          baseUpdatedAt || naturalKeyField ? await delegate.findUnique({ where: { id } }) : null;
-
-        if (baseUpdatedAt && existingById && existingById.localUpdatedAt.toISOString() !== new Date(baseUpdatedAt).toISOString()) {
-          results.push({ id, status: "conflict", serverRow: existingById });
+      for (const row of parsed.rows) {
+        const id = typeof row.id === "string" ? row.id : null;
+        if (!id) {
+          results.push({ id: "(missing)", status: "error", error: "Row missing id" });
           continue;
         }
+        try {
+          const naturalKeyField = NATURAL_KEY_FIELDS[parsed.entity];
+          const baseUpdatedAt = typeof row.baseUpdatedAt === "string" ? row.baseUpdatedAt : null;
 
-        // Dedup by natural key BEFORE ever inserting a new row — only relevant the first time this
-        // id is seen (an update to an already-known row never needs this). See NATURAL_KEY_FIELDS.
-        if (naturalKeyField && !existingById) {
-          const naturalKeyValue = row[naturalKeyField];
-          if (naturalKeyValue !== null && naturalKeyValue !== undefined) {
-            const existingByNaturalKey = await delegate.findFirst({
-              where: { tenantId: parsed.tenantId, [naturalKeyField]: naturalKeyValue },
-            });
-            if (existingByNaturalKey && existingByNaturalKey.id !== id) {
-              results.push({ id, status: "aliased", canonicalId: existingByNaturalKey.id });
-              continue;
+          // One existence check up front, reused by both the conflict check and the natural-key dedup
+          // below — either needs to know "does a row with this exact id already exist."
+          const existingById =
+            baseUpdatedAt || naturalKeyField ? await delegate.findUnique({ where: { id } }) : null;
+
+          if (baseUpdatedAt && existingById && existingById.localUpdatedAt.toISOString() !== new Date(baseUpdatedAt).toISOString()) {
+            results.push({ id, status: "conflict", serverRow: existingById });
+            continue;
+          }
+
+          // Dedup by natural key BEFORE ever inserting a new row — only relevant the first time this
+          // id is seen (an update to an already-known row never needs this). See NATURAL_KEY_FIELDS.
+          if (naturalKeyField && !existingById) {
+            const naturalKeyValue = row[naturalKeyField];
+            if (naturalKeyValue !== null && naturalKeyValue !== undefined) {
+              const existingByNaturalKey = await delegate.findFirst({
+                where: { tenantId: parsed.tenantId, [naturalKeyField]: naturalKeyValue },
+              });
+              if (existingByNaturalKey && existingByNaturalKey.id !== id) {
+                results.push({ id, status: "aliased", canonicalId: existingByNaturalKey.id });
+                continue;
+              }
             }
           }
-        }
 
-        const data = sanitizeRow(row, parsed.tenantId, parsed.deviceId, parsed.entity);
+          const data = sanitizeRow(row, parsed.tenantId, parsed.deviceId, parsed.entity);
 
-        // Held ("pending") sales are meant to be local-only (see migrate.ts's held_sales_local_only
-        // migration, DESKTOP) — every up-to-date device already refuses to enqueue one for push at
-        // all. This is the backstop for any device that ISN'T up to date yet (still running
-        // pre-fix code, or simply hasn't restarted to pick up the update): reject it here too,
-        // at the one chokepoint every device shares, instead of relying on every client being
-        // current. Reporting "ok" (rather than "error") lets the stale device's outbox clear the
-        // row normally instead of retrying it forever — the row just never actually lands.
-        if (parsed.entity === "sales" && data.saleStatus === "pending") {
-          results.push({ id, status: "ok" });
-          continue;
-        }
-
-        // See REQUIRED_REF_FIELDS above — reject (silently, from the pushing device's point of view)
-        // any row whose ref field points at something that doesn't exist for this tenant, instead of
-        // upserting it and corrupting whatever's currently stored. Membership check against the
-        // batch-prefetched sets above — no per-row query here.
-        if (requiredRefs) {
-          let brokenRef: string | null = null;
-          for (const ref of requiredRefs) {
-            const value = row[ref.field];
-            if (typeof value !== "string") continue; // nullable ref left unset — not this check's concern
-            if (!validRefIdsByField.get(ref.field)!.has(value)) {
-              brokenRef = `${ref.field}=${value}`;
-              break;
-            }
-          }
-          if (brokenRef) {
-            console.error(
-              `[sync] Rejected ${parsed.entity} row ${id} from device ${parsed.deviceId}: ${brokenRef} does not exist for this tenant.`,
-            );
+          // Held ("pending") sales are meant to be local-only (see migrate.ts's held_sales_local_only
+          // migration, DESKTOP) — every up-to-date device already refuses to enqueue one for push at
+          // all. This is the backstop for any device that ISN'T up to date yet (still running
+          // pre-fix code, or simply hasn't restarted to pick up the update): reject it here too,
+          // at the one chokepoint every device shares, instead of relying on every client being
+          // current. Reporting "ok" (rather than "error") lets the stale device's outbox clear the
+          // row normally instead of retrying it forever — the row just never actually lands.
+          if (parsed.entity === "sales" && data.saleStatus === "pending") {
             results.push({ id, status: "ok" });
             continue;
           }
-        }
 
-        await delegate.upsert({ where: { id }, create: { id, ...data }, update: data });
-        results.push({ id, status: "ok" });
-      } catch (err) {
-        results.push({ id, status: "error", error: err instanceof Error ? err.message : "Unknown error" });
+          // See REQUIRED_REF_FIELDS above — reject (silently, from the pushing device's point of view)
+          // any row whose ref field points at something that doesn't exist for this tenant, instead of
+          // upserting it and corrupting whatever's currently stored. Membership check against the
+          // batch-prefetched sets above — no per-row query here.
+          if (requiredRefs) {
+            let brokenRef: string | null = null;
+            for (const ref of requiredRefs) {
+              const value = row[ref.field];
+              if (typeof value !== "string") continue; // nullable ref left unset — not this check's concern
+              if (!validRefIdsByField.get(ref.field)!.has(value)) {
+                brokenRef = `${ref.field}=${value}`;
+                break;
+              }
+            }
+            if (brokenRef) {
+              console.error(
+                `[sync] Rejected ${parsed.entity} row ${id} from device ${parsed.deviceId}: ${brokenRef} does not exist for this tenant.`,
+              );
+              results.push({ id, status: "ok" });
+              continue;
+            }
+          }
+
+          await delegate.upsert({ where: { id }, create: { id, ...data }, update: data });
+          results.push({ id, status: "ok" });
+        } catch (err) {
+          results.push({ id, status: "error", error: err instanceof Error ? err.message : "Unknown error" });
+        }
       }
-    }
-  });
+    },
+    { timeoutMs: 30_000 },
+  );
 
   return { results };
 }
