@@ -135,6 +135,97 @@ app.get("/download/mac", (_req, res) => {
 </div></body></html>`);
 });
 
+type HistoryEntry = { version: string; combined: string | null; x64: string | null; ia32: string | null };
+
+// Every build ever uploaded stays in RELEASES_DIR forever (nothing here ever prunes old files —
+// see the upload step in the deploy runbook), so a specific past version has always been
+// downloadable via a direct /releases/<exact filename> URL. The only real gap was discoverability:
+// nothing let you find that filename without already knowing it. This scans for every distinct
+// version actually present and renders one link per version, so a bad release can be rolled back
+// on an affected machine without waiting on a rebuild.
+function listWindowsReleaseHistory(): HistoryEntry[] {
+  const dir = path.resolve(env.RELEASES_DIR);
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+
+  const versionPattern = /^Blue-Ledger-POS-(\d+\.\d+\.\d+)(?:-(x64|ia32))?\.exe$/;
+  const versions = new Set<string>();
+  for (const file of files) {
+    const match = versionPattern.exec(file);
+    if (match?.[1]) versions.add(match[1]);
+  }
+
+  return [...versions]
+    .sort((a, b) => {
+      const partsA = a.split(".").map(Number);
+      const partsB = b.split(".").map(Number);
+      for (let i = 0; i < 3; i++) {
+        const diff = (partsB[i] ?? 0) - (partsA[i] ?? 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    })
+    .map((version) => {
+      const combined = `Blue-Ledger-POS-${version}.exe`;
+      const x64 = `Blue-Ledger-POS-${version}-x64.exe`;
+      const ia32 = `Blue-Ledger-POS-${version}-ia32.exe`;
+      return {
+        version,
+        combined: files.includes(combined) ? combined : null,
+        x64: files.includes(x64) ? x64 : null,
+        ia32: files.includes(ia32) ? ia32 : null,
+      };
+    });
+}
+
+app.get("/download/history", (_req, res) => {
+  const releases = listWindowsReleaseHistory();
+  const rows = releases
+    .map(
+      (r, i) => `
+    <tr${i === 0 ? ' class="latest"' : ""}>
+      <td>${r.version}${i === 0 ? ' <span class="badge">latest</span>' : ""}</td>
+      <td>${r.combined ? `<a href="/releases/${r.combined}">Combined (32+64-bit)</a>` : "—"}</td>
+      <td>${r.x64 ? `<a href="/releases/${r.x64}">64-bit</a>` : "—"}</td>
+      <td>${r.ia32 ? `<a href="/releases/${r.ia32}">32-bit</a>` : "—"}</td>
+    </tr>`,
+    )
+    .join("");
+
+  res.type("html").send(`<!doctype html>
+<html><head><meta charset="utf-8" /><title>Blue Ledger POS — Release History</title>
+<style>
+  body { font-family: -apple-system, Arial, sans-serif; background: #0b1d4d; color: #fff; margin: 0;
+    padding: 40px 20px; }
+  .card { background: #12275f; border-radius: 16px; padding: 28px 32px; max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p.sub { font-size: 12px; color: #b7c1e0; margin: 0 0 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: #b7c1e0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    padding: 6px 8px; border-bottom: 1px solid #22346e; }
+  td { padding: 8px; border-bottom: 1px solid #1a2a5c; }
+  tr.latest td { font-weight: 700; }
+  .badge { background: #d4a934; color: #0b1d4d; font-size: 10px; font-weight: 700; padding: 2px 6px;
+    border-radius: 4px; margin-left: 4px; }
+  a { color: #d4a934; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style></head>
+<body><div class="card">
+  <h1>Blue Ledger POS — Windows Release History</h1>
+  <p class="sub">Every version ever published, newest first. Use this to roll an affected machine back to a
+    known-working version if a new release causes a problem — install directly over the existing app,
+    no uninstall needed.</p>
+  <table>
+    <thead><tr><th>Version</th><th>Combined</th><th>64-bit</th><th>32-bit</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="4">No releases found.</td></tr>'}</tbody>
+  </table>
+</div></body></html>`);
+});
+
 app.get("/download", (req, res) => {
   const ua = req.headers["user-agent"] ?? "";
   if (/Macintosh/i.test(ua)) {
