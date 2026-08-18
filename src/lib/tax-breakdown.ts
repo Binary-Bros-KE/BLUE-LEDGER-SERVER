@@ -27,6 +27,22 @@ export function taxBreakdownLabel(taxType: TaxType, vatRatePercent: number): str
   return TAX_TYPE_LABELS[taxType];
 }
 
+/**
+ * The tax actually ADDED ON TOP of the subtotal to reach the total — exclusive-priced lines only,
+ * never inclusive (whose tax is already embedded in the line's own price). Ported from DESKTOP's
+ * tax-calculation.ts computeAddedTaxCents — see its own doc comment for the full reasoning. Works
+ * from fields every SharedLineItem already carries (unitPriceCents/quantity/discountAmountCents/
+ * lineTotalCents), no new stored field needed.
+ */
+export function computeAddedTaxCents(
+  lines: Array<{ unitPriceCents: number; quantity: number; discountAmountCents: number; lineTotalCents: number }>,
+): number {
+  return lines.reduce((sum, line) => {
+    const taxableCents = line.unitPriceCents * line.quantity - line.discountAmountCents;
+    return sum + (line.lineTotalCents - taxableCents);
+  }, 0);
+}
+
 export function computeTaxBreakdown(
   lines: Array<{ taxType: string; taxAmountCents: number; lineTotalCents: number }>,
 ): TaxBreakdownEntry[] {

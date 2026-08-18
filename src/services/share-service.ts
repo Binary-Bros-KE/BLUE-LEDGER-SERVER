@@ -5,7 +5,7 @@ import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { createShareLinkSchema } from "../schemas/share.js";
-import { computeTaxBreakdown, taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
+import { computeAddedTaxCents, computeTaxBreakdown, taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
 
 const SHARE_LINK_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000; // ~1 year, matching the user's own ask
 
@@ -135,9 +135,13 @@ export type SharedDocumentResult = {
   extraLines: SharedLineItem[];
   subtotalCents: number;
   discountAmountCents: number;
-  /** Reporting-only — already included in subtotalCents (prices are tax-inclusive), never added
-   * into grandTotalCents. See taxBreakdown for the printable category breakdown. */
+  /** Reporting-only — grandTotalCents is the frozen value DESKTOP already computed correctly for
+   * whichever tax mode was active per line at creation time. See taxBreakdown for the printable
+   * category breakdown. */
   taxAmountCents: number;
+  /** The subset of taxAmountCents that was actually ADDED to reach grandTotalCents (exclusive-priced
+   * lines only) — see computeAddedTaxCents' own doc comment. What the "Total Tax" summary row shows. */
+  addedTaxCents: number;
   taxBreakdown: TaxBreakdownEntry[];
   /** Whether the Tax Breakdown section should actually render — see the Sale/Quotation Prisma
    * model's own doc comment. taxBreakdown itself is always computed regardless. */
@@ -411,6 +415,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         subtotalCents: sale.subtotalCents,
         discountAmountCents: sale.discountAmountCents,
         taxAmountCents: sale.taxAmountCents,
+        addedTaxCents: computeAddedTaxCents(items),
         taxBreakdown: computeTaxBreakdown(items),
         includeTaxBreakdown: sale.includeTaxBreakdown,
         vatRatePercent: tenantRow.vatRatePercent,
@@ -481,6 +486,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       subtotalCents: quotation.subtotalCents,
       discountAmountCents: quotation.discountAmountCents,
       taxAmountCents: quotation.taxAmountCents,
+      addedTaxCents: computeAddedTaxCents(items),
       taxBreakdown: computeTaxBreakdown(items),
       includeTaxBreakdown: quotation.includeTaxBreakdown,
       vatRatePercent: tenantRow.vatRatePercent,
