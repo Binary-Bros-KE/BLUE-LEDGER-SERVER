@@ -38,7 +38,7 @@ function buildTaxBreakdownHtml(
     .map(
       (entry) => `
       <tr>
-        <td>${escapeHtml(taxBreakdownLabel(entry.taxType, vatRatePercent))}</td>
+        <td>${escapeHtml(taxBreakdownLabel(entry.taxType, vatRatePercent, entry.pricingMode))}</td>
         <td class="right">${money(entry.netCents)}</td>
         <td class="right">${money(entry.taxCents)}</td>
         <td class="right">${money(entry.grossCents)}</td>

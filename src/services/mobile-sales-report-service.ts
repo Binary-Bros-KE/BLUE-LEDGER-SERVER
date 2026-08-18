@@ -1,7 +1,7 @@
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { computeSalesAndProfit, type PaymentMethodBreakdownEntry, type SalesTopProduct } from "./mobile-metrics-service.js";
-import { computeTaxBreakdown, type TaxBreakdownEntry, type TaxType } from "../lib/tax-breakdown.js";
+import { computeTaxCategoryTotals, type TaxBreakdownEntry, type TaxType } from "../lib/tax-breakdown.js";
 
 /**
  * Ports DESKTOP's Sales Report (report-service.ts's getSalesFinancialOverview/getSalesTrendWindow/
@@ -474,7 +474,7 @@ export async function getSalesTaxBreakdown(tenantId: string, input: SalesReportP
     const products = await tx.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, sku: true } });
     const productById = new Map(products.map((p) => [p.id, p]));
 
-    const byCategory = computeTaxBreakdown(items);
+    const byCategory = computeTaxCategoryTotals(items);
 
     const byProduct = new Map<string, TaxTopProductRow>();
     for (const item of items) {

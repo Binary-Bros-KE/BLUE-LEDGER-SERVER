@@ -165,7 +165,16 @@ export async function getPurchase(tenantId: string, purchaseId: string): Promise
       subtotalCents: purchase.subtotalCents,
       discountAmountCents: purchase.discountAmountCents,
       taxAmountCents: purchase.taxAmountCents,
-      taxBreakdown: computeTaxBreakdown(items),
+      taxBreakdown: computeTaxBreakdown(
+        items.map((item) => ({
+          unitPriceCents: item.unitCostCents,
+          quantity: item.orderedQuantity,
+          discountAmountCents: item.discountAmountCents,
+          taxType: item.taxType,
+          taxAmountCents: item.taxAmountCents,
+          lineTotalCents: item.lineTotalCents,
+        })),
+      ),
       vatRatePercent: tenant.vatRatePercent,
       grandTotalCents: purchase.grandTotalCents,
       amountPaidCents: purchase.amountPaidCents,
