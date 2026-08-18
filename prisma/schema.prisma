@@ -867,6 +867,10 @@ model Product {
   /// "zero_rated" — replaces taxRate as the actual calculation driver going forward (taxRate is
   /// kept, unused by new code, rather than dropped: no destructive migration on live data).
   taxType              String  @default("vat")
+  /// Null means "inherit the tenant's own pricesTaxInclusive default" — explicit true/false
+  /// overrides that default for this product alone. See DESKTOP's tax-calculation.ts
+  /// resolveProductTaxConfig, the single place this actually gets resolved.
+  pricesTaxInclusive   Boolean?
   reorderLevel         Int
   trackStock           Boolean
   allowNegativeStock   Boolean
