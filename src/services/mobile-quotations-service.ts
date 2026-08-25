@@ -16,7 +16,7 @@ import {
   mobileQuotationSchema,
 } from "../schemas/mobile.js";
 import { OWNER_APP_DEVICE_ID, resolveMobileLocation } from "./mobile-checkout-service.js";
-import { createInvoice } from "./mobile-invoices-service.js";
+import { createInvoice, type MobileEditableDelivery, type MobileEditableItem } from "./mobile-invoices-service.js";
 import { buildSharedDocument, computeQuotationStatus, type SharedDocumentResult } from "./share-service.js";
 
 /** Matches DESKTOP's own quotation-service.ts prefix exactly ("QT", 6 digits). */
@@ -162,6 +162,55 @@ async function requireEditableDraft(tx: Prisma.TransactionClient, tenantId: stri
   if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
   if (row.status !== "draft") throw new HttpError(400, "Only draft quotations can be edited");
   return row;
+}
+
+export type MobileQuotationEditData = {
+  customerId: string | null;
+  validUntil: string;
+  notes: string | null;
+  includeTaxBreakdown: boolean;
+  items: MobileEditableItem[];
+  delivery: MobileEditableDelivery | null;
+};
+
+/** Raw, re-editable form of a quotation — same reasoning as mobile-invoices-service.ts's
+ * getInvoiceEditData: SharedDocument is a display shape, not enough to rebuild items[] for
+ * updateQuotation's own mobileQuotationSchema. Only returned for a draft — APP hides its Edit button
+ * otherwise, matching requireEditableDraft above. */
+export async function getQuotationEditData(tenantId: string, id: string): Promise<MobileQuotationEditData> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await requireEditableDraft(tx, tenantId, id);
+    const items = row.items as unknown as MobileEditableItem[];
+    const delivery = row.delivery as unknown as MobileEditableDelivery | null;
+
+    return {
+      customerId: row.customerId,
+      validUntil: row.validUntil,
+      notes: row.notes,
+      includeTaxBreakdown: row.includeTaxBreakdown,
+      items: items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        unitPriceCents: item.unitPriceCents,
+        discountAmountCents: item.discountAmountCents,
+        isLocallySourced: item.isLocallySourced,
+        localCostCents: item.localCostCents,
+        localSupplierId: item.localSupplierId,
+      })),
+      delivery: delivery
+        ? {
+            riderId: delivery.riderId,
+            recipientName: delivery.recipientName,
+            country: delivery.country,
+            town: delivery.town,
+            physicalAddress: delivery.physicalAddress,
+            notes: delivery.notes,
+            feeCents: delivery.feeCents,
+            costCents: delivery.costCents,
+          }
+        : null,
+    };
+  });
 }
 
 /** A draft can be freely re-priced from live product data — nothing has been quoted to the customer

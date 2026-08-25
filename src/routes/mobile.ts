@@ -128,6 +128,11 @@ mobileRouter.post(
   },
 );
 
+mobileRouter.get("/invoices/:id/edit", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileInvoicesService.getInvoiceEditData(req.mobileSession!.tenantId, req.params.id as string);
+  res.json(result);
+});
+
 mobileRouter.put(
   "/invoices/:id",
   requireMobileAuth,
@@ -269,6 +274,11 @@ mobileRouter.post(
     res.status(201).json(result);
   },
 );
+
+mobileRouter.get("/quotations/:id/edit", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileQuotationsService.getQuotationEditData(req.mobileSession!.tenantId, req.params.id as string);
+  res.json(result);
+});
 
 mobileRouter.put(
   "/quotations/:id",

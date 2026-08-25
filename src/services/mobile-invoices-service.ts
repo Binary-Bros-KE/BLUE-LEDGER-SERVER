@@ -192,6 +192,85 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
   );
 }
 
+export type MobileEditableItem = {
+  productId: string;
+  quantity: number;
+  unitPriceCents: number;
+  discountAmountCents: number;
+  isLocallySourced: boolean;
+  localCostCents: number | null;
+  localSupplierId: string | null;
+};
+
+export type MobileEditableDelivery = {
+  riderId: string | null;
+  recipientName: string;
+  country: string;
+  town: string;
+  physicalAddress: string;
+  notes: string;
+  feeCents: number;
+  costCents: number;
+};
+
+export type MobileInvoiceEditData = {
+  customerId: string;
+  transactionType: string;
+  dueDate: string;
+  invoiceNotes: string | null;
+  includeTaxBreakdown: boolean;
+  items: MobileEditableItem[];
+  delivery: MobileEditableDelivery | null;
+};
+
+/** Raw, re-editable form of an invoice — deliberately NOT the same view-model SharedDocument/
+ * buildSharedDocument produces (that's a DISPLAY shape: no productId, no taxType, no
+ * isLocallySourced/localSupplierId — everything a re-edit needs to rebuild items[] for
+ * updateInvoice's own mobileInvoiceSchema). Only returned for an invoice that's actually still
+ * editable (matches updateInvoice's own requireEditableUnpaidInvoice check) — APP hides its Edit
+ * button in this same case, so reaching here with an ineligible invoice would mean the UI and the
+ * server disagree about state, not a normal path. */
+export async function getInvoiceEditData(tenantId: string, id: string): Promise<MobileInvoiceEditData> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await requireInvoiceRow(tx, tenantId, id);
+    if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice has been cancelled");
+    if (row.amountPaidCents > 0) throw new HttpError(400, "This invoice has payments recorded against it and can no longer be edited");
+    if (!row.customerId) throw new HttpError(400, "This invoice has no customer on record");
+
+    const items = row.items as unknown as MobileEditableItem[];
+    const delivery = row.delivery as unknown as (MobileEditableDelivery & { [key: string]: unknown }) | null;
+
+    return {
+      customerId: row.customerId,
+      transactionType: row.transactionType,
+      dueDate: row.dueDate ?? "",
+      invoiceNotes: row.invoiceNotes,
+      includeTaxBreakdown: row.includeTaxBreakdown,
+      items: items.map((item) => ({
+        productId: item.productId,
+        quantity: item.quantity,
+        unitPriceCents: item.unitPriceCents,
+        discountAmountCents: item.discountAmountCents,
+        isLocallySourced: item.isLocallySourced,
+        localCostCents: item.localCostCents,
+        localSupplierId: item.localSupplierId,
+      })),
+      delivery: delivery
+        ? {
+            riderId: delivery.riderId,
+            recipientName: delivery.recipientName,
+            country: delivery.country,
+            town: delivery.town,
+            physicalAddress: delivery.physicalAddress,
+            notes: delivery.notes,
+            feeCents: delivery.feeCents,
+            costCents: delivery.costCents,
+          }
+        : null,
+    };
+  });
+}
+
 /** A fully unpaid invoice can be freely re-priced/re-itemized from live product data — same
  * "nothing committed yet" reasoning as a draft quotation, except an invoice's own commitment line is
  * "has any payment been recorded" rather than a status field. Restocks every existing line first,
