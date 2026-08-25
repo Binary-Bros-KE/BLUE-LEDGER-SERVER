@@ -59,8 +59,12 @@ export function requireMobileAuth(req: Request, _res: Response, next: NextFuncti
 
 /** Must run after requireMobileAuth. Re-fetches the Employee + their Role live on every request
  * (same withTenantContext discipline as every other RLS-protected read) rather than trusting
- * whatever the JWT said at login time — a suspended employee or a role that's had "owner_app"
- * revoked is locked out on their very next request, not whenever the 7-day token happens to expire. */
+ * whatever the JWT said at login time — a suspended employee is locked out on their very next
+ * request, not whenever the 7-day token happens to expire. Any active employee may open the app;
+ * there is no separate "owner_app" gate any more (removed 2026-08-25) — per-tab/per-action scoping
+ * (visibleNavGroups in APP, requireMobilePermission below) already controls what they can see or
+ * do once inside, so a second all-or-nothing gate on top of that was redundant. Still populates
+ * session.permissions so requireMobilePermission can reuse it instead of re-fetching. */
 export async function requireOwnerAppAccess(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const session = req.mobileSession;
   if (!session) {
@@ -74,11 +78,7 @@ export async function requireOwnerAppAccess(req: Request, _res: Response, next: 
     }
 
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
-    const permissions = (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
-    if (!permissions.owner_app?.includes("view")) {
-      throw new HttpError(403, "Your account doesn't have access to the Owner App — ask your Super Admin to grant it.");
-    }
-    session.permissions = permissions;
+    session.permissions = (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
   });
 
   next();

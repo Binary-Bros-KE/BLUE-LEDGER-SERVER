@@ -94,14 +94,10 @@ export async function loginMobile(input: unknown): Promise<MobileLoginResult> {
     throw new HttpError(401, "Invalid employee code or PIN");
   }
 
-  const role = employee.roleId
-    ? await withTenantContext(tenantId, (tx) => tx.role.findUnique({ where: { id: employee.roleId as string } }))
-    : null;
-  const permissions = (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
-  if (!permissions.owner_app?.includes("view")) {
-    throw new HttpError(403, "Your account doesn't have access to the Owner App — ask your Super Admin to grant it.");
-  }
-
+  // Any active employee may open the Owner App — access used to be gated behind an owner_app.view
+  // permission, but per-tab/per-action scoping (visibleNavGroups in APP, requireMobilePermission
+  // here) already limits what a logged-in employee can see or do, so a separate "may I even open
+  // the app" gate was redundant on top of that and only added friction (2026-08-25).
   await resetFailedAttempts(tenantId, employeeCodeKey);
   await ensureMobileDeviceSequence(tenantId, employee.id, employee.mobileDeviceSequence);
   const token = signMobileToken({ employeeId: employee.id, tenantId });
