@@ -150,3 +150,86 @@ export const mobileCreateSupplierSchema = z.object({
 });
 
 export type MobileCreateSupplierInput = z.infer<typeof mobileCreateSupplierSchema>;
+
+// --- Invoices & Quotations (Phase 2) ---
+// Reuses mobileCheckoutItemSchema for cart lines — identical shape (productId/quantity/
+// discountAmountCents/unitPriceCents/isLocallySourced/localCostCents/localSupplierId) to Checkout's
+// own items, matching DESKTOP's own single shared prepareCart across sale/invoice/quotation.
+
+const mobileInitialPaymentSchema = z.object({
+  paymentMethodId: z.string().trim().min(1),
+  amountCents: z.coerce.number().int().positive("Amount must be greater than 0"),
+  reference: z.string().trim().optional(),
+});
+
+export const mobileInvoiceSchema = z.object({
+  customerId: z.string().trim().min(1, "Select a customer"),
+  transactionType: z.enum(["invoice", "wholesale_sale"]),
+  dueDate: z.string().trim().min(1, "Due date is required"),
+  invoiceNotes: z.string().trim().optional(),
+  includeTaxBreakdown: z.coerce.boolean().optional().default(true),
+  items: z.array(mobileCheckoutItemSchema).min(1, "At least one item is required"),
+  initialPayment: mobileInitialPaymentSchema.nullable().optional(),
+  delivery: mobileCheckoutDeliverySchema.optional(),
+  /** Only ever read on CREATE when the signed-in employee has no assigned branch — ignored on
+   * update (an invoice's storefront is fixed at creation), same as DESKTOP. */
+  locationId: z.string().trim().min(1).optional(),
+});
+
+export type MobileInvoiceInput = z.infer<typeof mobileInvoiceSchema>;
+
+export const mobileRecordPaymentSchema = z.object({
+  paymentMethodId: z.string().trim().min(1, "Select a payment method"),
+  amountCents: z.coerce.number().int().positive("Amount must be greater than 0"),
+  reference: z.string().trim().optional(),
+  notes: z.string().trim().optional(),
+});
+
+export type MobileRecordPaymentInput = z.infer<typeof mobileRecordPaymentSchema>;
+
+export const mobileMarkPaidSchema = z.object({
+  paymentMethodId: z.string().trim().min(1, "Select a payment method"),
+  reference: z.string().trim().optional(),
+  notes: z.string().trim().optional(),
+});
+
+export type MobileMarkPaidInput = z.infer<typeof mobileMarkPaidSchema>;
+
+export const mobileQuotationSchema = z.object({
+  // Null/omitted means a walk-in quotation — see Quotation.customerId's own doc comment for why
+  // that's intentional here, unlike an invoice.
+  customerId: z.string().trim().min(1).nullable().optional(),
+  validUntil: z.string().trim().min(1, "Valid-until date is required"),
+  notes: z.string().trim().optional(),
+  includeTaxBreakdown: z.coerce.boolean().optional().default(true),
+  items: z.array(mobileCheckoutItemSchema).min(1, "At least one item is required"),
+  delivery: mobileCheckoutDeliverySchema.optional(),
+  locationId: z.string().trim().min(1).optional(),
+});
+
+export type MobileQuotationInput = z.infer<typeof mobileQuotationSchema>;
+
+const mobileQuotationQuantityOverrideSchema = z.object({
+  productId: z.string().trim().min(1),
+  quantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+});
+
+export const mobileConvertToSaleSchema = z.object({
+  paymentMethodId: z.string().trim().min(1, "Select a payment method"),
+  paymentReference: z.string().trim().optional(),
+  amountReceivedCents: z.coerce.number().int().min(0).nullable().optional(),
+  quantityOverrides: z.array(mobileQuotationQuantityOverrideSchema).optional().default([]),
+});
+
+export type MobileConvertToSaleInput = z.infer<typeof mobileConvertToSaleSchema>;
+
+export const mobileConvertToInvoiceSchema = z.object({
+  dueDate: z.string().trim().min(1, "Due date is required"),
+  quantityOverrides: z.array(mobileQuotationQuantityOverrideSchema).optional().default([]),
+});
+
+export type MobileConvertToInvoiceInput = z.infer<typeof mobileConvertToInvoiceSchema>;
+
+export const mobileQuotationStatusSchema = z.object({
+  status: z.enum(["draft", "sent", "accepted", "rejected"]),
+});

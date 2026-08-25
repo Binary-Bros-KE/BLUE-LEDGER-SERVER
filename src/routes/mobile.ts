@@ -1,13 +1,20 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess } from "../middleware/mobile-auth.js";
-import { mobileDashboardQuerySchema, mobileSalesQuerySchema, mobileShareLinkSchema, salesReportPeriodQuerySchema } from "../schemas/mobile.js";
+import {
+  mobileDashboardQuerySchema,
+  mobileQuotationStatusSchema,
+  mobileSalesQuerySchema,
+  mobileShareLinkSchema,
+  salesReportPeriodQuerySchema,
+} from "../schemas/mobile.js";
 import * as mobileAuthService from "../services/mobile-auth-service.js";
 import * as mobileCheckoutService from "../services/mobile-checkout-service.js";
 import * as mobileCustomersService from "../services/mobile-customers-service.js";
 import * as mobileDirectoryService from "../services/mobile-directory-service.js";
 import * as mobileExpensesService from "../services/mobile-expenses-service.js";
 import * as mobileInventoryService from "../services/mobile-inventory-service.js";
+import * as mobileInvoicesService from "../services/mobile-invoices-service.js";
 import * as mobileMetricsService from "../services/mobile-metrics-service.js";
 import * as mobilePurchasesService from "../services/mobile-purchases-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
@@ -110,6 +117,76 @@ mobileRouter.get("/invoices", requireMobileAuth, requireOwnerAppAccess, async (r
   res.json(result);
 });
 
+mobileRouter.post(
+  "/invoices",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "create"),
+  async (req, res) => {
+    const result = await mobileInvoicesService.createInvoice(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.put(
+  "/invoices/:id",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const result = await mobileInvoicesService.updateInvoice(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, req.body);
+    res.json(result);
+  },
+);
+
+mobileRouter.post(
+  "/invoices/:id/payments",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const result = await mobileInvoicesService.recordPayment(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.post(
+  "/invoices/:id/mark-paid",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const result = await mobileInvoicesService.markPaid(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.post(
+  "/invoices/:id/duplicate",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "create"),
+  async (req, res) => {
+    const result = await mobileInvoicesService.duplicateInvoice(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string);
+    res.status(201).json(result);
+  },
+);
+
+// Self-approved direct cancel — same "approvals":"approve" gate DESKTOP's own cancelInvoiceDirect
+// requires (not "sales":"edit"); a plain Cashier won't have this by default. The separate async
+// request/approve workflow for lower-permission staff is not implemented on mobile yet.
+mobileRouter.post(
+  "/invoices/:id/cancel",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("approvals", "approve"),
+  async (req, res) => {
+    const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
+    const result = await mobileInvoicesService.cancelInvoice(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, reason);
+    res.json(result);
+  },
+);
+
 mobileRouter.get("/customers", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const result = await mobileCustomersService.listCustomers(req.mobileSession!.tenantId);
   res.json(result);
@@ -181,6 +258,78 @@ mobileRouter.get("/quotations/:id", requireMobileAuth, requireOwnerAppAccess, as
   }
   res.json(result);
 });
+
+mobileRouter.post(
+  "/quotations",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("quotations", "create"),
+  async (req, res) => {
+    const result = await mobileQuotationsService.createQuotation(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.put(
+  "/quotations/:id",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("quotations", "edit"),
+  async (req, res) => {
+    const result = await mobileQuotationsService.updateQuotation(req.mobileSession!.tenantId, req.params.id as string, req.body);
+    res.json(result);
+  },
+);
+
+mobileRouter.delete(
+  "/quotations/:id",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("quotations", "delete"),
+  async (req, res) => {
+    const result = await mobileQuotationsService.deleteQuotation(req.mobileSession!.tenantId, req.params.id as string);
+    res.json(result);
+  },
+);
+
+mobileRouter.post(
+  "/quotations/:id/status",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("quotations", "edit"),
+  async (req, res) => {
+    const parsed = mobileQuotationStatusSchema.parse(req.body);
+    const result = await mobileQuotationsService.setQuotationStatus(req.mobileSession!.tenantId, req.params.id as string, parsed.status);
+    res.json(result);
+  },
+);
+
+mobileRouter.get("/quotations/:id/stock-check", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileQuotationsService.checkQuotationStock(req.mobileSession!.tenantId, req.params.id as string);
+  res.json(result);
+});
+
+mobileRouter.post(
+  "/quotations/:id/convert-to-sale",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "create"),
+  async (req, res) => {
+    const result = await mobileQuotationsService.convertQuotationToSale(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.post(
+  "/quotations/:id/convert-to-invoice",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "create"),
+  async (req, res) => {
+    const result = await mobileQuotationsService.convertQuotationToInvoice(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, req.body);
+    res.status(201).json(result);
+  },
+);
 
 mobileRouter.get("/transactions", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);
