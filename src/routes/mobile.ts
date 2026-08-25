@@ -11,6 +11,7 @@ import * as mobileInventoryService from "../services/mobile-inventory-service.js
 import * as mobileMetricsService from "../services/mobile-metrics-service.js";
 import * as mobilePurchasesService from "../services/mobile-purchases-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
+import * as mobileRidersService from "../services/mobile-riders-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
 import * as mobileSalesService from "../services/mobile-sales-service.js";
 import * as mobileStockLedgerService from "../services/mobile-stock-ledger-service.js";
@@ -107,6 +108,33 @@ mobileRouter.get("/customers", requireMobileAuth, requireOwnerAppAccess, async (
   const result = await mobileCustomersService.listCustomers(req.mobileSession!.tenantId);
   res.json(result);
 });
+
+mobileRouter.post(
+  "/customers",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("customers", "create"),
+  async (req, res) => {
+    const result = await mobileCustomersService.createCustomer(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.get("/riders", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileRidersService.listRiders(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.post(
+  "/riders",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("riders", "create"),
+  async (req, res) => {
+    const result = await mobileRidersService.createRider(req.mobileSession!.tenantId, req.body);
+    res.status(201).json(result);
+  },
+);
 
 mobileRouter.get("/customers/:id/statement", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const result = await mobileCustomersService.getStatement(req.mobileSession!.tenantId, req.params.id as string);

@@ -79,6 +79,21 @@ export const mobileCheckoutItemSchema = z.object({
   discountAmountCents: z.coerce.number().int().min(0).default(0),
 });
 
+/** Matches DESKTOP's own ExtraChargesSection DeliveryDraft shape (see sale-service.ts's
+ * DeliveryInput) — riderId is optional (a delivery can be entered before a rider is assigned),
+ * everything else mirrors the same fields the desktop's inline delivery panel collects.
+ * feeCents/costCents are already-converted cents, same convention as discountAmountCents above. */
+export const mobileCheckoutDeliverySchema = z.object({
+  riderId: z.string().trim().min(1).optional(),
+  recipientName: z.string().trim().min(1, "Recipient name is required"),
+  country: z.string().trim().optional().default(""),
+  town: z.string().trim().optional().default(""),
+  physicalAddress: z.string().trim().min(1, "Delivery address is required"),
+  notes: z.string().trim().optional().default(""),
+  feeCents: z.coerce.number().int().min(0).default(0),
+  costCents: z.coerce.number().int().min(0).default(0),
+});
+
 /** Body for POST /mobile/sales. `id` is minted CLIENT-SIDE (a UUID, same convention as DESKTOP's own
  * local sale ids) and resent unchanged on any retry — this is the whole idempotency mechanism (see
  * mobile-checkout-service.ts): a retry of an id that already succeeded is treated as a no-op success
@@ -91,6 +106,27 @@ export const mobileCheckoutSchema = z.object({
   paymentReference: z.string().trim().optional(),
   customerId: z.string().trim().min(1).optional(),
   amountReceivedCents: z.coerce.number().int().min(0),
+  delivery: mobileCheckoutDeliverySchema.optional(),
 });
 
 export type MobileCheckoutInput = z.infer<typeof mobileCheckoutSchema>;
+
+/** The fast path for adding a customer mid-checkout — name + phone only, same fields as DESKTOP's
+ * own QuickCreateCustomerModal (everything else is editable later from DESKTOP's Customers screen;
+ * mobile has no full customer-edit UI in this phase). */
+export const mobileCreateCustomerSchema = z.object({
+  name: z.string().trim().min(1, "Name is required"),
+  phone: z.string().trim().min(1, "Phone is required"),
+});
+
+export type MobileCreateCustomerInput = z.infer<typeof mobileCreateCustomerSchema>;
+
+/** Mirrors DESKTOP's own QuickCreateRiderModal (ExtraChargesSection.tsx) — name + phone required,
+ * vehicle description optional. */
+export const mobileCreateRiderSchema = z.object({
+  name: z.string().trim().min(1, "Name is required"),
+  phone: z.string().trim().min(1, "Phone is required"),
+  vehicleDescription: z.string().trim().optional(),
+});
+
+export type MobileCreateRiderInput = z.infer<typeof mobileCreateRiderSchema>;

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
+import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { computeLineTax, resolveProductTaxConfig, type TenantTaxConfig } from "../lib/tax-breakdown.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { type MobileCheckoutInput, mobileCheckoutSchema } from "../schemas/mobile.js";
@@ -10,6 +11,11 @@ import { type MobileCheckoutInput, mobileCheckoutSchema } from "../schemas/mobil
  * prefix itself. */
 const RECEIPT_PREFIX = "BL";
 const RECEIPT_DIGITS = 7;
+
+/** Matches DESKTOP's own delivery-note-service.ts generateDeliveryNoteNumber exactly ("DN", 6
+ * digits). */
+const DELIVERY_NOTE_PREFIX = "DN";
+const DELIVERY_NOTE_DIGITS = 6;
 
 /** Same synthetic deviceId already used for Owner-App-originated writes elsewhere (see
  * routes/mobile.ts's share-link creation) — every synced row needs SOME deviceId, and a mobile
@@ -32,27 +38,6 @@ export async function listPaymentMethods(tenantId: string): Promise<MobilePaymen
     });
     return methods;
   });
-}
-
-/** Server-side equivalent of DESKTOP's document-number-service.ts generateDocumentNumber — mints
- * the numeric part atomically from MobileDocumentCounter (see that model's own schema comment for
- * why this can't be a local client-side reduce the way DESKTOP does it) and combines it with the
- * employee's own permanent "M{N}" tag. Must run inside the checkout's own transaction so a failed
- * checkout can never "burn" a number that was never actually used. */
-async function mintMobileDocumentNumber(
-  tx: Prisma.TransactionClient,
-  tenantId: string,
-  employeeMobileSequence: number,
-  prefix: string,
-  digits: number,
-): Promise<string> {
-  const counter = await tx.mobileDocumentCounter.upsert({
-    where: { tenantId_prefix: { tenantId, prefix } },
-    create: { tenantId, prefix, nextNumber: 2 },
-    update: { nextNumber: { increment: 1 } },
-  });
-  const claimedNumber = counter.nextNumber - 1;
-  return `${prefix}-M${employeeMobileSequence}-${String(claimedNumber).padStart(digits, "0")}`;
 }
 
 /**
@@ -107,6 +92,10 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       if (parsed.customerId) {
         const customer = await tx.customer.findUnique({ where: { id: parsed.customerId } });
         if (!customer) throw new NotFoundError("Selected customer was not found");
+      }
+      if (parsed.delivery?.riderId) {
+        const rider = await tx.rider.findUnique({ where: { id: parsed.delivery.riderId } });
+        if (!rider || rider.status !== "active") throw new NotFoundError("Selected rider was not found");
       }
 
       const productById = new Map(products.map((p) => [p.id, p]));
@@ -197,8 +186,11 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
 
       // Sums each line's own grossCents rather than branching off one global toggle — a cart can mix
       // inclusive and exclusive products via their own per-product overrides, same reasoning as
-      // DESKTOP's own sale-service.ts prepareCart.
-      const grandTotalCents = preparedItems.reduce((sum, item) => sum + item.lineTotalCents, 0);
+      // DESKTOP's own sale-service.ts prepareCart. Delivery fee folds straight in (no service
+      // charges on mobile yet), matching prepareCart's own extraFeesCents — a cashier who's asked
+      // to collect a delivery fee must see and be validated against the SAME total that includes it.
+      const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
+      const grandTotalCents = preparedItems.reduce((sum, item) => sum + item.lineTotalCents, 0) + deliveryFeeCents;
       if (parsed.amountReceivedCents < grandTotalCents) {
         throw new HttpError(400, "Amount received is less than the total");
       }
@@ -208,17 +200,35 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       // post-feature login (see mobile-auth-service.ts's ensureMobileDeviceSequence, the normal
       // leasing path). Vanishingly rare, cheap to guard here too rather than ever mint a number with
       // no tag.
-      let mobileDeviceSequence = employee.mobileDeviceSequence;
-      if (mobileDeviceSequence === null) {
-        const updatedTenant = await tx.tenant.update({
-          where: { id: tenantId },
-          data: { nextMobileDeviceSequence: { increment: 1 } },
-        });
-        mobileDeviceSequence = updatedTenant.nextMobileDeviceSequence - 1;
-        await tx.employee.update({ where: { id: employeeId }, data: { mobileDeviceSequence } });
-      }
+      const mobileDeviceSequence = await ensureEmployeeMobileSequence(tx, tenantId, employeeId, employee.mobileDeviceSequence);
 
       const receiptNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, RECEIPT_PREFIX, RECEIPT_DIGITS);
+
+      // Embedded JSON snapshot, not a separate synced table — mirrors SERVER's own Sale.delivery
+      // column doc comment exactly (the shape DESKTOP's push already flattens its local
+      // delivery_notes row into). costCents is internal-only (never shown on the receipt) — DESKTOP
+      // also auto-creates a "Delivery Costs" expense when costCents > 0
+      // (expense-service.ts's createDeliveryCostExpenseIfNeeded); mobile doesn't replicate that
+      // side effect yet, so a delivery cost entered here won't show up in Expenses until DESKTOP
+      // picks up the pulled sale — a known, deliberately deferred gap, not an oversight.
+      const deliveryJson = parsed.delivery
+        ? {
+            id: randomUUID(),
+            deliveryNoteNumber: await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, DELIVERY_NOTE_PREFIX, DELIVERY_NOTE_DIGITS),
+            riderId: parsed.delivery.riderId ?? null,
+            recipientName: parsed.delivery.recipientName,
+            country: parsed.delivery.country,
+            town: parsed.delivery.town,
+            physicalAddress: parsed.delivery.physicalAddress,
+            notes: parsed.delivery.notes,
+            feeCents: parsed.delivery.feeCents,
+            costCents: parsed.delivery.costCents,
+            isDelivered: false,
+            deliveredAt: null,
+            createdAt: now.toISOString(),
+            updatedAt: now.toISOString(),
+          }
+        : null;
 
       await tx.sale.create({
         data: {
@@ -252,7 +262,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           payments: [],
           items: preparedItems,
           serviceCharges: [],
-          delivery: Prisma.JsonNull,
+          delivery: deliveryJson ?? Prisma.JsonNull,
           localCreatedAt: now,
           localUpdatedAt: now,
         },
