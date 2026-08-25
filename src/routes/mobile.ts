@@ -1,8 +1,9 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { requireMobileAuth, requireOwnerAppAccess } from "../middleware/mobile-auth.js";
+import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess } from "../middleware/mobile-auth.js";
 import { mobileDashboardQuerySchema, mobileSalesQuerySchema, mobileShareLinkSchema, salesReportPeriodQuerySchema } from "../schemas/mobile.js";
 import * as mobileAuthService from "../services/mobile-auth-service.js";
+import * as mobileCheckoutService from "../services/mobile-checkout-service.js";
 import * as mobileCustomersService from "../services/mobile-customers-service.js";
 import * as mobileDirectoryService from "../services/mobile-directory-service.js";
 import * as mobileExpensesService from "../services/mobile-expenses-service.js";
@@ -74,6 +75,17 @@ mobileRouter.get("/sales", requireMobileAuth, requireOwnerAppAccess, async (req,
   const parsed = mobileSalesQuerySchema.parse(req.query);
   const result = await mobileSalesService.listSales(req.mobileSession!.tenantId, parsed.locationId ?? null);
   res.json(result);
+});
+
+/** Real, from-scratch checkout — see mobile-checkout-service.ts's own doc comment for why this is a
+ * dedicated endpoint rather than routed through the generic /sync/push pipeline. Gated by
+ * "sales"/"create" specifically (beyond the base owner_app.view every mobile route already
+ * requires) — the same permission DESKTOP's own completeSale() checks, so granting a role
+ * mobile-checkout access is just the normal Roles & Permissions screen, nothing mobile-specific to
+ * configure. */
+mobileRouter.post("/sales", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  const result = await mobileCheckoutService.checkout(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.body);
+  res.status(201).json(result);
 });
 
 mobileRouter.get("/sales/:id", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
@@ -152,6 +164,11 @@ mobileRouter.get("/sales-report/tax", requireMobileAuth, requireOwnerAppAccess, 
 
 mobileRouter.get("/products", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const result = await mobileInventoryService.listProducts(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.get("/payment-methods", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileCheckoutService.listPaymentMethods(req.mobileSession!.tenantId);
   res.json(result);
 });
 

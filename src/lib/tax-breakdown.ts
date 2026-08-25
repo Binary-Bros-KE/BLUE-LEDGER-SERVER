@@ -1,7 +1,10 @@
-// Ported from DESKTOP's shared/lib/tax-calculation.ts (computeTaxBreakdown/taxBreakdownLabel) —
-// SERVER never computes tax from scratch (see DESKTOP's own computeLineTax doc comment for that
-// math); it only groups the per-line taxType/taxAmountCents/lineTotalCents that DESKTOP already
-// computed and pushed, into the same category breakdown every document renders below its totals.
+// Ported from DESKTOP's shared/lib/tax-calculation.ts. For a normal DESKTOP-originated document,
+// SERVER never RE-computes tax — it only groups the per-line taxType/taxAmountCents/lineTotalCents
+// DESKTOP already computed and pushed, into the same category breakdown every document renders
+// below its totals (computeTaxBreakdown/computeTaxCategoryTotals/taxBreakdownLabel). The exception
+// is mobile checkout (mobile-checkout-service.ts), which has no DESKTOP-computed figures to trust in
+// the first place — computeLineTax/resolveProductTaxConfig below are the real, from-scratch pricing
+// math for that one path.
 
 export type TaxType = "vat" | "exempted" | "zero_rated";
 
@@ -50,6 +53,44 @@ export function computeAddedTaxCents(
     const taxableCents = line.unitPriceCents * line.quantity - line.discountAmountCents;
     return sum + (line.lineTotalCents - taxableCents);
   }, 0);
+}
+
+export type TenantTaxConfig = { vatRatePercent: number; pricesTaxInclusive: boolean };
+
+export type LineTaxResult = { grossCents: number; netCents: number; taxCents: number };
+
+/** Resolves a product's own inclusive/exclusive override (falling back to the tenant default) —
+ * ported verbatim from DESKTOP's tax-calculation.ts resolveProductTaxConfig, the ONE place mobile
+ * checkout needs to agree with DESKTOP on which mode a given line actually uses. */
+export function resolveProductTaxConfig(
+  product: { pricesTaxInclusive: boolean | null },
+  tenantTaxConfig: TenantTaxConfig,
+): TenantTaxConfig {
+  return {
+    vatRatePercent: tenantTaxConfig.vatRatePercent,
+    pricesTaxInclusive: product.pricesTaxInclusive ?? tenantTaxConfig.pricesTaxInclusive,
+  };
+}
+
+/**
+ * Ported verbatim from DESKTOP's tax-calculation.ts computeLineTax — see that function's own doc
+ * comment for the full inclusive/exclusive reasoning. This is the ONE place mobile checkout computes
+ * real money math server-side rather than trusting a client-sent figure (see
+ * mobile-checkout-service.ts). `tenantTaxConfig` here is already the per-product-resolved effective
+ * config (the output of resolveProductTaxConfig above), not necessarily the tenant's raw default.
+ */
+export function computeLineTax(amountCents: number, taxType: string, tenantTaxConfig: TenantTaxConfig): LineTaxResult {
+  if (taxType !== "vat") {
+    return { grossCents: amountCents, netCents: amountCents, taxCents: 0 };
+  }
+
+  if (tenantTaxConfig.pricesTaxInclusive) {
+    const netCents = Math.round(amountCents / (1 + tenantTaxConfig.vatRatePercent / 100));
+    return { grossCents: amountCents, netCents, taxCents: amountCents - netCents };
+  }
+
+  const taxCents = Math.round(amountCents * (tenantTaxConfig.vatRatePercent / 100));
+  return { grossCents: amountCents + taxCents, netCents: amountCents, taxCents };
 }
 
 const KNOWN_TAX_TYPES: TaxType[] = ["vat", "exempted", "zero_rated"];

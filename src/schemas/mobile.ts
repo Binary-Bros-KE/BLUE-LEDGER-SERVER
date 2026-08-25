@@ -68,3 +68,29 @@ export const salesReportPeriodQuerySchema = z.discriminatedUnion("mode", [
 ]);
 
 export type SalesReportPeriodQuery = z.infer<typeof salesReportPeriodQuerySchema>;
+
+/** One cart line as APP sends it — a PREVIEW only. mobile-checkout-service.ts never trusts
+ * unitPriceCents/discountAmountCents/lineTotalCents from here; it re-fetches the real Product and
+ * recomputes everything server-side (see that service's own doc comment). quantity/discount are the
+ * only client inputs that actually matter. */
+export const mobileCheckoutItemSchema = z.object({
+  productId: z.string().trim().min(1),
+  quantity: z.coerce.number().int().min(1),
+  discountAmountCents: z.coerce.number().int().min(0).default(0),
+});
+
+/** Body for POST /mobile/sales. `id` is minted CLIENT-SIDE (a UUID, same convention as DESKTOP's own
+ * local sale ids) and resent unchanged on any retry — this is the whole idempotency mechanism (see
+ * mobile-checkout-service.ts): a retry of an id that already succeeded is treated as a no-op success
+ * rather than re-running stock deduction a second time. */
+export const mobileCheckoutSchema = z.object({
+  id: z.string().trim().min(1, "id is required"),
+  locationId: z.string().trim().min(1, "locationId is required"),
+  items: z.array(mobileCheckoutItemSchema).min(1, "At least one item is required"),
+  paymentMethodId: z.string().trim().min(1, "paymentMethodId is required"),
+  paymentReference: z.string().trim().optional(),
+  customerId: z.string().trim().min(1).optional(),
+  amountReceivedCents: z.coerce.number().int().min(0),
+});
+
+export type MobileCheckoutInput = z.infer<typeof mobileCheckoutSchema>;

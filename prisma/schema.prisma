@@ -511,6 +511,14 @@ model Tenant {
   /// inside the same transaction as the Device row's own creation — see registerDevice.
   nextDeviceSequence Int @default(1)
 
+  /// Same idea as nextDeviceSequence above, but for the Owner App's mobile checkout — a genuinely
+  /// separate counter (not shared with nextDeviceSequence) so a mobile-minted "M{N}" tag never
+  /// collides with or consumes a desktop "D{N}" tag. Claimed atomically the first time an employee
+  /// successfully logs into the Owner App, leased onto Employee.mobileDeviceSequence (see that
+  /// field's own doc comment) — not per-device, since a phone's browser storage can be wiped and a
+  /// new lease there would silently start renumbering that employee's own document history.
+  nextMobileDeviceSequence Int @default(1)
+
   /// Per-tenant exception to the Plan's own maxDevices — null means "use the plan's value",
   /// unchanged. Exists because the plan-level limit is shared across every tenant on that plan;
   /// raising (or lowering) it for just ONE tenant (e.g. a business that legitimately needs an extra
@@ -559,6 +567,7 @@ model Tenant {
   mpesaTransactions        MpesaTransaction[]
   billingMpesaTransactions BillingMpesaTransaction[]
   pesapalTransactions      PesapalTransaction[]
+  mobileDocumentCounters   MobileDocumentCounter[]
 
   @@map("tenants")
 }
@@ -767,6 +776,17 @@ model Employee {
   defaultBasicSalaryCents Int?
   defaultAllowancesJson   Json?
   defaultDeductionsJson   Json?
+
+  /// Server-only — DESKTOP has no concept of this field and never mentions it in an employee push,
+  /// so a normal sync push/update never touches it (see sync-service.ts's sanitizeRow, which only
+  /// ever passes through what the client actually sent). Leased atomically from
+  /// Tenant.nextMobileDeviceSequence the first time this employee successfully logs into the Owner
+  /// App — the per-employee tag baked into every mobile-minted document number (e.g.
+  /// "INV-M3-000012"), deliberately keyed to the employee rather than the physical phone/browser
+  /// session: a phone's storage can be wiped and re-logged-in without losing this employee's own
+  /// numbering history. Permanent once leased, same "never reused" guarantee as
+  /// Device.sequenceNumber.
+  mobileDeviceSequence Int?
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
@@ -1516,6 +1536,25 @@ model MpesaTransaction {
   @@index([tenantId])
   @@index([checkoutRequestId])
   @@map("mpesa_transactions")
+}
+
+/// The server-side equivalent of DESKTOP's local "existingNumbers.max()+1" reduce
+/// (document-number-service.ts) — a mobile checkout has no local database to reduce over (every
+/// request is stateless), so the numeric part of an "INV-M3-000012"-style number is minted here
+/// atomically instead, one counter per (tenant, document prefix) pair. Claimed via
+/// `update({ nextNumber: { increment: 1 } })` inside the same transaction as the Sale it's minted
+/// for — same atomicity guarantee as Tenant.nextDeviceSequence/nextMobileDeviceSequence, just scoped
+/// per prefix instead of per tenant, since receipts/invoices/quotations must never share one counter.
+model MobileDocumentCounter {
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  /// e.g. "BL" (receipts, matching DESKTOP's own sale-service.ts prefix) — kept as a plain string,
+  /// not an enum, so a new document prefix never needs a schema migration to start counting.
+  prefix     String
+  nextNumber Int    @default(1)
+
+  @@id([tenantId, prefix])
+  @@map("mobile_document_counters")
 }
 
 /// The platform-billing counterpart to MpesaTransaction above — a tenant paying Blue Ledger for

@@ -6,6 +6,11 @@ export type MobileProductListItem = {
   name: string;
   sku: string;
   categoryName: string | null;
+  /** Needed for mobile checkout's cart preview — the SAME product-catalog fields DESKTOP's own
+   * Checkout screen shows. Never trusted server-side for the actual sale total (mobile-checkout-
+   * service.ts always re-fetches the real Product row and recomputes) — display/preview only. */
+  sellingPriceCents: number;
+  taxType: string;
   reorderLevel: number;
   /** Physical quantity sitting at the tenant's Main Store (distribution center) location, or null
    * if this tenant has no Main Store location at all. Combines what DESKTOP's own Main Store screen
@@ -35,7 +40,7 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
     const [products, categories, mainStoreLocation, movementSums] = await Promise.all([
       tx.product.findMany({
         where: { tenantId, trackStock: true, status: "active" },
-        select: { id: true, name: true, sku: true, categoryId: true, reorderLevel: true },
+        select: { id: true, name: true, sku: true, categoryId: true, reorderLevel: true, sellingPriceCents: true, taxType: true },
         orderBy: { name: "asc" },
       }),
       tx.category.findMany({ where: { tenantId }, select: { id: true, name: true } }),
@@ -69,6 +74,8 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         name: product.name,
         sku: product.sku,
         categoryName: product.categoryId ? (categoryNameById.get(product.categoryId) ?? null) : null,
+        sellingPriceCents: product.sellingPriceCents,
+        taxType: product.taxType,
         reorderLevel: product.reorderLevel,
         mainStoreQuantity,
         storefrontQuantity,

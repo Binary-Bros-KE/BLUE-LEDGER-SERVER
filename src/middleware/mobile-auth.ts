@@ -7,8 +7,10 @@ import { withTenantContext } from "../lib/tenant-context.js";
 /** The Owner App's session identity — a tenant Employee, never a Blue Ledger Account. Deliberately
  * a different shape from AuthenticatedAccount (middleware/auth.ts): no role/outletId, has tenantId
  * (which an Account token never carries), so the two token systems can never be confused for one
- * another even before the `aud` check below. */
-export type MobileSession = { employeeId: string; tenantId: string };
+ * another even before the `aud` check below. `permissions` is populated by requireOwnerAppAccess
+ * (module -> allowed actions, same shape as DESKTOP's own PermissionsMap) so a later
+ * requireMobilePermission on the same request chain can reuse it instead of re-fetching. */
+export type MobileSession = { employeeId: string; tenantId: string; permissions?: Record<string, string[]> };
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -76,7 +78,42 @@ export async function requireOwnerAppAccess(req: Request, _res: Response, next: 
     if (!permissions.owner_app?.includes("view")) {
       throw new HttpError(403, "Your account doesn't have access to the Owner App — ask your Super Admin to grant it.");
     }
+    session.permissions = permissions;
   });
 
   next();
+}
+
+/** Gates a specific action (e.g. "sales"/"create" for mobile checkout) beyond the base
+ * owner_app.view an employee needs just to open the app — same module+action vocabulary DESKTOP's
+ * own requirePermission uses, so granting a role mobile-checkout access is just a normal Roles &
+ * Permissions edit, nothing mobile-specific to configure. Must run after requireMobileAuth; reuses
+ * req.mobileSession.permissions when requireOwnerAppAccess already populated it earlier in the same
+ * chain (the normal case — see routes/mobile.ts), otherwise does its own live re-fetch so this is
+ * still safe to use standalone. */
+export function requireMobilePermission(module: string, action: string) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const session = req.mobileSession;
+    if (!session) {
+      throw new HttpError(401, "Not authenticated");
+    }
+
+    let permissions = session.permissions;
+    if (!permissions) {
+      permissions = await withTenantContext(session.tenantId, async (tx) => {
+        const employee = await tx.employee.findUnique({ where: { id: session.employeeId } });
+        if (!employee || employee.status !== "active") {
+          throw new HttpError(403, "This account is no longer active. Contact your Super Admin.");
+        }
+        const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
+        return (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
+      });
+      session.permissions = permissions;
+    }
+
+    if (!permissions[module]?.includes(action)) {
+      throw new HttpError(403, `Your account doesn't have "${action}" access to ${module} — ask your Super Admin to grant it.`);
+    }
+    next();
+  };
 }

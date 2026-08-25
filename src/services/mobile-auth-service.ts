@@ -103,6 +103,33 @@ export async function loginMobile(input: unknown): Promise<MobileLoginResult> {
   }
 
   await resetFailedAttempts(tenantId, employeeCodeKey);
+  await ensureMobileDeviceSequence(tenantId, employee.id, employee.mobileDeviceSequence);
   const token = signMobileToken({ employeeId: employee.id, tenantId });
   return { token };
+}
+
+/** Leases this employee's own permanent mobile document-numbering tag (the "M{N}" in
+ * "INV-M3-000012") the first time they ever log in — a no-op on every later login. Keyed to the
+ * Employee, not the physical device/browser: a phone's storage can be wiped and re-logged-in
+ * without losing this employee's own numbering history (see Employee.mobileDeviceSequence's own
+ * schema comment). Claimed atomically via `tenant.update({ nextMobileDeviceSequence: { increment:
+ * 1 } })`, same pattern as activation-service.ts's registerDevice leasing a desktop's own D{N} tag —
+ * a rare double-lease race (two simultaneous first-logins for the same employee) just wastes one
+ * counter value, never a correctness issue, matching that same precedent's own accepted trade-off. */
+async function ensureMobileDeviceSequence(
+  tenantId: string,
+  employeeId: string,
+  existingSequence: number | null,
+): Promise<void> {
+  if (existingSequence !== null) return;
+  await withTenantContext(tenantId, async (tx) => {
+    const tenant = await tx.tenant.update({
+      where: { id: tenantId },
+      data: { nextMobileDeviceSequence: { increment: 1 } },
+    });
+    await tx.employee.update({
+      where: { id: employeeId },
+      data: { mobileDeviceSequence: tenant.nextMobileDeviceSequence - 1 },
+    });
+  });
 }
