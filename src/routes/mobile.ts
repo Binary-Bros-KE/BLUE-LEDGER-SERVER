@@ -73,6 +73,11 @@ mobileRouter.get("/locations", requireMobileAuth, requireOwnerAppAccess, async (
   res.json(result);
 });
 
+mobileRouter.get("/storefronts", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileSalesService.listActiveStorefronts(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
 mobileRouter.get("/sales", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);
   const result = await mobileSalesService.listSales(req.mobileSession!.tenantId, parsed.locationId ?? null);

@@ -12,6 +12,26 @@ export async function listLocations(tenantId: string): Promise<MobileLocation[]>
   );
 }
 
+/** "warehouse" and "distribution_center" are reserved for the Main Store — nothing is ever directly
+ * sold from there. Mirrors DESKTOP's own shared/types/location.ts isStorefrontType exactly. */
+export function isStorefrontLocationType(locationType: string): boolean {
+  return locationType !== "warehouse" && locationType !== "distribution_center";
+}
+
+/** Backs Checkout's StorefrontPicker for a branch-less employee (Super Admin, typically) — same
+ * active/storefront-type-only filter as DESKTOP's own StorefrontPicker.tsx. A branch-scoped employee
+ * never needs this; their own branch is always authoritative regardless of what they'd pick here. */
+export async function listActiveStorefronts(tenantId: string): Promise<MobileLocation[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const locations = await tx.location.findMany({
+      where: { tenantId, status: "active" },
+      select: { id: true, locationName: true, locationType: true },
+      orderBy: { locationName: "asc" },
+    });
+    return locations.filter((l) => isStorefrontLocationType(l.locationType)).map((l) => ({ id: l.id, locationName: l.locationName }));
+  });
+}
+
 export type MobileSaleListItem = {
   id: string;
   receiptNumber: string | null;

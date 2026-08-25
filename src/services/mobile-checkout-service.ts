@@ -5,6 +5,7 @@ import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/m
 import { computeLineTax, resolveProductTaxConfig, type TenantTaxConfig } from "../lib/tax-breakdown.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { type MobileCheckoutInput, mobileCheckoutSchema } from "../schemas/mobile.js";
+import { isStorefrontLocationType } from "./mobile-sales-service.js";
 
 /** Matches DESKTOP's own sale-service.ts prefix exactly ("BL", 7 digits) — the tag is what tells a
  * mobile-minted number apart from a desktop one ("BL-M3-0000012" vs "BL-D1-0000058"), not the
@@ -85,12 +86,25 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
         tx.product.findMany({ where: { id: { in: parsed.items.map((i) => i.productId) } } }),
       ]);
 
-      if (!location) throw new NotFoundError("Selected storefront was not found");
-      // Mirrors DESKTOP's own requireActiveSession — a branch-scoped employee (every mobile-checkout
-      // capable role in this phase) can only ever sell at their own assigned branch, never pick an
-      // arbitrary location. No branch-less ("Super Admin") mobile-checkout path exists yet.
-      if (employee.branchId !== parsed.locationId) {
-        throw new HttpError(403, "You can only sell from your own assigned storefront.");
+      if (!location || location.tenantId !== tenantId) throw new NotFoundError("Selected storefront was not found");
+      // Mirrors DESKTOP's own sale-service.ts requireActiveSession exactly: a branch-scoped employee
+      // can ONLY ever sell at their own assigned branch (parsed.locationId is ignored/rejected if it
+      // doesn't match — never trusted as a free choice). A branch-less employee (Super Admin,
+      // typically) has no such default, so APP shows a StorefrontPicker and whatever they pick here
+      // is validated as a real, active, genuine storefront (never the Main Store/warehouse, which
+      // nothing is ever directly sold from) — same two rules, same reasoning, same error shape as
+      // DESKTOP used to flatly block this case entirely.
+      if (employee.branchId) {
+        if (employee.branchId !== parsed.locationId) {
+          throw new HttpError(403, "You can only sell from your own assigned storefront.");
+        }
+      } else {
+        if (!isStorefrontLocationType(location.locationType)) {
+          throw new HttpError(400, `"${location.locationName}" isn't a storefront`);
+        }
+        if (location.status !== "active") {
+          throw new HttpError(400, `"${location.locationName}" is not active`);
+        }
       }
       if (!paymentMethod || !paymentMethod.isActive) {
         throw new HttpError(400, "Selected payment method is unavailable");
