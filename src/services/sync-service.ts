@@ -227,6 +227,14 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
 
           // Dedup by natural key BEFORE ever inserting a new row — only relevant the first time this
           // id is seen (an update to an already-known row never needs this). See NATURAL_KEY_FIELDS.
+          // IMPORTANT: an alias must still write this row's actual content to the canonical row
+          // below (via targetId) — it used to `continue` here and discard `data` entirely, which
+          // was harmless the instant the alias was first created (both rows were identical
+          // boot-seeded defaults) but silently dropped every subsequent edit to the aliased local
+          // row forever after (caught live: a role's permission edit reported "synced" locally
+          // while production stayed weeks stale — 2026-08-25).
+          let targetId = id;
+          let aliasedCanonicalId: string | null = null;
           if (naturalKeyField && !existingById) {
             const naturalKeyValue = row[naturalKeyField];
             if (naturalKeyValue !== null && naturalKeyValue !== undefined) {
@@ -234,8 +242,8 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
                 where: { tenantId: parsed.tenantId, [naturalKeyField]: naturalKeyValue },
               });
               if (existingByNaturalKey && existingByNaturalKey.id !== id) {
-                results.push({ id, status: "aliased", canonicalId: existingByNaturalKey.id });
-                continue;
+                targetId = existingByNaturalKey.id;
+                aliasedCanonicalId = existingByNaturalKey.id;
               }
             }
           }
@@ -277,8 +285,14 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
             }
           }
 
-          await delegate.upsert({ where: { id }, create: { id, ...data }, update: data });
-          results.push({ id, status: "ok" });
+          // where/create both use targetId: for a normal row this is just `id` (unchanged
+          // behavior); for an aliased row targetId is the canonical row's id, which is guaranteed
+          // to already exist (found via findFirst above), so this is always the update branch —
+          // the create branch only exists to satisfy upsert's shape.
+          await delegate.upsert({ where: { id: targetId }, create: { id: targetId, ...data }, update: data });
+          results.push(
+            aliasedCanonicalId ? { id, status: "aliased", canonicalId: aliasedCanonicalId } : { id, status: "ok" },
+          );
         } catch (err) {
           results.push({ id, status: "error", error: err instanceof Error ? err.message : "Unknown error" });
         }
