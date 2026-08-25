@@ -18,6 +18,10 @@ export type MobileProductListItem = {
    * product's cart showed a total the cashier could never actually collect, since SERVER's real
    * checkout total — computed via this same field — was always higher — 2026-08-25). */
   pricesTaxInclusive: boolean | null;
+  /** The floor a cashier's price override/discount can never push this line below — null means no
+   * floor. Needed client-side so Checkout's price-override field can warn before submit, matching
+   * mobile-checkout-service.ts's own authoritative check. */
+  minimumPriceCents: number | null;
   reorderLevel: number;
   /** Physical quantity sitting at the tenant's Main Store (distribution center) location, or null
    * if this tenant has no Main Store location at all. Combines what DESKTOP's own Main Store screen
@@ -56,6 +60,7 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
           sellingPriceCents: true,
           taxType: true,
           pricesTaxInclusive: true,
+          minimumPriceCents: true,
         },
         orderBy: { name: "asc" },
       }),
@@ -93,6 +98,7 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         sellingPriceCents: product.sellingPriceCents,
         taxType: product.taxType,
         pricesTaxInclusive: product.pricesTaxInclusive,
+        minimumPriceCents: product.minimumPriceCents,
         reorderLevel: product.reorderLevel,
         mainStoreQuantity,
         storefrontQuantity,

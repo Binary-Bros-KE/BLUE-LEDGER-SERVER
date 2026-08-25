@@ -69,14 +69,22 @@ export const salesReportPeriodQuerySchema = z.discriminatedUnion("mode", [
 
 export type SalesReportPeriodQuery = z.infer<typeof salesReportPeriodQuerySchema>;
 
-/** One cart line as APP sends it — a PREVIEW only. mobile-checkout-service.ts never trusts
- * unitPriceCents/discountAmountCents/lineTotalCents from here; it re-fetches the real Product and
- * recomputes everything server-side (see that service's own doc comment). quantity/discount are the
- * only client inputs that actually matter. */
+/** One cart line as APP sends it — a PREVIEW only. mobile-checkout-service.ts never TRUSTS these
+ * money fields (it re-validates unitPriceCents against the real Product's minimumPriceCents, and
+ * only ever uses localCostCents/localSupplierId when isLocallySourced is true), it just accepts them
+ * as the cashier's INTENT. unitPriceCents omitted means "use the product's own listed selling
+ * price" — present means a cashier-entered mark-up/override for this line only, same convention as
+ * DESKTOP's own priceOverride (never written back to the product). isLocallySourced marks a line
+ * bought from another shop on the spot rather than pulled from this shop's own stock — skips the
+ * usual stock deduction, same as DESKTOP's own sale-service.ts prepareCart. */
 export const mobileCheckoutItemSchema = z.object({
   productId: z.string().trim().min(1),
   quantity: z.coerce.number().int().min(1),
   discountAmountCents: z.coerce.number().int().min(0).default(0),
+  unitPriceCents: z.coerce.number().int().min(0).optional(),
+  isLocallySourced: z.boolean().optional().default(false),
+  localCostCents: z.coerce.number().int().min(0).optional(),
+  localSupplierId: z.string().trim().min(1).optional(),
 });
 
 /** Matches DESKTOP's own ExtraChargesSection DeliveryDraft shape (see sale-service.ts's
@@ -107,6 +115,7 @@ export const mobileCheckoutSchema = z.object({
   customerId: z.string().trim().min(1).optional(),
   amountReceivedCents: z.coerce.number().int().min(0),
   delivery: mobileCheckoutDeliverySchema.optional(),
+  notes: z.string().trim().optional(),
 });
 
 export type MobileCheckoutInput = z.infer<typeof mobileCheckoutSchema>;
@@ -130,3 +139,14 @@ export const mobileCreateRiderSchema = z.object({
 });
 
 export type MobileCreateRiderInput = z.infer<typeof mobileCreateRiderSchema>;
+
+/** Mirrors DESKTOP's own QuickCreateSupplierModal — businessName + phone1 required, contactPerson
+ * optional, paymentOption hardcoded to "cash" (everything else editable later from DESKTOP's
+ * Suppliers screen). Backs Checkout's "Sourced from another shop" supplier picker. */
+export const mobileCreateSupplierSchema = z.object({
+  businessName: z.string().trim().min(1, "Business name is required"),
+  contactPerson: z.string().trim().optional(),
+  phone1: z.string().trim().min(1, "Phone is required"),
+});
+
+export type MobileCreateSupplierInput = z.infer<typeof mobileCreateSupplierSchema>;

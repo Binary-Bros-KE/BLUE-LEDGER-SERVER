@@ -15,6 +15,7 @@ import * as mobileRidersService from "../services/mobile-riders-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
 import * as mobileSalesService from "../services/mobile-sales-service.js";
 import * as mobileStockLedgerService from "../services/mobile-stock-ledger-service.js";
+import * as mobileSuppliersService from "../services/mobile-suppliers-service.js";
 import * as mobileTransactionsService from "../services/mobile-transactions-service.js";
 import { createShareLink } from "../services/share-service.js";
 
@@ -132,6 +133,22 @@ mobileRouter.post(
   requireMobilePermission("riders", "create"),
   async (req, res) => {
     const result = await mobileRidersService.createRider(req.mobileSession!.tenantId, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.get("/suppliers", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileSuppliersService.listSuppliers(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.post(
+  "/suppliers",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("suppliers", "create"),
+  async (req, res) => {
+    const result = await mobileSuppliersService.createSupplier(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.body);
     res.status(201).json(result);
   },
 );

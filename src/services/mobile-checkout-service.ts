@@ -17,6 +17,15 @@ const RECEIPT_DIGITS = 7;
 const DELIVERY_NOTE_PREFIX = "DN";
 const DELIVERY_NOTE_DIGITS = 6;
 
+/** Matches DESKTOP's own expense-service.ts generateExpenseNumber exactly ("EXP", 6 digits). */
+const EXPENSE_PREFIX = "EXP";
+const EXPENSE_DIGITS = 6;
+
+/** Deliberately a plain constant, not tenant-configurable — mirrors DESKTOP's own
+ * expense-service.ts DELIVERY_COST_CATEGORY_NAME verbatim, so a delivery cost recorded from either
+ * device always lands in the SAME category, never two differently-named ones per origin. */
+const DELIVERY_COST_CATEGORY_NAME = "Delivery Costs";
+
 /** Same synthetic deviceId already used for Owner-App-originated writes elsewhere (see
  * routes/mobile.ts's share-link creation) — every synced row needs SOME deviceId, and a mobile
  * session was never issued a real one (see mobile-auth.ts's MobileSession doc comment). */
@@ -89,13 +98,32 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       if (paymentMethod.requiresReference && !parsed.paymentReference?.trim()) {
         throw new HttpError(400, `${paymentMethod.name} requires a reference`);
       }
+      let customerName: string | null = null;
       if (parsed.customerId) {
         const customer = await tx.customer.findUnique({ where: { id: parsed.customerId } });
         if (!customer) throw new NotFoundError("Selected customer was not found");
+        customerName = customer.name;
       }
+      let riderName: string | null = null;
       if (parsed.delivery?.riderId) {
         const rider = await tx.rider.findUnique({ where: { id: parsed.delivery.riderId } });
         if (!rider || rider.status !== "active") throw new NotFoundError("Selected rider was not found");
+        riderName = rider.name;
+      }
+
+      // Batch-validate every distinct local supplier referenced across the cart in one query,
+      // same reasoning as the productById/movementSums batching below — a cart line-by-line
+      // findUnique here would be one round trip per locally-sourced line instead of one total.
+      const localSupplierIds = [
+        ...new Set(parsed.items.filter((i) => i.isLocallySourced && i.localSupplierId).map((i) => i.localSupplierId as string)),
+      ];
+      const validSupplierIds = new Set(
+        localSupplierIds.length > 0
+          ? (await tx.supplier.findMany({ where: { id: { in: localSupplierIds }, tenantId }, select: { id: true } })).map((s) => s.id)
+          : [],
+      );
+      for (const id of localSupplierIds) {
+        if (!validSupplierIds.has(id)) throw new NotFoundError("Selected local supplier was not found");
       }
 
       const productById = new Map(products.map((p) => [p.id, p]));
@@ -137,9 +165,17 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           throw new HttpError(400, "One of the selected products is no longer available");
         }
 
-        // Phase 1: no wholesale price-break or cashier price-override on mobile yet — always the
-        // product's own listed selling price.
-        const unitPriceCents = product.sellingPriceCents;
+        // A cashier-entered override replaces the derived price outright for this line only — it's
+        // never written back to the product's own sellingPriceCents. Mirrors DESKTOP's own
+        // sale-service.ts prepareCart exactly, including the two SEPARATE minimum-price checks below
+        // (price-itself-below-floor vs discount-pushes-below-floor) — DESKTOP split these from one
+        // combined check because a cashier typing a marked-up price straight below the floor, with
+        // zero discount involved, used to see a confusing error blaming a discount that was never
+        // applied.
+        const unitPriceCents = item.unitPriceCents ?? product.sellingPriceCents;
+        if (product.minimumPriceCents !== null && unitPriceCents < product.minimumPriceCents) {
+          throw new HttpError(400, `Price for "${product.name}" can't be below its minimum price of ${(product.minimumPriceCents / 100).toFixed(2)}`);
+        }
         const lineSubtotalCents = unitPriceCents * item.quantity;
         if (item.discountAmountCents > lineSubtotalCents) {
           throw new HttpError(400, `Discount for "${product.name}" can't exceed its subtotal`);
@@ -149,7 +185,10 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           throw new HttpError(400, `Discount for "${product.name}" would drop it below its minimum price`);
         }
 
-        if (product.trackStock) {
+        // A line bought from another shop on the spot (customer wanted something this shop doesn't
+        // carry) was never pulled from this shop's own stock — skip the usual availability check and
+        // deduction entirely, same as DESKTOP's own prepareCart/completeSale.
+        if (product.trackStock && !item.isLocallySourced) {
           const available = stockByProduct.get(product.id) ?? 0;
           if (available - item.quantity < 0 && !product.allowNegativeStock) {
             throw new HttpError(400, `"${product.name}" doesn't have enough stock (${available} available)`);
@@ -173,13 +212,15 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           taxType: product.taxType,
           taxAmountCents: taxCents,
           lineTotalCents: grossCents,
-          isLocallySourced: false,
-          localCostCents: null,
-          localSupplierId: null,
+          isLocallySourced: item.isLocallySourced,
+          // The customer is still charged unitPriceCents like any other line — this is purely a cost
+          // figure for Reports, never folded into any total, matching DESKTOP's own prepareCart.
+          localCostCents: item.isLocallySourced ? (item.localCostCents ?? null) : null,
+          localSupplierId: item.isLocallySourced ? (item.localSupplierId ?? null) : null,
           createdAt: now.toISOString(),
         });
 
-        if (product.trackStock) {
+        if (product.trackStock && !item.isLocallySourced) {
           stockMovementRows.push({ id: randomUUID(), productId: product.id, quantityChange: -item.quantity });
         }
       }
@@ -206,11 +247,9 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
 
       // Embedded JSON snapshot, not a separate synced table — mirrors SERVER's own Sale.delivery
       // column doc comment exactly (the shape DESKTOP's push already flattens its local
-      // delivery_notes row into). costCents is internal-only (never shown on the receipt) — DESKTOP
-      // also auto-creates a "Delivery Costs" expense when costCents > 0
-      // (expense-service.ts's createDeliveryCostExpenseIfNeeded); mobile doesn't replicate that
-      // side effect yet, so a delivery cost entered here won't show up in Expenses until DESKTOP
-      // picks up the pulled sale — a known, deliberately deferred gap, not an oversight.
+      // delivery_notes row into). costCents is internal-only (never shown on the receipt) — see
+      // createDeliveryCostExpenseIfNeeded below for the matching "Delivery Costs" expense DESKTOP
+      // also auto-creates when costCents > 0.
       const deliveryJson = parsed.delivery
         ? {
             id: randomUUID(),
@@ -248,7 +287,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           paymentReference: parsed.paymentReference ?? null,
           amountReceivedCents: parsed.amountReceivedCents,
           changeGivenCents,
-          notes: null,
+          notes: parsed.notes?.trim() || null,
           completedAt: now,
           transactionType: "retail_sale",
           paymentStatus: "paid",
@@ -285,6 +324,66 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
             localCreatedAt: now,
             localUpdatedAt: now,
           })),
+        });
+      }
+
+      // Mirrors DESKTOP's own expense-service.ts createDeliveryCostExpenseIfNeeded verbatim: a
+      // delivery's costCents (what THIS shop paid the rider/courier, distinct from feeCents — what
+      // the CUSTOMER paid, already folded into grandTotalCents above) auto-creates a real Expense
+      // record so it shows up in Reports/Transactions the same way a DESKTOP-originated delivery's
+      // cost would. Guarded the same way DESKTOP is: needs a real cost AND a payment method to
+      // record it against (mobile checkout always has one, so this only ever skips on a zero cost).
+      if (parsed.delivery && parsed.delivery.costCents > 0) {
+        let category = await tx.expenseCategory.findFirst({ where: { tenantId, name: DELIVERY_COST_CATEGORY_NAME } });
+        if (!category) {
+          category = await tx.expenseCategory.create({
+            data: {
+              id: `expense_category_${randomUUID()}`,
+              tenantId,
+              deviceId: OWNER_APP_DEVICE_ID,
+              name: DELIVERY_COST_CATEGORY_NAME,
+              description: null,
+              status: "active",
+              localCreatedAt: now,
+              localUpdatedAt: now,
+            },
+          });
+        }
+
+        const expenseNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, EXPENSE_PREFIX, EXPENSE_DIGITS);
+        const descriptionLines = [
+          `Sale: ${receiptNumber}`,
+          `Customer: ${customerName ?? "Walk-in Customer"}`,
+          `Delivered To: ${parsed.delivery.recipientName}`,
+        ];
+        const addressParts = [parsed.delivery.physicalAddress, parsed.delivery.town, parsed.delivery.country].filter(Boolean);
+        if (addressParts.length > 0) descriptionLines.push(`Address: ${addressParts.join(", ")}`);
+        if (riderName) descriptionLines.push(`Rider: ${riderName}`);
+        if (parsed.delivery.notes) descriptionLines.push(`Notes: ${parsed.delivery.notes}`);
+
+        await tx.expense.create({
+          data: {
+            id: `expense_${randomUUID()}`,
+            tenantId,
+            deviceId: OWNER_APP_DEVICE_ID,
+            kind: "general",
+            expenseNumber,
+            expenseDate: now.toISOString().slice(0, 10),
+            categoryId: category.id,
+            amountCents: parsed.delivery.costCents,
+            paidBy: null,
+            paymentMethodId: parsed.paymentMethodId,
+            storefrontId: parsed.locationId,
+            reference: null,
+            description: descriptionLines.join("\n"),
+            status: "active",
+            isRecurring: false,
+            recurrenceFrequency: null,
+            nextDueDate: null,
+            lastReminderSent: null,
+            localCreatedAt: now,
+            localUpdatedAt: now,
+          },
         });
       }
 
