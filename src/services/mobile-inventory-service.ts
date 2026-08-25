@@ -11,6 +11,13 @@ export type MobileProductListItem = {
    * service.ts always re-fetches the real Product row and recomputes) — display/preview only. */
   sellingPriceCents: number;
   taxType: string;
+  /** This product's own inclusive/exclusive override, or null to fall back to the tenant default
+   * (MobileSessionInfo.pricesTaxInclusive) — same resolveProductTaxConfig contract DESKTOP and
+   * mobile-checkout-service.ts already use. Needed client-side so Checkout's cart preview can show
+   * the REAL tax-inclusive total instead of a naive pre-tax sum (caught live: a tax-exclusive
+   * product's cart showed a total the cashier could never actually collect, since SERVER's real
+   * checkout total — computed via this same field — was always higher — 2026-08-25). */
+  pricesTaxInclusive: boolean | null;
   reorderLevel: number;
   /** Physical quantity sitting at the tenant's Main Store (distribution center) location, or null
    * if this tenant has no Main Store location at all. Combines what DESKTOP's own Main Store screen
@@ -40,7 +47,16 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
     const [products, categories, mainStoreLocation, movementSums] = await Promise.all([
       tx.product.findMany({
         where: { tenantId, trackStock: true, status: "active" },
-        select: { id: true, name: true, sku: true, categoryId: true, reorderLevel: true, sellingPriceCents: true, taxType: true },
+        select: {
+          id: true,
+          name: true,
+          sku: true,
+          categoryId: true,
+          reorderLevel: true,
+          sellingPriceCents: true,
+          taxType: true,
+          pricesTaxInclusive: true,
+        },
         orderBy: { name: "asc" },
       }),
       tx.category.findMany({ where: { tenantId }, select: { id: true, name: true } }),
@@ -76,6 +92,7 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         categoryName: product.categoryId ? (categoryNameById.get(product.categoryId) ?? null) : null,
         sellingPriceCents: product.sellingPriceCents,
         taxType: product.taxType,
+        pricesTaxInclusive: product.pricesTaxInclusive,
         reorderLevel: product.reorderLevel,
         mainStoreQuantity,
         storefrontQuantity,

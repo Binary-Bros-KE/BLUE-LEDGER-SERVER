@@ -22,6 +22,12 @@ export type MobileSessionInfo = {
    * confusing round trip to the server just to find out. */
   branchId: string | null;
   branchName: string | null;
+  /** Tenant-wide tax defaults — Checkout's cart preview needs these (alongside each product's own
+   * pricesTaxInclusive override, see MobileProductListItem) to compute the REAL tax-inclusive total
+   * client-side, the same computeLineTax/resolveProductTaxConfig math mobile-checkout-service.ts
+   * uses authoritatively at submit time. */
+  vatRatePercent: number;
+  pricesTaxInclusive: boolean;
 };
 
 /** Backs the Owner App's sidebar footer (name + role) and gives every tab the tenant's currency
@@ -29,7 +35,10 @@ export type MobileSessionInfo = {
  * into the JWT payload itself, since a name/role/permission change should be reflected without
  * waiting for the 7-day token to be re-issued. */
 export async function getMe(tenantId: string, employeeId: string): Promise<MobileSessionInfo> {
-  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
+  const tenant = await prisma.tenant.findUniqueOrThrow({
+    where: { id: tenantId },
+    select: { currency: true, vatRatePercent: true, pricesTaxInclusive: true },
+  });
   return withTenantContext(tenantId, async (tx) => {
     const employee = await tx.employee.findUniqueOrThrow({ where: { id: employeeId } });
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
@@ -41,6 +50,8 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       permissions: (role?.permissionsJson as Record<string, string[]> | undefined) ?? {},
       branchId: employee.branchId,
       branchName: branch?.locationName ?? null,
+      vatRatePercent: tenant.vatRatePercent,
+      pricesTaxInclusive: tenant.pricesTaxInclusive,
     };
   });
 }
