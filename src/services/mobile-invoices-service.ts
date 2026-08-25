@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
-import { prepareMobileCart } from "../lib/mobile-cart.js";
+import { buildServiceCharges, type MobileServiceChargeInput, prepareMobileCart, sumServiceChargeFees } from "../lib/mobile-cart.js";
 import { buildDeliveryJson, createDeliveryCostExpenseIfNeeded } from "../lib/mobile-delivery.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import type { TenantTaxConfig } from "../lib/tax-breakdown.js";
@@ -53,6 +53,51 @@ async function requireInvoiceRow(tx: Prisma.TransactionClient, tenantId: string,
   return row;
 }
 
+/** Restocks every stock-tracked, non-locally-sourced item on an invoice — shared by updateInvoice
+ * (restock-then-rededuct), cancelInvoice (self-approved direct cancel), and approveInvoiceCancel
+ * (manager-approved cancel). A locally-sourced or untracked item was never actually deducted from
+ * inventory at insert time, so crediting it back here would fabricate stock that was never taken —
+ * matches DESKTOP's own restockAndMarkCancelled condition exactly. */
+async function restockInvoiceItems(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  employeeId: string,
+  items: Array<{ productId: string; quantity: number; isLocallySourced: boolean }>,
+  locationId: string,
+  referenceType: string,
+  referenceId: string,
+  now: Date,
+): Promise<void> {
+  const restockRows = items.filter((item) => !item.isLocallySourced);
+  if (restockRows.length === 0) return;
+
+  const trackedProducts = await tx.product.findMany({
+    where: { id: { in: restockRows.map((i) => i.productId) }, trackStock: true },
+    select: { id: true },
+  });
+  const trackedIds = new Set(trackedProducts.map((p) => p.id));
+  const restockMovements = restockRows.filter((item) => trackedIds.has(item.productId));
+  if (restockMovements.length === 0) return;
+
+  await tx.stockMovement.createMany({
+    data: restockMovements.map((item) => ({
+      id: randomUUID(),
+      tenantId,
+      deviceId: OWNER_APP_DEVICE_ID,
+      productId: item.productId,
+      locationId,
+      movementType: "return",
+      quantityChange: item.quantity,
+      referenceType,
+      referenceId,
+      performedBy: employeeId,
+      allocationExplicit: false,
+      localCreatedAt: now,
+      localUpdatedAt: now,
+    })),
+  });
+}
+
 /** Creates a new invoice — goods/services are considered delivered now, payment can follow over
  * time. Mirrors DESKTOP's own invoice-service.ts createInvoice/insertInvoiceFromCart: real
  * server-side cart preparation (prepareMobileCart), immediate stock deduction (same
@@ -76,7 +121,8 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
       const cart = await prepareMobileCart(tx, tenantId, locationId, parsed.items, tenantTaxConfig, { checkStock: true });
 
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
-      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents;
+      const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
+      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
 
       let payments: SalePayment[] = [];
       let amountPaidCents = 0;
@@ -114,6 +160,7 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
       const mobileDeviceSequence = await ensureEmployeeMobileSequence(tx, tenantId, employeeId, employee.mobileDeviceSequence);
       const invoiceNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, INVOICE_PREFIX, INVOICE_DIGITS);
       const { json: deliveryJson, riderName } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
+      const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
       const saleId = `sale_${randomUUID()}`;
       await tx.sale.create({
@@ -147,7 +194,7 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
           includeTaxBreakdown: parsed.includeTaxBreakdown,
           payments,
           items: cart.items,
-          serviceCharges: [],
+          serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
           localCreatedAt: now,
           localUpdatedAt: now,
@@ -221,6 +268,7 @@ export type MobileInvoiceEditData = {
   includeTaxBreakdown: boolean;
   items: MobileEditableItem[];
   delivery: MobileEditableDelivery | null;
+  serviceCharges: MobileServiceChargeInput[];
 };
 
 /** Raw, re-editable form of an invoice — deliberately NOT the same view-model SharedDocument/
@@ -239,6 +287,7 @@ export async function getInvoiceEditData(tenantId: string, id: string): Promise<
 
     const items = row.items as unknown as MobileEditableItem[];
     const delivery = row.delivery as unknown as (MobileEditableDelivery & { [key: string]: unknown }) | null;
+    const serviceCharges = row.serviceCharges as unknown as Array<MobileServiceChargeInput & { id: string; createdAt: string }>;
 
     return {
       customerId: row.customerId,
@@ -246,6 +295,7 @@ export async function getInvoiceEditData(tenantId: string, id: string): Promise<
       dueDate: row.dueDate ?? "",
       invoiceNotes: row.invoiceNotes,
       includeTaxBreakdown: row.includeTaxBreakdown,
+      serviceCharges: serviceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),
       items: items.map((item) => ({
         productId: item.productId,
         quantity: item.quantity,
@@ -295,7 +345,8 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
       const cart = await prepareMobileCart(tx, tenantId, row.locationId, parsed.items, tenantTaxConfig, { checkStock: false });
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
-      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents;
+      const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
+      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
       const paymentStatus = computePaymentStatus({ balanceDueCents: grandTotalCents, amountPaidCents: 0, dueDate: parsed.dueDate, cancelled: false });
       const now = new Date();
 
@@ -304,37 +355,11 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
       // happen in the SAME transaction, so a new cart that needs more stock than's available throws
       // and the whole edit rolls back with nothing left half-adjusted, matching DESKTOP exactly.
       const existingItems = row.items as unknown as Array<{ productId: string; quantity: number; isLocallySourced: boolean }>;
-      const restockRows = existingItems.filter((item) => !item.isLocallySourced);
-      if (restockRows.length > 0) {
-        const trackedProducts = await tx.product.findMany({
-          where: { id: { in: restockRows.map((i) => i.productId) }, trackStock: true },
-          select: { id: true },
-        });
-        const trackedIds = new Set(trackedProducts.map((p) => p.id));
-        const restockMovements = restockRows.filter((item) => trackedIds.has(item.productId));
-        if (restockMovements.length > 0) {
-          await tx.stockMovement.createMany({
-            data: restockMovements.map((item) => ({
-              id: randomUUID(),
-              tenantId,
-              deviceId: OWNER_APP_DEVICE_ID,
-              productId: item.productId,
-              locationId: row.locationId,
-              movementType: "return",
-              quantityChange: item.quantity,
-              referenceType: "invoice_edit",
-              referenceId: id,
-              performedBy: employeeId,
-              allocationExplicit: false,
-              localCreatedAt: now,
-              localUpdatedAt: now,
-            })),
-          });
-        }
-      }
+      await restockInvoiceItems(tx, tenantId, employeeId, existingItems, row.locationId, "invoice_edit", id, now);
 
       const mobileDeviceSequence = await ensureEmployeeMobileSequence(tx, tenantId, employeeId, (await tx.employee.findUniqueOrThrow({ where: { id: employeeId } })).mobileDeviceSequence);
       const { json: deliveryJson } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
+      const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
       await tx.sale.update({
         where: { id },
@@ -351,6 +376,7 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
           invoiceNotes: parsed.invoiceNotes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
           items: cart.items,
+          serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
           localUpdatedAt: now,
         },
@@ -487,6 +513,7 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
         localCostCents: number | null;
         localSupplierId: string | null;
       }>;
+      const originalServiceCharges = original.serviceCharges as unknown as MobileServiceChargeInput[];
 
       return createInvoice(tenantId, employeeId, {
         customerId: original.customerId,
@@ -507,6 +534,7 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
           localSupplierId: item.localSupplierId ?? undefined,
         })),
         initialPayment: null,
+        serviceCharges: originalServiceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),
         locationId: original.locationId,
       });
     },
@@ -514,57 +542,32 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
   );
 }
 
+const PENDING_APPROVAL = "pending_approval";
+
+async function assertNoPendingCancellation(tx: Prisma.TransactionClient, tenantId: string, saleId: string): Promise<void> {
+  const pending = await tx.invoiceCancellation.findFirst({ where: { tenantId, saleId, status: PENDING_APPROVAL } });
+  if (pending) throw new HttpError(400, "This invoice already has a cancellation request awaiting approval");
+}
+
 /** The "Cancel Invoice" button — self-approved, effective immediately. Still creates a real
- * invoice_cancellations row (status inserted pending, then transitioned to approved in the same
- * transaction) rather than skipping the table entirely, matching DESKTOP's own cancelInvoiceDirect —
- * this and any future approval-gated route share one audit trail. Gated by the SAME
- * "approvals":"approve" permission DESKTOP requires (not "sales":"edit") — cancelling outright with
- * no approval step is only as safe as approving someone else's request would be. The separate
- * async request/approve workflow for lower-permission staff (DESKTOP's requestInvoiceCancel/
- * approveInvoiceCancel, its own Approvals inbox) is NOT implemented on mobile — a deliberately scoped
- * -out adjacent feature, not an oversight. */
+ * invoice_cancellations row (status inserted straight as "approved") rather than skipping the table
+ * entirely, matching DESKTOP's own cancelInvoiceDirect — this and requestInvoiceCancel/
+ * approveInvoiceCancel below share one audit trail. Gated by the SAME "approvals":"approve"
+ * permission DESKTOP requires (not "sales":"edit") — cancelling outright with no approval step is
+ * only as safe as approving someone else's request would be. */
 export async function cancelInvoice(tenantId: string, employeeId: string, saleId: string, reason: string | undefined): Promise<MobileInvoiceResult> {
   return withTenantContext(
     tenantId,
     async (tx) => {
       const row = await requireInvoiceRow(tx, tenantId, saleId);
       if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice is already cancelled");
-
-      const pendingCancellation = await tx.invoiceCancellation.findFirst({ where: { tenantId, saleId, status: "pending" } });
-      if (pendingCancellation) throw new HttpError(400, "This invoice already has a cancellation request awaiting approval");
+      await assertNoPendingCancellation(tx, tenantId, saleId);
 
       const items = row.items as unknown as Array<{ productId: string; quantity: number; isLocallySourced: boolean }>;
       const now = new Date();
       const cancellationId = `invoice_cancel_${randomUUID()}`;
 
-      const restockRows = items.filter((item) => !item.isLocallySourced);
-      if (restockRows.length > 0) {
-        const trackedProducts = await tx.product.findMany({
-          where: { id: { in: restockRows.map((i) => i.productId) }, trackStock: true },
-          select: { id: true },
-        });
-        const trackedIds = new Set(trackedProducts.map((p) => p.id));
-        const restockMovements = restockRows.filter((item) => trackedIds.has(item.productId));
-        if (restockMovements.length > 0) {
-          await tx.stockMovement.createMany({
-            data: restockMovements.map((item) => ({
-              id: randomUUID(),
-              tenantId,
-              deviceId: OWNER_APP_DEVICE_ID,
-              productId: item.productId,
-              locationId: row.locationId,
-              movementType: "return",
-              quantityChange: item.quantity,
-              referenceType: "invoice_cancellation",
-              referenceId: cancellationId,
-              performedBy: employeeId,
-              allocationExplicit: false,
-              localCreatedAt: now,
-              localUpdatedAt: now,
-            })),
-          });
-        }
-      }
+      await restockInvoiceItems(tx, tenantId, employeeId, items, row.locationId, "invoice_cancellation", cancellationId, now);
 
       await tx.invoiceCancellation.create({
         data: {
@@ -589,4 +592,142 @@ export async function cancelInvoice(tenantId: string, employeeId: string, saleId
     },
     { timeoutMs: 15_000 },
   );
+}
+
+/** A cashier's request to cancel an invoice — gated by "sales":"edit" (the permission a normal
+ * Cashier already has), not "approvals":"approve". Nothing changes — stock and money both stay
+ * exactly as they are — until a manager approves it. Matches DESKTOP's own requestInvoiceCancel. */
+export async function requestInvoiceCancel(tenantId: string, employeeId: string, saleId: string, reason: string, notes: string | undefined): Promise<MobileInvoiceResult> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await requireInvoiceRow(tx, tenantId, saleId);
+    if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice is already cancelled");
+    await assertNoPendingCancellation(tx, tenantId, saleId);
+
+    const now = new Date();
+    await tx.invoiceCancellation.create({
+      data: {
+        id: `invoice_cancel_${randomUUID()}`,
+        tenantId,
+        deviceId: OWNER_APP_DEVICE_ID,
+        saleId,
+        status: PENDING_APPROVAL,
+        reason: reason.trim(),
+        notes: notes?.trim() || null,
+        requestedBy: employeeId,
+        requestedAt: now,
+        approvedBy: null,
+        approvedAt: null,
+        localCreatedAt: now,
+        localUpdatedAt: now,
+      },
+    });
+    return { id: saleId };
+  });
+}
+
+export type MobilePendingCancellation = {
+  id: string;
+  saleId: string;
+  invoiceNumber: string | null;
+  saleGrandTotalCents: number;
+  locationName: string;
+  reason: string;
+  notes: string | null;
+  requestedByName: string;
+  requestedAt: string;
+  currency: string;
+};
+
+/** Backs the Owner App's Approvals tab — every invoice-cancellation request still awaiting a
+ * decision, tenant-wide (not location-filtered — an approver needs to see requests from every
+ * storefront, same as DESKTOP's own ApprovalsRoute). */
+export async function listPendingInvoiceCancellations(tenantId: string): Promise<MobilePendingCancellation[]> {
+  const { prisma } = await import("../prisma.js");
+  const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
+
+  return withTenantContext(tenantId, async (tx) => {
+    const pending = await tx.invoiceCancellation.findMany({
+      where: { tenantId, status: PENDING_APPROVAL },
+      orderBy: { requestedAt: "asc" },
+    });
+    if (pending.length === 0) return [];
+
+    const saleIds = [...new Set(pending.map((p) => p.saleId))];
+    const employeeIds = [...new Set(pending.map((p) => p.requestedBy))];
+    const [sales, employees] = await Promise.all([
+      tx.sale.findMany({ where: { id: { in: saleIds } }, select: { id: true, invoiceNumber: true, grandTotalCents: true, locationId: true } }),
+      tx.employee.findMany({ where: { id: { in: employeeIds } }, select: { id: true, firstName: true, lastName: true } }),
+    ]);
+    const saleById = new Map(sales.map((s) => [s.id, s]));
+    const locationIds = [...new Set(sales.map((s) => s.locationId))];
+    const locations = await tx.location.findMany({ where: { id: { in: locationIds } }, select: { id: true, locationName: true } });
+    const locationNameById = new Map(locations.map((l) => [l.id, l.locationName]));
+    const employeeNameById = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
+
+    return pending
+      .map((row) => {
+        const sale = saleById.get(row.saleId);
+        if (!sale) return null;
+        return {
+          id: row.id,
+          saleId: row.saleId,
+          invoiceNumber: sale.invoiceNumber,
+          saleGrandTotalCents: sale.grandTotalCents,
+          locationName: locationNameById.get(sale.locationId) ?? "—",
+          reason: row.reason,
+          notes: row.notes,
+          requestedByName: employeeNameById.get(row.requestedBy) ?? "—",
+          requestedAt: row.requestedAt.toISOString(),
+          currency: tenant.currency as string,
+        };
+      })
+      .filter((row): row is MobilePendingCancellation => row !== null);
+  });
+}
+
+async function requirePendingCancellation(tx: Prisma.TransactionClient, tenantId: string, id: string) {
+  const row = await tx.invoiceCancellation.findUnique({ where: { id } });
+  if (!row || row.tenantId !== tenantId) throw new NotFoundError("Cancellation request not found");
+  if (row.status !== PENDING_APPROVAL) throw new HttpError(400, "This request has already been decided");
+  return row;
+}
+
+/** Manager approval: restocks every eligible item and marks both the request and the invoice
+ * decided, matching DESKTOP's own approveInvoiceCancel. Gated by "approvals":"approve" at the
+ * route level. */
+export async function approveInvoiceCancel(tenantId: string, employeeId: string, id: string, notes: string | undefined): Promise<MobileInvoiceResult> {
+  return withTenantContext(
+    tenantId,
+    async (tx) => {
+      const cancellationRow = await requirePendingCancellation(tx, tenantId, id);
+      const saleRow = await requireInvoiceRow(tx, tenantId, cancellationRow.saleId);
+
+      const items = saleRow.items as unknown as Array<{ productId: string; quantity: number; isLocallySourced: boolean }>;
+      const now = new Date();
+      await restockInvoiceItems(tx, tenantId, employeeId, items, saleRow.locationId, "invoice_cancellation", id, now);
+
+      await tx.sale.update({ where: { id: cancellationRow.saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now } });
+      await tx.invoiceCancellation.update({
+        where: { id },
+        data: { status: "approved", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now },
+      });
+
+      return { id: cancellationRow.saleId };
+    },
+    { timeoutMs: 15_000 },
+  );
+}
+
+/** Manager rejection: the invoice and its stock are untouched — only the request itself is marked
+ * decided, matching DESKTOP's own rejectInvoiceCancel. */
+export async function rejectInvoiceCancel(tenantId: string, employeeId: string, id: string, notes: string | undefined): Promise<MobileInvoiceResult> {
+  return withTenantContext(tenantId, async (tx) => {
+    const cancellationRow = await requirePendingCancellation(tx, tenantId, id);
+    const now = new Date();
+    await tx.invoiceCancellation.update({
+      where: { id },
+      data: { status: "rejected", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now },
+    });
+    return { id: cancellationRow.saleId };
+  });
 }

@@ -87,6 +87,17 @@ export const mobileCheckoutItemSchema = z.object({
   localSupplierId: z.string().trim().min(1).optional(),
 });
 
+/** A named custom fee (e.g. "Labour", "Installation") — unlimited per document. costCents is
+ * internal-only and never printed. Matches DESKTOP's own shared/schemas/charges.ts
+ * serviceChargeInputSchema exactly. Shared by checkout/invoice/quotation. */
+export const mobileServiceChargeSchema = z.object({
+  name: z.string().trim().min(1, "Charge name is required").max(120),
+  feeCents: z.coerce.number().int().min(0),
+  costCents: z.coerce.number().int().min(0).optional().default(0),
+});
+
+export const mobileServiceChargesFieldSchema = z.array(mobileServiceChargeSchema).optional().default([]);
+
 /** Matches DESKTOP's own ExtraChargesSection DeliveryDraft shape (see sale-service.ts's
  * DeliveryInput) — riderId is optional (a delivery can be entered before a rider is assigned),
  * everything else mirrors the same fields the desktop's inline delivery panel collects.
@@ -115,6 +126,7 @@ export const mobileCheckoutSchema = z.object({
   customerId: z.string().trim().min(1).optional(),
   amountReceivedCents: z.coerce.number().int().min(0),
   delivery: mobileCheckoutDeliverySchema.optional(),
+  serviceCharges: mobileServiceChargesFieldSchema,
   notes: z.string().trim().optional(),
 });
 
@@ -171,6 +183,7 @@ export const mobileInvoiceSchema = z.object({
   items: z.array(mobileCheckoutItemSchema).min(1, "At least one item is required"),
   initialPayment: mobileInitialPaymentSchema.nullable().optional(),
   delivery: mobileCheckoutDeliverySchema.optional(),
+  serviceCharges: mobileServiceChargesFieldSchema,
   /** Only ever read on CREATE when the signed-in employee has no assigned branch — ignored on
    * update (an invoice's storefront is fixed at creation), same as DESKTOP. */
   locationId: z.string().trim().min(1).optional(),
@@ -204,6 +217,7 @@ export const mobileQuotationSchema = z.object({
   includeTaxBreakdown: z.coerce.boolean().optional().default(true),
   items: z.array(mobileCheckoutItemSchema).min(1, "At least one item is required"),
   delivery: mobileCheckoutDeliverySchema.optional(),
+  serviceCharges: mobileServiceChargesFieldSchema,
   locationId: z.string().trim().min(1).optional(),
 });
 
@@ -233,3 +247,19 @@ export type MobileConvertToInvoiceInput = z.infer<typeof mobileConvertToInvoiceS
 export const mobileQuotationStatusSchema = z.object({
   status: z.enum(["draft", "sent", "accepted", "rejected"]),
 });
+
+// --- Invoice cancellation approvals (Phase 3) ---
+// Mirrors DESKTOP's own shared/schemas/invoice-cancellation.ts exactly.
+
+export const mobileRequestCancelSchema = z.object({
+  reason: z.string().trim().min(1, "A reason is required").max(500),
+  notes: z.string().trim().max(500).optional(),
+});
+
+export type MobileRequestCancelInput = z.infer<typeof mobileRequestCancelSchema>;
+
+export const mobileCancellationDecisionSchema = z.object({
+  notes: z.string().trim().max(500).optional(),
+});
+
+export type MobileCancellationDecisionInput = z.infer<typeof mobileCancellationDecisionSchema>;

@@ -3,6 +3,27 @@ import type { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "./http-error.js";
 import { computeLineTax, resolveProductTaxConfig, type TenantTaxConfig } from "./tax-breakdown.js";
 
+export type MobileServiceChargeInput = { name: string; feeCents: number; costCents: number };
+
+export type PreparedServiceCharge = { id: string; name: string; feeCents: number; costCents: number; createdAt: string };
+
+/** Named ad-hoc fees (e.g. "Labour", "Installation") — same shape DESKTOP's own
+ * sale_service_charges rows carry (id/createdAt minted here, matching persistServiceCharges).
+ * Shared by checkout/invoice/quotation create+update. */
+export function buildServiceCharges(serviceCharges: MobileServiceChargeInput[], now: Date): PreparedServiceCharge[] {
+  return serviceCharges.map((charge) => ({
+    id: randomUUID(),
+    name: charge.name,
+    feeCents: charge.feeCents,
+    costCents: charge.costCents,
+    createdAt: now.toISOString(),
+  }));
+}
+
+export function sumServiceChargeFees(serviceCharges: MobileServiceChargeInput[]): number {
+  return serviceCharges.reduce((sum, charge) => sum + charge.feeCents, 0);
+}
+
 export type MobileCartItemInput = {
   productId: string;
   quantity: number;
@@ -107,7 +128,11 @@ export async function prepareMobileCart(
       throw new HttpError(400, "One of the selected products is no longer available");
     }
 
-    const unitPriceCents = item.unitPriceCents ?? product.sellingPriceCents;
+    // Matches DESKTOP's own cart-pricing.ts computeLinePricing exactly: crossing the configured
+    // quantity threshold swaps the natural (no-override) price to the wholesale rate. An explicit
+    // cashier override still wins over either.
+    const useWholesale = product.wholesalePriceCents !== null && product.wholesaleMinQuantity > 0 && item.quantity >= product.wholesaleMinQuantity;
+    const unitPriceCents = item.unitPriceCents ?? (useWholesale ? (product.wholesalePriceCents as number) : product.sellingPriceCents);
     if (product.minimumPriceCents !== null && unitPriceCents < product.minimumPriceCents) {
       throw new HttpError(400, `Price for "${product.name}" can't be below its minimum price of ${(product.minimumPriceCents / 100).toFixed(2)}`);
     }

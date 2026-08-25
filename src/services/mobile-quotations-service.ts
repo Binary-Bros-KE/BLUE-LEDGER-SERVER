@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
-import { type MobileCartItemInput, prepareMobileCart } from "../lib/mobile-cart.js";
+import {
+  buildServiceCharges,
+  type MobileCartItemInput,
+  type MobileServiceChargeInput,
+  prepareMobileCart,
+  sumServiceChargeFees,
+} from "../lib/mobile-cart.js";
 import { buildDeliveryJson, createDeliveryCostExpenseIfNeeded } from "../lib/mobile-delivery.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import type { TenantTaxConfig } from "../lib/tax-breakdown.js";
@@ -113,7 +119,8 @@ export async function createQuotation(tenantId: string, employeeId: string, inpu
       // DESKTOP exactly (see checkQuotationStock for the separate, explicit action that does).
       const cart = await prepareMobileCart(tx, tenantId, locationId, parsed.items, tenantTaxConfig, { checkStock: false });
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
-      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents;
+      const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
+      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
 
       const mobileDeviceSequence = await ensureEmployeeMobileSequence(tx, tenantId, employeeId, employee.mobileDeviceSequence);
       const quotationNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, QUOTATION_PREFIX, QUOTATION_DIGITS);
@@ -122,6 +129,7 @@ export async function createQuotation(tenantId: string, employeeId: string, inpu
       // matching DESKTOP's quotation-service.ts (which calls persistCartExtras but never
       // createDeliveryCostExpenseIfNeeded).
       const { json: deliveryJson } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
+      const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
       const quotationId = `quotation_${randomUUID()}`;
       await tx.quotation.create({
@@ -144,7 +152,7 @@ export async function createQuotation(tenantId: string, employeeId: string, inpu
           convertedSaleId: null,
           convertedAt: null,
           items: cart.items,
-          serviceCharges: [],
+          serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
           localCreatedAt: now,
           localUpdatedAt: now,
@@ -171,6 +179,7 @@ export type MobileQuotationEditData = {
   includeTaxBreakdown: boolean;
   items: MobileEditableItem[];
   delivery: MobileEditableDelivery | null;
+  serviceCharges: MobileServiceChargeInput[];
 };
 
 /** Raw, re-editable form of a quotation — same reasoning as mobile-invoices-service.ts's
@@ -182,12 +191,14 @@ export async function getQuotationEditData(tenantId: string, id: string): Promis
     const row = await requireEditableDraft(tx, tenantId, id);
     const items = row.items as unknown as MobileEditableItem[];
     const delivery = row.delivery as unknown as MobileEditableDelivery | null;
+    const serviceCharges = row.serviceCharges as unknown as Array<MobileServiceChargeInput & { id: string; createdAt: string }>;
 
     return {
       customerId: row.customerId,
       validUntil: row.validUntil,
       notes: row.notes,
       includeTaxBreakdown: row.includeTaxBreakdown,
+      serviceCharges: serviceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),
       items: items.map((item) => ({
         productId: item.productId,
         quantity: item.quantity,
@@ -231,12 +242,14 @@ export async function updateQuotation(tenantId: string, id: string, input: unkno
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
       const cart = await prepareMobileCart(tx, tenantId, row.locationId, parsed.items, tenantTaxConfig, { checkStock: false });
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
-      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents;
+      const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
+      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
 
       const employee = await tx.employee.findUniqueOrThrow({ where: { id: row.employeeId } });
       const mobileDeviceSequence = await ensureEmployeeMobileSequence(tx, tenantId, row.employeeId, employee.mobileDeviceSequence);
       const now = new Date();
       const { json: deliveryJson } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
+      const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
       await tx.quotation.update({
         where: { id },
@@ -250,6 +263,7 @@ export async function updateQuotation(tenantId: string, id: string, input: unkno
           notes: parsed.notes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
           items: cart.items,
+          serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
           localUpdatedAt: now,
         },
@@ -421,7 +435,13 @@ export async function convertQuotationToSale(tenantId: string, employeeId: strin
         costCents: number;
       } | null;
       const deliveryFeeCents = deliveryRow?.feeCents ?? 0;
-      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents;
+      // The quotation's own service charges carry straight into the resulting sale unchanged — this
+      // IS the entire conversion carry-over mechanism for them, same as delivery below (matches
+      // DESKTOP's own buildConversionCart, which reads the quotation's stored charges verbatim
+      // rather than re-deciding them at conversion time).
+      const quotationServiceCharges = quotation.serviceCharges as unknown as Array<{ feeCents: number }>;
+      const serviceChargeFeeCents = quotationServiceCharges.reduce((sum, charge) => sum + charge.feeCents, 0);
+      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
       const amountReceivedCents = parsed.amountReceivedCents ?? grandTotalCents;
       if (amountReceivedCents < grandTotalCents) {
         throw new HttpError(400, "Amount received is less than the total");
@@ -465,7 +485,7 @@ export async function convertQuotationToSale(tenantId: string, employeeId: strin
           includeTaxBreakdown: quotation.includeTaxBreakdown,
           payments: [],
           items: cart.items,
-          serviceCharges: [],
+          serviceCharges: quotation.serviceCharges as Prisma.InputJsonValue,
           delivery: (quotation.delivery ?? Prisma.JsonNull) as Prisma.InputJsonValue,
           localCreatedAt: now,
           localUpdatedAt: now,
@@ -567,6 +587,12 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
           costCents: deliveryRow.costCents,
         }
       : undefined,
+    // Carried over unchanged, same reasoning as delivery above.
+    serviceCharges: (quotation.serviceCharges as unknown as MobileServiceChargeInput[]).map((charge) => ({
+      name: charge.name,
+      feeCents: charge.feeCents,
+      costCents: charge.costCents,
+    })),
     locationId,
   });
 

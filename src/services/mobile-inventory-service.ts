@@ -22,6 +22,11 @@ export type MobileProductListItem = {
    * floor. Needed client-side so Checkout's price-override field can warn before submit, matching
    * mobile-checkout-service.ts's own authoritative check. */
   minimumPriceCents: number | null;
+  /** Auto-pricing at a quantity threshold — null wholesalePriceCents or a zero/negative
+   * wholesaleMinQuantity means this product has no wholesale tier at all. Matches DESKTOP's own
+   * cart-pricing.ts computeLinePricing condition exactly. */
+  wholesalePriceCents: number | null;
+  wholesaleMinQuantity: number;
   reorderLevel: number;
   /** Physical quantity sitting at the tenant's Main Store (distribution center) location, or null
    * if this tenant has no Main Store location at all. Combines what DESKTOP's own Main Store screen
@@ -61,6 +66,8 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
           taxType: true,
           pricesTaxInclusive: true,
           minimumPriceCents: true,
+          wholesalePriceCents: true,
+          wholesaleMinQuantity: true,
         },
         orderBy: { name: "asc" },
       }),
@@ -99,6 +106,8 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         taxType: product.taxType,
         pricesTaxInclusive: product.pricesTaxInclusive,
         minimumPriceCents: product.minimumPriceCents,
+        wholesalePriceCents: product.wholesalePriceCents,
+        wholesaleMinQuantity: product.wholesaleMinQuantity,
         reorderLevel: product.reorderLevel,
         mainStoreQuantity,
         storefrontQuantity,

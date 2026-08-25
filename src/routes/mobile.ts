@@ -2,8 +2,10 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess } from "../middleware/mobile-auth.js";
 import {
+  mobileCancellationDecisionSchema,
   mobileDashboardQuerySchema,
   mobileQuotationStatusSchema,
+  mobileRequestCancelSchema,
   mobileSalesQuerySchema,
   mobileShareLinkSchema,
   salesReportPeriodQuerySchema,
@@ -178,8 +180,8 @@ mobileRouter.post(
 );
 
 // Self-approved direct cancel — same "approvals":"approve" gate DESKTOP's own cancelInvoiceDirect
-// requires (not "sales":"edit"); a plain Cashier won't have this by default. The separate async
-// request/approve workflow for lower-permission staff is not implemented on mobile yet.
+// requires (not "sales":"edit"); a plain Cashier won't have this by default. See the async
+// request/approve/reject routes below for the lower-permission-staff workflow.
 mobileRouter.post(
   "/invoices/:id/cancel",
   requireMobileAuth,
@@ -188,6 +190,56 @@ mobileRouter.post(
   async (req, res) => {
     const reason = typeof req.body?.reason === "string" ? req.body.reason : undefined;
     const result = await mobileInvoicesService.cancelInvoice(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, reason);
+    res.json(result);
+  },
+);
+
+// A cashier's request to cancel an invoice — gated by "sales":"edit" (the permission a normal
+// Cashier already has), not "approvals":"approve". Mirrors DESKTOP's own requestInvoiceCancel route.
+mobileRouter.post(
+  "/invoices/:id/request-cancel",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const { reason, notes } = mobileRequestCancelSchema.parse(req.body);
+    const result = await mobileInvoicesService.requestInvoiceCancel(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, reason, notes);
+    res.status(201).json(result);
+  },
+);
+
+// Approvals inbox — every invoice-cancellation request still awaiting a decision, tenant-wide.
+mobileRouter.get(
+  "/approvals/invoice-cancellations",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("approvals", "approve"),
+  async (req, res) => {
+    const result = await mobileInvoicesService.listPendingInvoiceCancellations(req.mobileSession!.tenantId);
+    res.json(result);
+  },
+);
+
+mobileRouter.post(
+  "/approvals/invoice-cancellations/:id/approve",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("approvals", "approve"),
+  async (req, res) => {
+    const { notes } = mobileCancellationDecisionSchema.parse(req.body);
+    const result = await mobileInvoicesService.approveInvoiceCancel(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, notes);
+    res.json(result);
+  },
+);
+
+mobileRouter.post(
+  "/approvals/invoice-cancellations/:id/reject",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("approvals", "approve"),
+  async (req, res) => {
+    const { notes } = mobileCancellationDecisionSchema.parse(req.body);
+    const result = await mobileInvoicesService.rejectInvoiceCancel(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, notes);
     res.json(result);
   },
 );

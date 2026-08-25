@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
-import { prepareMobileCart } from "../lib/mobile-cart.js";
+import { buildServiceCharges, prepareMobileCart, sumServiceChargeFees } from "../lib/mobile-cart.js";
 import { buildDeliveryJson, createDeliveryCostExpenseIfNeeded } from "../lib/mobile-delivery.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import type { TenantTaxConfig } from "../lib/tax-breakdown.js";
@@ -119,11 +119,12 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
       const cart = await prepareMobileCart(tx, tenantId, locationId, parsed.items, tenantTaxConfig, { checkStock: true });
 
-      // Delivery fee folds straight in (no service charges on mobile yet), matching DESKTOP's own
-      // prepareCart extraFeesCents — a cashier who's asked to collect a delivery fee must see and be
-      // validated against the SAME total that includes it.
+      // Delivery fee + service charge fees fold straight in, matching DESKTOP's own prepareCart
+      // extraFeesCents — a cashier who's asked to collect either must see and be validated against
+      // the SAME total that includes them.
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
-      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents;
+      const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
+      const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
       if (parsed.amountReceivedCents < grandTotalCents) {
         throw new HttpError(400, "Amount received is less than the total");
       }
@@ -138,6 +139,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       const receiptNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, RECEIPT_PREFIX, RECEIPT_DIGITS);
       const now = new Date();
       const { json: deliveryJson, riderName } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
+      const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
       await tx.sale.create({
         data: {
@@ -170,7 +172,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           includeTaxBreakdown: true,
           payments: [],
           items: cart.items,
-          serviceCharges: [],
+          serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
           localCreatedAt: now,
           localUpdatedAt: now,
