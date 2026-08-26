@@ -270,6 +270,9 @@ export async function updateQuotation(tenantId: string, id: string, input: unkno
           serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
           localUpdatedAt: now,
+          // syncedAt must be set explicitly on every mobile-originated update — see
+          // mobile-invoices-service.ts's updateInvoice for the full explanation of this bug class.
+          syncedAt: now,
         },
       });
 
@@ -306,7 +309,8 @@ export async function setQuotationStatus(tenantId: string, id: string, status: s
     const row = await tx.quotation.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
     if (row.status === "converted") throw new HttpError(400, "This quotation has already been converted and can't change status");
-    await tx.quotation.update({ where: { id }, data: { status, localUpdatedAt: new Date() } });
+    const now = new Date();
+    await tx.quotation.update({ where: { id }, data: { status, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
@@ -317,7 +321,8 @@ export async function setQuotationIncludeTaxBreakdown(tenantId: string, id: stri
   return withTenantContext(tenantId, async (tx) => {
     const row = await tx.quotation.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
-    await tx.quotation.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: new Date() } });
+    const now = new Date();
+    await tx.quotation.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
@@ -328,7 +333,8 @@ export async function setQuotationIncludeBusinessInfo(tenantId: string, id: stri
   return withTenantContext(tenantId, async (tx) => {
     const row = await tx.quotation.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
-    await tx.quotation.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: new Date() } });
+    const now = new Date();
+    await tx.quotation.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
@@ -559,7 +565,7 @@ export async function convertQuotationToSale(tenantId: string, employeeId: strin
         });
       }
 
-      await tx.quotation.update({ where: { id }, data: { status: "converted", convertedSaleId: saleId, convertedAt: now, localUpdatedAt: now } });
+      await tx.quotation.update({ where: { id }, data: { status: "converted", convertedSaleId: saleId, convertedAt: now, localUpdatedAt: now, syncedAt: now } });
 
       return { id: saleId };
     },
@@ -624,9 +630,13 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
     locationId,
   });
 
-  await withTenantContext(tenantId, (tx) =>
-    tx.quotation.update({ where: { id }, data: { status: "converted", convertedSaleId: result.id, convertedAt: new Date(), localUpdatedAt: new Date() } }),
-  );
+  await withTenantContext(tenantId, (tx) => {
+    const now = new Date();
+    return tx.quotation.update({
+      where: { id },
+      data: { status: "converted", convertedSaleId: result.id, convertedAt: now, localUpdatedAt: now, syncedAt: now },
+    });
+  });
 
   return result;
 }

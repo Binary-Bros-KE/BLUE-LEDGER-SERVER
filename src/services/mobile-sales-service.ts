@@ -115,7 +115,10 @@ export async function setSaleIncludeTaxBreakdown(tenantId: string, id: string, v
   return withTenantContext(tenantId, async (tx) => {
     const row = await tx.sale.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Sale not found");
-    await tx.sale.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: new Date() } });
+    // syncedAt must be set explicitly on every mobile-originated update — see
+    // mobile-invoices-service.ts's updateInvoice for the full explanation of this bug class.
+    const now = new Date();
+    await tx.sale.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
@@ -126,7 +129,8 @@ export async function setSaleIncludeBusinessInfo(tenantId: string, id: string, v
   return withTenantContext(tenantId, async (tx) => {
     const row = await tx.sale.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Sale not found");
-    await tx.sale.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: new Date() } });
+    const now = new Date();
+    await tx.sale.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }

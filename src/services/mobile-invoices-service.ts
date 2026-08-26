@@ -383,6 +383,12 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
           serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
           localUpdatedAt: now,
+          // syncedAt is @default(now()) — Prisma only applies that on CREATE, never on a later
+          // UPDATE. DESKTOP's pull is a delta query (syncedAt: { gt: since }), so leaving this out
+          // means the edit stays permanently invisible to every other device — the exact bug already
+          // found and fixed once in mobile-working-hours-service.ts. Must be set explicitly on every
+          // mobile-originated Sale/Quotation update, not just create.
+          syncedAt: now,
         },
       });
 
@@ -457,7 +463,9 @@ async function applyPayment(
 
   await tx.sale.update({
     where: { id: saleId },
-    data: { payments, amountPaidCents, balanceDueCents, paymentStatus, localUpdatedAt: now },
+    // syncedAt must be set explicitly on every mobile-originated update — see updateInvoice's own
+    // comment on this exact bug class.
+    data: { payments, amountPaidCents, balanceDueCents, paymentStatus, localUpdatedAt: now, syncedAt: now },
   });
 
   return { id: saleId };
@@ -591,7 +599,7 @@ export async function cancelInvoice(tenantId: string, employeeId: string, saleId
           localUpdatedAt: now,
         },
       });
-      await tx.sale.update({ where: { id: saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now } });
+      await tx.sale.update({ where: { id: saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now, syncedAt: now } });
 
       return { id: saleId };
     },
@@ -711,10 +719,10 @@ export async function approveInvoiceCancel(tenantId: string, employeeId: string,
       const now = new Date();
       await restockInvoiceItems(tx, tenantId, employeeId, items, saleRow.locationId, "invoice_cancellation", id, now);
 
-      await tx.sale.update({ where: { id: cancellationRow.saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now } });
+      await tx.sale.update({ where: { id: cancellationRow.saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now, syncedAt: now } });
       await tx.invoiceCancellation.update({
         where: { id },
-        data: { status: "approved", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now },
+        data: { status: "approved", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now, syncedAt: now },
       });
 
       return { id: cancellationRow.saleId };
@@ -731,7 +739,7 @@ export async function rejectInvoiceCancel(tenantId: string, employeeId: string, 
     const now = new Date();
     await tx.invoiceCancellation.update({
       where: { id },
-      data: { status: "rejected", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now },
+      data: { status: "rejected", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now, syncedAt: now },
     });
     return { id: cancellationRow.saleId };
   });
