@@ -150,6 +150,18 @@ mobileRouter.post(
   },
 );
 
+mobileRouter.post(
+  "/sales/:id/delivery/delivered",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const parsed = mobileBooleanValueSchema.parse(req.body);
+    const result = await mobileSalesService.setSaleDeliveryDelivered(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
+    res.json(result);
+  },
+);
+
 mobileRouter.get("/sales/:id/returnable-items", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const result = await mobileSalesService.getSaleReturnableItems(req.mobileSession!.tenantId, req.params.id as string);
   res.json(result);
@@ -399,6 +411,21 @@ mobileRouter.post(
   async (req, res) => {
     const parsed = mobileBooleanValueSchema.parse(req.body);
     const result = await mobileQuotationsService.setQuotationIncludeBusinessInfo(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
+    res.json(result);
+  },
+);
+
+// "sales":"edit" here on purpose, not "quotations":"edit" — mirrors DESKTOP's own
+// setDeliveryNoteDelivered, which uses a single permission gate for a delivery regardless of whether
+// it's attached to a sale or a quotation (delivery-note-service.ts).
+mobileRouter.post(
+  "/quotations/:id/delivery/delivered",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const parsed = mobileBooleanValueSchema.parse(req.body);
+    const result = await mobileQuotationsService.setQuotationDeliveryDelivered(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
     res.json(result);
   },
 );

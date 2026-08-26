@@ -160,6 +160,9 @@ export type SharedDocumentResult = {
    * whether to show a "View Delivery Note" action, without a separate per-list-type field. See
    * buildSharedDeliveryNote for the actual delivery-note content. */
   hasDeliveryNote: boolean;
+  /** Null when hasDeliveryNote is false — otherwise the delivery's own isDelivered flag, so mobile
+   * can show a Delivered/Pending pill without a second fetch. */
+  deliveryIsDelivered: boolean | null;
   vatRatePercent: number;
   grandTotalCents: number;
   paymentMethodName: string | null;
@@ -439,6 +442,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         customerKraPin: customer?.kraPin ?? null,
         includeBusinessInfo: sale.includeBusinessInfo,
         hasDeliveryNote: sale.delivery !== null,
+        deliveryIsDelivered: (sale.delivery as RawDelivery)?.isDelivered ?? null,
         items: items.map((item) => ({
           name: productById.get(item.productId)?.name ?? "Unknown product",
           sku: productById.get(item.productId)?.sku ?? null,
@@ -512,6 +516,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       customerKraPin: customer?.kraPin ?? null,
       includeBusinessInfo: quotation.includeBusinessInfo,
       hasDeliveryNote: quotation.delivery !== null,
+      deliveryIsDelivered: (quotation.delivery as RawDelivery)?.isDelivered ?? null,
       items: items.map((item) => ({
         name: productById.get(item.productId)?.name ?? "Unknown product",
         sku: productById.get(item.productId)?.sku ?? null,

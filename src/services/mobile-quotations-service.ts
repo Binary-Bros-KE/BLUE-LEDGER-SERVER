@@ -342,6 +342,25 @@ export async function setQuotationIncludeTaxBreakdown(tenantId: string, id: stri
   });
 }
 
+/** Same reasoning as mobile-sales-service.ts's setSaleDeliveryDelivered — mirrors DESKTOP's own
+ * setDeliveryNoteDelivered, which uses the "sales":"edit" permission gate even for a quotation-owned
+ * delivery (see the route's own comment); this function only handles the write. */
+export async function setQuotationDeliveryDelivered(tenantId: string, id: string, delivered: boolean): Promise<{ id: string }> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await tx.quotation.findUnique({ where: { id } });
+    if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
+    if (!row.delivery) throw new HttpError(400, "This quotation has no delivery attached");
+    const now = new Date();
+    const delivery = {
+      ...(row.delivery as Record<string, unknown>),
+      isDelivered: delivered,
+      deliveredAt: delivered ? now.toISOString() : null,
+    };
+    await tx.quotation.update({ where: { id }, data: { delivery, localUpdatedAt: now, syncedAt: now } });
+    return { id };
+  });
+}
+
 /** Same as setQuotationIncludeTaxBreakdown above, for the independent "Include storefront
  * information" toggle — see Sale["includeBusinessInfo"]'s own doc comment (schema.prisma). */
 export async function setQuotationIncludeBusinessInfo(tenantId: string, id: string, value: boolean): Promise<{ id: string }> {

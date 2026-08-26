@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -41,7 +42,62 @@ export async function listActiveStorefronts(tenantId: string): Promise<MobileLoc
   });
 }
 
-export type MobileSaleListItem = {
+/** Mirrors DESKTOP's own ReceiptsRoute.tsx saleStatusInfo map exactly (approved/pending/rejected per
+ * request type) — a completed sale can independently have a void request and a return request, each
+ * with its own lifecycle, so this is 6 flags, not one status string. Void applies only to a completed
+ * retail sale (receipts) in this system, same as DESKTOP; quotations have no equivalent. */
+export type SaleStatusFlags = {
+  approvedVoid: boolean;
+  pendingVoid: boolean;
+  rejectedVoid: boolean;
+  approvedReturn: boolean;
+  pendingReturn: boolean;
+  rejectedReturn: boolean;
+};
+
+function emptyStatusFlags(): SaleStatusFlags {
+  return {
+    approvedVoid: false,
+    pendingVoid: false,
+    rejectedVoid: false,
+    approvedReturn: false,
+    pendingReturn: false,
+    rejectedReturn: false,
+  };
+}
+
+/** Batch-builds a saleId -> status-flags map for a whole list, same reasoning as DESKTOP's own
+ * useMemo'd map: one query per request-type for however many sales are being listed, not N+1. */
+async function getSaleStatusFlagsMap(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  saleIds: string[],
+): Promise<Map<string, SaleStatusFlags>> {
+  const map = new Map<string, SaleStatusFlags>();
+  if (saleIds.length === 0) return map;
+
+  const [voids, returns] = await Promise.all([
+    tx.saleVoid.findMany({ where: { tenantId, saleId: { in: saleIds } }, select: { saleId: true, status: true } }),
+    tx.saleReturn.findMany({ where: { tenantId, saleId: { in: saleIds } }, select: { saleId: true, status: true } }),
+  ]);
+  for (const voidRequest of voids) {
+    const entry = map.get(voidRequest.saleId) ?? emptyStatusFlags();
+    if (voidRequest.status === "approved") entry.approvedVoid = true;
+    if (voidRequest.status === "pending_approval") entry.pendingVoid = true;
+    if (voidRequest.status === "rejected") entry.rejectedVoid = true;
+    map.set(voidRequest.saleId, entry);
+  }
+  for (const returnRequest of returns) {
+    const entry = map.get(returnRequest.saleId) ?? emptyStatusFlags();
+    if (returnRequest.status === "approved") entry.approvedReturn = true;
+    if (returnRequest.status === "pending_approval") entry.pendingReturn = true;
+    if (returnRequest.status === "rejected") entry.rejectedReturn = true;
+    map.set(returnRequest.saleId, entry);
+  }
+  return map;
+}
+
+export type MobileSaleListItem = SaleStatusFlags & {
   id: string;
   receiptNumber: string | null;
   customerName: string | null;
@@ -55,10 +111,12 @@ export type MobileSaleListItem = {
   completedAt: string | null;
   createdAt: string;
   hasDeliveryNote: boolean;
+  deliveryIsDelivered: boolean | null;
   currency: string;
 };
 
 type RawItem = { productId: string; quantity: number };
+type RawDeliveryFlag = { isDelivered: boolean } | null;
 
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
@@ -89,6 +147,7 @@ export async function listSales(tenantId: string, locationId: string | null): Pr
     const employeeNameById = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
     const customerNameById = new Map(customers.map((c) => [c.id, c.name]));
     const paymentMethodNameById = new Map(paymentMethods.map((p) => [p.id, p.name]));
+    const statusFlagsById = await getSaleStatusFlagsMap(tx, tenantId, sales.map((s) => s.id));
 
     return sales.map((sale) => ({
       id: sale.id,
@@ -104,15 +163,22 @@ export async function listSales(tenantId: string, locationId: string | null): Pr
       completedAt: sale.completedAt ? sale.completedAt.toISOString() : null,
       createdAt: sale.localCreatedAt.toISOString(),
       hasDeliveryNote: sale.delivery !== null,
+      deliveryIsDelivered: (sale.delivery as RawDeliveryFlag)?.isDelivered ?? null,
       currency: tenant.currency,
+      ...(statusFlagsById.get(sale.id) ?? emptyStatusFlags()),
     }));
   });
 }
 
 /** The owner viewing their own tenant's own sale — a plain authenticated read via the exact same
- * view-model the Share feature renders (buildSharedDocument), not a public-token lookup. */
-export async function getSale(tenantId: string, saleId: string): Promise<SharedDocumentResult | null> {
-  return buildSharedDocument(tenantId, "sale", saleId);
+ * view-model the Share feature renders (buildSharedDocument), not a public-token lookup. Merges in
+ * the same void/return status flags listSales exposes (mobile-only concern — kept off
+ * SharedDocumentResult itself since SHARE/document-html.ts have no use for it). */
+export async function getSale(tenantId: string, saleId: string): Promise<(SharedDocumentResult & SaleStatusFlags) | null> {
+  const doc = await buildSharedDocument(tenantId, "sale", saleId);
+  if (!doc) return null;
+  const flags = await withTenantContext(tenantId, (tx) => getSaleStatusFlagsMap(tx, tenantId, [saleId]));
+  return { ...doc, ...(flags.get(saleId) ?? emptyStatusFlags()) };
 }
 
 /** Same non-pricing view-model DESKTOP's own DeliveryNotePreview and the public SHARE page render —
@@ -133,6 +199,28 @@ export async function setSaleIncludeTaxBreakdown(tenantId: string, id: string, v
     // mobile-invoices-service.ts's updateInvoice for the full explanation of this bug class.
     const now = new Date();
     await tx.sale.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: now, syncedAt: now } });
+    return { id };
+  });
+}
+
+/** Mirrors DESKTOP's own setDeliveryNoteDelivered exactly — same "sales":"edit" permission gate
+ * regardless of whether the delivery belongs to a sale or a quotation (see the route's own comment).
+ * Delivery lives inline in Sale.delivery JSON on SERVER (unlike DESKTOP's own delivery_notes table),
+ * so this is a partial-field update preserving every other key in that JSON untouched. */
+export async function setSaleDeliveryDelivered(tenantId: string, id: string, delivered: boolean): Promise<{ id: string }> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await tx.sale.findUnique({ where: { id } });
+    if (!row || row.tenantId !== tenantId) throw new NotFoundError("Sale not found");
+    if (!row.delivery) throw new HttpError(400, "This sale has no delivery attached");
+    const now = new Date();
+    const delivery = {
+      ...(row.delivery as Record<string, unknown>),
+      isDelivered: delivered,
+      deliveredAt: delivered ? now.toISOString() : null,
+    };
+    // syncedAt must be set explicitly on every mobile-originated update — see
+    // mobile-invoices-service.ts's updateInvoice for the full explanation of this bug class.
+    await tx.sale.update({ where: { id }, data: { delivery, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
