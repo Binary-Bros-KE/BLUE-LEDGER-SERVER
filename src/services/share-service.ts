@@ -146,13 +146,15 @@ export type SharedDocumentResult = {
   /** Whether the Tax Breakdown section should actually render — see the Sale/Quotation Prisma
    * model's own doc comment. taxBreakdown itself is always computed regardless. */
   includeTaxBreakdown: boolean;
-  /** Whether this document shows ANY shop identity — see the Sale/Quotation Prisma model's own doc
-   * comment on includeBusinessInfo. When false, businessName has already been replaced with a
-   * generic heading, every other identity field (address/phone/header/footer/KRA PIN) is null, and
-   * branchName is "" — every consumer (document-html.ts, DocumentView.tsx, DocumentDetailModal.tsx,
-   * the WhatsApp text share) renders those fields exactly as before with no extra branching, EXCEPT
-   * the "Served by X · Branch: Y" line each of the last three renders independently (branchName's
-   * only consumer) — that line omits its "· Branch: Y" segment whenever branchName is empty. */
+  /** Whether this document shows ANY shop OR staff identity — see the Sale/Quotation Prisma model's
+   * own doc comment on includeBusinessInfo. Per the client's own explicit correction, cashier/
+   * employee name is off-limits here too, not just the shop's ("if we want to see who made the sale
+   * we can just look up the sale"). When false, businessName has already been replaced with a
+   * generic heading and every other identity field (address/phone/header/footer/KRA PIN) is null —
+   * document-html.ts/DocumentView.tsx/DocumentDetailModal.tsx render those with no extra branching.
+   * employeeName/branchName are NOT stripped here (kept for whatever internal/admin use might still
+   * want them) — each of the four consumers (those three plus the WhatsApp text share) instead
+   * checks this flag itself before rendering its own "Served by X [· Branch: Y]" line/column. */
   includeBusinessInfo: boolean;
   vatRatePercent: number;
   grandTotalCents: number;
@@ -719,7 +721,9 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
   lines.push(SEPARATOR);
   lines.push(`${KIND_LABEL[doc.documentKind]}: ${doc.documentNumber ?? "-"}`);
   lines.push(`Date: ${formatDocumentDateTime(doc.dateLabel)}`);
-  lines.push(`Served by: ${doc.employeeName}${doc.branchName ? ` · Branch: ${doc.branchName}` : ""}`);
+  if (doc.includeBusinessInfo) {
+    lines.push(`Served by: ${doc.employeeName}${doc.branchName ? ` · Branch: ${doc.branchName}` : ""}`);
+  }
   if (doc.customerName) lines.push(`Customer: ${doc.customerName}`);
   if (doc.dueDate) lines.push(`Due: ${formatDocumentDate(doc.dueDate)}`);
   if (doc.validUntil) lines.push(`Valid until: ${formatDocumentDate(doc.validUntil)}`);

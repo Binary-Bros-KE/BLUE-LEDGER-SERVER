@@ -275,10 +275,10 @@ function buildReceiptDocumentHtml(doc: SharedDocumentResult): string {
 
     <table class="meta-table">
       <thead>
-        <tr><th>Date</th><th>Served By</th></tr>
+        <tr><th>Date</th>${doc.includeBusinessInfo ? `<th>Served By</th>` : ""}</tr>
       </thead>
       <tbody>
-        <tr><td>${formatDateTime(doc.dateLabel)}</td><td>${escapeHtml(doc.employeeName)}</td></tr>
+        <tr><td>${formatDateTime(doc.dateLabel)}</td>${doc.includeBusinessInfo ? `<td>${escapeHtml(doc.employeeName)}</td>` : ""}</tr>
       </tbody>
     </table>
 
@@ -405,13 +405,13 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
 
     <table class="meta-table">
       <thead>
-        <tr><th>Invoice Date</th><th>Due Date</th><th>Issued By</th><th>Your VAT No.</th></tr>
+        <tr><th>Invoice Date</th><th>Due Date</th>${doc.includeBusinessInfo ? `<th>Issued By</th>` : ""}<th>Your VAT No.</th></tr>
       </thead>
       <tbody>
         <tr>
           <td>${formatDate(doc.dateLabel)}</td>
           <td>${formatDate(doc.dueDate)}</td>
-          <td>${escapeHtml(doc.employeeName)}</td>
+          ${doc.includeBusinessInfo ? `<td>${escapeHtml(doc.employeeName)}</td>` : ""}
           <td>${escapeHtml(doc.customerKraPin ?? "-")}</td>
         </tr>
       </tbody>
@@ -506,13 +506,13 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
 
     <table class="meta-table">
       <thead>
-        <tr><th>Date Prepared</th><th>Valid Until</th><th>Prepared By</th></tr>
+        <tr><th>Date Prepared</th><th>Valid Until</th>${doc.includeBusinessInfo ? `<th>Prepared By</th>` : ""}</tr>
       </thead>
       <tbody>
         <tr>
           <td>${formatDate(doc.dateLabel)}</td>
           <td>${formatDate(doc.validUntil)}</td>
-          <td>${escapeHtml(doc.employeeName)}</td>
+          ${doc.includeBusinessInfo ? `<td>${escapeHtml(doc.employeeName)}</td>` : ""}
         </tr>
       </tbody>
     </table>
