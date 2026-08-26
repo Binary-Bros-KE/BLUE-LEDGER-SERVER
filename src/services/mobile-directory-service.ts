@@ -22,6 +22,11 @@ export type MobileSessionInfo = {
    * confusing round trip to the server just to find out. */
   branchId: string | null;
   branchName: string | null;
+  /** Pre-fills the "Include storefront information" checkbox's initial value on a brand-new sale/
+   * invoice/quotation — see Location["defaultIncludeBusinessInfo"]'s own doc comment. Null for a
+   * branch-less employee (no storefront to read a default from); every mobile create form falls
+   * back to true in that case, same as everywhere else this default is consulted. */
+  defaultIncludeBusinessInfo: boolean | null;
   /** Tenant-wide tax defaults — Checkout's cart preview needs these (alongside each product's own
    * pricesTaxInclusive override, see MobileProductListItem) to compute the REAL tax-inclusive total
    * client-side, the same computeLineTax/resolveProductTaxConfig math mobile-checkout-service.ts
@@ -53,6 +58,7 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       permissions: (role?.permissionsJson as Record<string, string[]> | undefined) ?? {},
       branchId: employee.branchId,
       branchName: branch?.locationName ?? null,
+      defaultIncludeBusinessInfo: branch?.defaultIncludeBusinessInfo ?? null,
       vatRatePercent: tenant.vatRatePercent,
       pricesTaxInclusive: tenant.pricesTaxInclusive,
       isSuperAdmin: role?.isSuperAdmin ?? false,

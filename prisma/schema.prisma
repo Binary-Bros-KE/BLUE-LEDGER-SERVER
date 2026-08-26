@@ -970,6 +970,14 @@ model Location {
   quotationFooter               String?
   showProductImagesOnInvoices   Boolean @default(false)
   showProductImagesOnQuotations Boolean @default(false)
+  /// Pre-fills the "Include storefront information" checkbox's initial value on a brand-new
+  /// receipt/invoice/quotation created at this storefront — DESKTOP's CheckoutRoute/InvoicesRoute/
+  /// QuotationsRoute and APP's CheckoutTab/InvoiceFormModal/QuotationFormModal all read this once,
+  /// at create time only (never overrides an in-progress draft's already-chosen value, and never
+  /// touched again once a document exists — see Sale/Quotation.includeBusinessInfo's own doc
+  /// comment for the actual per-document flag this only ever seeds). @default(true) matches that
+  /// flag's own default — nothing looks different until a storefront owner deliberately flips this.
+  defaultIncludeBusinessInfo    Boolean @default(true)
 
   localCreatedAt DateTime
   localUpdatedAt DateTime

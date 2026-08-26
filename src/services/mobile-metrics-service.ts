@@ -146,6 +146,10 @@ export type OwnerDashboardResult = {
   expensesAndProfit: ExpensesAndProfit;
   stock: StockAlerts;
   credit: OutstandingCredit;
+  /** Only present when the request names an employeeId (the Owner App's Cashier dashboard variant)
+   * — the exact same SalesSnapshot shape as `sales` above, scoped to just that one employee's own
+   * sales, via computeSalesAndProfit's own employeeId parameter. Null for every other caller. */
+  mySales: SalesSnapshot | null;
 };
 
 /** Fetches sale rows + the approved-void exclusion set + item/return/product context shared by both
@@ -159,9 +163,16 @@ export async function computeSalesAndProfit(
   tenantId: string,
   range: PeriodRange,
   locationId?: string | null,
+  /** Scopes both the retail/wholesale sales AND the invoice-payment lookups to one employee — used
+   * by getOwnerDashboard's mySales, so a Cashier's personal figure reuses this exact same
+   * cash-recognition/refund-netting math rather than a second, simpler (and possibly
+   * inconsistent) reimplementation. Sale.employeeId is "who owns/created the sale", same semantics
+   * DESKTOP's own CashierDashboard filters salesByEmployee by. */
+  employeeId?: string | null,
 ): Promise<{ sales: SalesSnapshot; profit: ExpensesAndProfit }> {
   const { start, endExclusive } = range;
   const locationWhere = locationId ? { locationId } : {};
+  const employeeWhere = employeeId ? { employeeId } : {};
 
   const [
     voidedSales,
@@ -179,6 +190,7 @@ export async function computeSalesAndProfit(
       where: {
         tenantId,
         ...locationWhere,
+        ...employeeWhere,
         saleStatus: "completed",
         completedAt: { gte: start, lt: endExclusive },
         OR: [{ invoiceNumber: null }, { amountPaidCents: { gt: 0 } }],
@@ -198,6 +210,7 @@ export async function computeSalesAndProfit(
       where: {
         tenantId,
         ...locationWhere,
+        ...employeeWhere,
         saleStatus: "completed",
         invoiceNumber: { not: null },
         paymentStatus: { not: "cancelled" },
@@ -518,17 +531,22 @@ export async function getOwnerDashboard(
   period: MobilePeriod,
   timezoneOffsetMinutes: number,
   locationId?: string | null,
+  /** The Cashier dashboard variant's own employee id — computes an additional employee-scoped
+   * `mySales` snapshot alongside the normal business-wide one. Omitted/null for every other caller
+   * (Admin/Manager, Storekeeper). */
+  employeeId?: string | null,
 ): Promise<OwnerDashboardResult> {
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
   const range = resolvePeriodRange(period, timezoneOffsetMinutes);
 
-  const { sales, profit, stock, credit } = await withTenantContext(tenantId, async (tx) => {
-    const [{ sales, profit }, stock, credit] = await Promise.all([
+  const { sales, profit, stock, credit, mySales } = await withTenantContext(tenantId, async (tx) => {
+    const [{ sales, profit }, stock, credit, mySalesResult] = await Promise.all([
       computeSalesAndProfit(tx, tenantId, range, locationId),
       computeStockAlerts(tx, tenantId, locationId),
       computeOutstandingCredit(tx, tenantId, locationId),
+      employeeId ? computeSalesAndProfit(tx, tenantId, range, locationId, employeeId) : Promise.resolve(null),
     ]);
-    return { sales, profit, stock, credit };
+    return { sales, profit, stock, credit, mySales: mySalesResult ? mySalesResult.sales : null };
   });
 
   return {
@@ -540,5 +558,6 @@ export async function getOwnerDashboard(
     expensesAndProfit: profit,
     stock,
     credit,
+    mySales,
   };
 }

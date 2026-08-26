@@ -128,6 +128,12 @@ export const mobileCheckoutSchema = z.object({
   delivery: mobileCheckoutDeliverySchema.optional(),
   serviceCharges: mobileServiceChargesFieldSchema,
   notes: z.string().trim().optional(),
+  /** See Sale["includeTaxBreakdown"]/["includeBusinessInfo"]'s own doc comment (schema.prisma) —
+   * same per-document toggles DESKTOP's own Checkout already has. Previously hardcoded true,true on
+   * every mobile-created sale with no wire slot at all; this is the first mobile release that lets a
+   * cashier actually choose. */
+  includeTaxBreakdown: z.coerce.boolean().optional().default(true),
+  includeBusinessInfo: z.coerce.boolean().optional().default(true),
 });
 
 export type MobileCheckoutInput = z.infer<typeof mobileCheckoutSchema>;

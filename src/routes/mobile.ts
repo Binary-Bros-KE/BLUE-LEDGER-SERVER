@@ -64,6 +64,7 @@ mobileRouter.get("/dashboard", requireMobileAuth, requireOwnerAppAccess, async (
     parsed.period,
     parsed.timezoneOffsetMinutes,
     parsed.locationId ?? null,
+    req.mobileSession!.employeeId,
   );
   res.json(result);
 });
