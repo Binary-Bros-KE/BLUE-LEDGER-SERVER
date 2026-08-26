@@ -149,6 +149,7 @@ export async function createQuotation(tenantId: string, employeeId: string, inpu
           validUntil: parsed.validUntil,
           notes: parsed.notes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
+          includeBusinessInfo: parsed.includeBusinessInfo,
           convertedSaleId: null,
           convertedAt: null,
           items: cart.items,
@@ -177,6 +178,7 @@ export type MobileQuotationEditData = {
   validUntil: string;
   notes: string | null;
   includeTaxBreakdown: boolean;
+  includeBusinessInfo: boolean;
   items: MobileEditableItem[];
   delivery: MobileEditableDelivery | null;
   serviceCharges: MobileServiceChargeInput[];
@@ -198,6 +200,7 @@ export async function getQuotationEditData(tenantId: string, id: string): Promis
       validUntil: row.validUntil,
       notes: row.notes,
       includeTaxBreakdown: row.includeTaxBreakdown,
+      includeBusinessInfo: row.includeBusinessInfo,
       serviceCharges: serviceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),
       items: items.map((item) => ({
         productId: item.productId,
@@ -262,6 +265,7 @@ export async function updateQuotation(tenantId: string, id: string, input: unkno
           validUntil: parsed.validUntil,
           notes: parsed.notes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
+          includeBusinessInfo: parsed.includeBusinessInfo,
           items: cart.items,
           serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
@@ -483,6 +487,7 @@ export async function convertQuotationToSale(tenantId: string, employeeId: strin
           // Carried over, not re-decided — converting shouldn't silently reset the customer's chosen
           // presentation for what is, from their side, the same document going final.
           includeTaxBreakdown: quotation.includeTaxBreakdown,
+          includeBusinessInfo: quotation.includeBusinessInfo,
           payments: [],
           items: cart.items,
           serviceCharges: quotation.serviceCharges as Prisma.InputJsonValue,
@@ -573,6 +578,7 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
     dueDate: parsed.dueDate,
     invoiceNotes: quotation.notes ?? undefined,
     includeTaxBreakdown: quotation.includeTaxBreakdown,
+    includeBusinessInfo: quotation.includeBusinessInfo,
     items: buildConversionItems(quotationItems, parsed.quantityOverrides),
     initialPayment: null,
     delivery: deliveryRow

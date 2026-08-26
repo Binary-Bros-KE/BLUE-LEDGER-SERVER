@@ -170,6 +170,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           balanceDueCents: 0,
           invoiceNotes: null,
           includeTaxBreakdown: true,
+          includeBusinessInfo: true,
           payments: [],
           items: cart.items,
           serviceCharges: preparedServiceCharges,

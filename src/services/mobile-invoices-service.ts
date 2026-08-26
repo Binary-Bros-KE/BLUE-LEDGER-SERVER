@@ -192,6 +192,7 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
           balanceDueCents,
           invoiceNotes: parsed.invoiceNotes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
+          includeBusinessInfo: parsed.includeBusinessInfo,
           payments,
           items: cart.items,
           serviceCharges: preparedServiceCharges,
@@ -266,6 +267,7 @@ export type MobileInvoiceEditData = {
   dueDate: string;
   invoiceNotes: string | null;
   includeTaxBreakdown: boolean;
+  includeBusinessInfo: boolean;
   items: MobileEditableItem[];
   delivery: MobileEditableDelivery | null;
   serviceCharges: MobileServiceChargeInput[];
@@ -295,6 +297,7 @@ export async function getInvoiceEditData(tenantId: string, id: string): Promise<
       dueDate: row.dueDate ?? "",
       invoiceNotes: row.invoiceNotes,
       includeTaxBreakdown: row.includeTaxBreakdown,
+      includeBusinessInfo: row.includeBusinessInfo,
       serviceCharges: serviceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),
       items: items.map((item) => ({
         productId: item.productId,
@@ -375,6 +378,7 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
           paymentStatus,
           invoiceNotes: parsed.invoiceNotes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
+          includeBusinessInfo: parsed.includeBusinessInfo,
           items: cart.items,
           serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
@@ -521,6 +525,7 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
         dueDate: newDueDate.toISOString().slice(0, 10),
         invoiceNotes: original.invoiceNotes ?? undefined,
         includeTaxBreakdown: original.includeTaxBreakdown,
+        includeBusinessInfo: original.includeBusinessInfo,
         // Carried over from the original, not re-decided — same reasoning as DESKTOP's own
         // duplicateInvoice: without pinning unitPriceCents, prepareMobileCart would silently re-price
         // every line from the product's CURRENT price instead of the original invoice's price.

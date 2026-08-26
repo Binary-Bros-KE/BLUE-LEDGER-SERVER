@@ -146,6 +146,14 @@ export type SharedDocumentResult = {
   /** Whether the Tax Breakdown section should actually render — see the Sale/Quotation Prisma
    * model's own doc comment. taxBreakdown itself is always computed regardless. */
   includeTaxBreakdown: boolean;
+  /** Whether this document shows ANY shop identity — see the Sale/Quotation Prisma model's own doc
+   * comment on includeBusinessInfo. When false, businessName has already been replaced with a
+   * generic heading, every other identity field (address/phone/header/footer/KRA PIN) is null, and
+   * branchName is "" — every consumer (document-html.ts, DocumentView.tsx, DocumentDetailModal.tsx,
+   * the WhatsApp text share) renders those fields exactly as before with no extra branching, EXCEPT
+   * the "Served by X · Branch: Y" line each of the last three renders independently (branchName's
+   * only consumer) — that line omits its "· Branch: Y" segment whenever branchName is empty. */
+  includeBusinessInfo: boolean;
   vatRatePercent: number;
   grandTotalCents: number;
   paymentMethodName: string | null;
@@ -296,6 +304,16 @@ type TenantBusinessDefaults = { name: string; physicalAddress: string | null; co
  * of kind purely because SharedDocumentResult/the WhatsApp message builder were already written
  * against those names before quotations/invoices got their own — they just mean "this document's
  * header/footer" now. */
+/** "CASH RECEIPT"/"INVOICE"/"QUOTATION" replaces businessName as the printed heading when
+ * Sale/Quotation["includeBusinessInfo"] is false — see that field's own doc comment
+ * (schema.prisma). Ports DESKTOP's own GENERIC_RECEIPT_HEADING (shared/lib/receipt.ts) /
+ * suppressBusinessInfo (printer-service.ts) — same three labels, same reasoning. */
+const GENERIC_DOCUMENT_HEADING: Record<"receipt" | "invoice" | "quotation", string> = {
+  receipt: "CASH RECEIPT",
+  invoice: "INVOICE",
+  quotation: "QUOTATION",
+};
+
 function resolveBusinessInfo(
   location: {
     locationName: string;
@@ -310,6 +328,7 @@ function resolveBusinessInfo(
   } | null,
   tenant: TenantBusinessDefaults,
   documentKind: "receipt" | "invoice" | "quotation",
+  includeBusinessInfo: boolean,
 ): {
   businessName: string;
   physicalAddress: string | null;
@@ -318,6 +337,16 @@ function resolveBusinessInfo(
   receiptFooter: string | null;
   currency: string;
 } {
+  if (!includeBusinessInfo) {
+    return {
+      businessName: GENERIC_DOCUMENT_HEADING[documentKind],
+      physicalAddress: null,
+      primaryPhone: null,
+      receiptHeader: null,
+      receiptFooter: null,
+      currency: tenant.currency,
+    };
+  }
   const [header, footer] =
     documentKind === "invoice"
       ? [location?.invoiceHeader, location?.invoiceFooter]
@@ -390,7 +419,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       const productById = new Map(products.map((p) => [p.id, p]));
 
       const isInvoice = sale.invoiceNumber !== null;
-      const business = resolveBusinessInfo(location, tenantRow, isInvoice ? "invoice" : "receipt");
+      const business = resolveBusinessInfo(location, tenantRow, isInvoice ? "invoice" : "receipt", sale.includeBusinessInfo);
 
       return {
         documentKind: isInvoice ? "invoice" : "receipt",
@@ -398,10 +427,11 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         documentNumber: isInvoice ? sale.invoiceNumber : sale.receiptNumber,
         dateLabel: (sale.completedAt ?? sale.localCreatedAt).toISOString(),
         employeeName: employee ? `${employee.firstName} ${employee.lastName}`.trim() : "—",
-        branchName: location?.locationName ?? "—",
+        branchName: sale.includeBusinessInfo ? (location?.locationName ?? "—") : "",
         customerName: customer?.name ?? null,
-        businessKraPin: tenantRow.kraPin,
+        businessKraPin: sale.includeBusinessInfo ? tenantRow.kraPin : null,
         customerKraPin: customer?.kraPin ?? null,
+        includeBusinessInfo: sale.includeBusinessInfo,
         items: items.map((item) => ({
           name: productById.get(item.productId)?.name ?? "Unknown product",
           sku: productById.get(item.productId)?.sku ?? null,
@@ -461,7 +491,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
-    const business = resolveBusinessInfo(location, tenantRow, "quotation");
+    const business = resolveBusinessInfo(location, tenantRow, "quotation", quotation.includeBusinessInfo);
 
     return {
       documentKind: "quotation",
@@ -469,10 +499,11 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       documentNumber: quotation.quotationNumber,
       dateLabel: quotation.localCreatedAt.toISOString(),
       employeeName: employee ? `${employee.firstName} ${employee.lastName}`.trim() : "—",
-      branchName: location?.locationName ?? "—",
+      branchName: quotation.includeBusinessInfo ? (location?.locationName ?? "—") : "",
       customerName: customer?.name ?? null,
-      businessKraPin: tenantRow.kraPin,
+      businessKraPin: quotation.includeBusinessInfo ? tenantRow.kraPin : null,
       customerKraPin: customer?.kraPin ?? null,
+      includeBusinessInfo: quotation.includeBusinessInfo,
       items: items.map((item) => ({
         name: productById.get(item.productId)?.name ?? "Unknown product",
         sku: productById.get(item.productId)?.sku ?? null,
@@ -538,10 +569,13 @@ async function buildSharedDeliveryNote(
       delivery.riderId ? tx.rider.findUnique({ where: { id: delivery.riderId } }) : Promise.resolve(null),
     ]);
     const isInvoice = parentEntity === "sale" && (parent as { invoiceNumber: string | null }).invoiceNumber !== null;
+    // Delivery notes have no includeBusinessInfo toggle of their own — out of scope for this
+    // feature (only receipts/invoices/quotations), always shows full business identity.
     const business = resolveBusinessInfo(
       location,
       tenantRow,
       parentEntity === "quotation" ? "quotation" : isInvoice ? "invoice" : "receipt",
+      true,
     );
 
     const sourceDocumentLabel = parentEntity === "quotation" ? "Quotation" : isInvoice ? "Invoice" : "Receipt";
@@ -685,7 +719,7 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
   lines.push(SEPARATOR);
   lines.push(`${KIND_LABEL[doc.documentKind]}: ${doc.documentNumber ?? "-"}`);
   lines.push(`Date: ${formatDocumentDateTime(doc.dateLabel)}`);
-  lines.push(`Served by: ${doc.employeeName} · Branch: ${doc.branchName}`);
+  lines.push(`Served by: ${doc.employeeName}${doc.branchName ? ` · Branch: ${doc.branchName}` : ""}`);
   if (doc.customerName) lines.push(`Customer: ${doc.customerName}`);
   if (doc.dueDate) lines.push(`Due: ${formatDocumentDate(doc.dueDate)}`);
   if (doc.validUntil) lines.push(`Valid until: ${formatDocumentDate(doc.validUntil)}`);
