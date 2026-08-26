@@ -117,6 +117,15 @@ mobileRouter.get("/sales/:id", requireMobileAuth, requireOwnerAppAccess, async (
   res.json(result);
 });
 
+mobileRouter.get("/sales/:id/delivery-note", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileSalesService.getSaleDeliveryNote(req.mobileSession!.tenantId, req.params.id as string);
+  if (!result) {
+    res.status(404).json({ error: "Delivery note not found" });
+    return;
+  }
+  res.json(result);
+});
+
 mobileRouter.post(
   "/sales/:id/include-tax-breakdown",
   requireMobileAuth,
@@ -356,6 +365,15 @@ mobileRouter.get("/quotations/:id", requireMobileAuth, requireOwnerAppAccess, as
   const result = await mobileQuotationsService.getQuotation(req.mobileSession!.tenantId, req.params.id as string);
   if (!result) {
     res.status(404).json({ error: "Quotation not found" });
+    return;
+  }
+  res.json(result);
+});
+
+mobileRouter.get("/quotations/:id/delivery-note", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileQuotationsService.getQuotationDeliveryNote(req.mobileSession!.tenantId, req.params.id as string);
+  if (!result) {
+    res.status(404).json({ error: "Delivery note not found" });
     return;
   }
   res.json(result);

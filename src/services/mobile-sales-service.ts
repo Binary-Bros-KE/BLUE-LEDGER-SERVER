@@ -3,7 +3,13 @@ import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
-import { buildSharedDocument, computePaymentStatus, type SharedDocumentResult } from "./share-service.js";
+import {
+  buildSharedDeliveryNote,
+  buildSharedDocument,
+  computePaymentStatus,
+  type SharedDeliveryNoteResult,
+  type SharedDocumentResult,
+} from "./share-service.js";
 
 export type MobileLocation = { id: string; locationName: string };
 
@@ -107,6 +113,12 @@ export async function listSales(tenantId: string, locationId: string | null): Pr
  * view-model the Share feature renders (buildSharedDocument), not a public-token lookup. */
 export async function getSale(tenantId: string, saleId: string): Promise<SharedDocumentResult | null> {
   return buildSharedDocument(tenantId, "sale", saleId);
+}
+
+/** Same non-pricing view-model DESKTOP's own DeliveryNotePreview and the public SHARE page render —
+ * see buildSharedDeliveryNote's own doc comment for why it carries no fee/cost figures. */
+export async function getSaleDeliveryNote(tenantId: string, saleId: string): Promise<SharedDeliveryNoteResult | null> {
+  return buildSharedDeliveryNote(tenantId, "sale", saleId);
 }
 
 /** Toggles the "Tax Breakdown" section on/off for an already-created sale (receipt or invoice) —

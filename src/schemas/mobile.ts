@@ -39,7 +39,7 @@ export type MobileSalesQueryInput = z.infer<typeof mobileSalesQuerySchema>;
  * DESKTOP's ShareModal calls, just reached via mobile auth instead of device auth, since the owner's
  * phone isn't a registered sync device. */
 export const mobileShareLinkSchema = z.object({
-  entity: z.enum(["sale", "quotation", "customer_statement"]),
+  entity: z.enum(["sale", "quotation", "customer_statement", "sale_delivery", "quotation_delivery"]),
   entityId: z.string().trim().min(1, "entityId is required"),
   includePreview: z.boolean().optional().default(true),
 });

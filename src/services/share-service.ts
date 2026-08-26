@@ -156,6 +156,10 @@ export type SharedDocumentResult = {
    * want them) — each of the four consumers (those three plus the WhatsApp text share) instead
    * checks this flag itself before rendering its own "Served by X [· Branch: Y]" line/column. */
   includeBusinessInfo: boolean;
+  /** Whether this sale/quotation has a delivery note attached — the one signal mobile needs to decide
+   * whether to show a "View Delivery Note" action, without a separate per-list-type field. See
+   * buildSharedDeliveryNote for the actual delivery-note content. */
+  hasDeliveryNote: boolean;
   vatRatePercent: number;
   grandTotalCents: number;
   paymentMethodName: string | null;
@@ -434,6 +438,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         businessKraPin: sale.includeBusinessInfo ? tenantRow.kraPin : null,
         customerKraPin: customer?.kraPin ?? null,
         includeBusinessInfo: sale.includeBusinessInfo,
+        hasDeliveryNote: sale.delivery !== null,
         items: items.map((item) => ({
           name: productById.get(item.productId)?.name ?? "Unknown product",
           sku: productById.get(item.productId)?.sku ?? null,
@@ -506,6 +511,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       businessKraPin: quotation.includeBusinessInfo ? tenantRow.kraPin : null,
       customerKraPin: customer?.kraPin ?? null,
       includeBusinessInfo: quotation.includeBusinessInfo,
+      hasDeliveryNote: quotation.delivery !== null,
       items: items.map((item) => ({
         name: productById.get(item.productId)?.name ?? "Unknown product",
         sku: productById.get(item.productId)?.sku ?? null,
@@ -545,7 +551,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
  * blob, same as service charges), so there's nothing else to key a lookup by. riderId inside that
  * JSON is resolved against the real Rider table here (mirrors the Product-name lookup for items) —
  * DESKTOP's own push payload only embeds riderId, not the rider's name/phone/company. */
-async function buildSharedDeliveryNote(
+export async function buildSharedDeliveryNote(
   tenantId: string,
   parentEntity: "sale" | "quotation",
   parentId: string,

@@ -23,7 +23,13 @@ import {
 } from "../schemas/mobile.js";
 import { OWNER_APP_DEVICE_ID, resolveMobileLocation } from "./mobile-checkout-service.js";
 import { createInvoice, type MobileEditableDelivery, type MobileEditableItem } from "./mobile-invoices-service.js";
-import { buildSharedDocument, computeQuotationStatus, type SharedDocumentResult } from "./share-service.js";
+import {
+  buildSharedDeliveryNote,
+  buildSharedDocument,
+  computeQuotationStatus,
+  type SharedDeliveryNoteResult,
+  type SharedDocumentResult,
+} from "./share-service.js";
 
 /** Matches DESKTOP's own quotation-service.ts prefix exactly ("QT", 6 digits). */
 const QUOTATION_PREFIX = "QT";
@@ -93,6 +99,15 @@ export async function listQuotations(tenantId: string, locationId: string | null
  * reasoning as mobile-sales-service.ts's getSale. */
 export async function getQuotation(tenantId: string, quotationId: string): Promise<SharedDocumentResult | null> {
   return buildSharedDocument(tenantId, "quotation", quotationId);
+}
+
+/** Same non-pricing view-model DESKTOP's own DeliveryNotePreview and the public SHARE page render —
+ * see buildSharedDeliveryNote's own doc comment for why it carries no fee/cost figures. */
+export async function getQuotationDeliveryNote(
+  tenantId: string,
+  quotationId: string,
+): Promise<SharedDeliveryNoteResult | null> {
+  return buildSharedDeliveryNote(tenantId, "quotation", quotationId);
 }
 
 export type MobileQuotationResult = { id: string };
