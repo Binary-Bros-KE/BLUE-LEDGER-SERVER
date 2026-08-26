@@ -263,6 +263,22 @@ export const mobileBooleanValueSchema = z.object({
   value: z.boolean(),
 });
 
+/** Body for POST /mobile/sales/:id/request-return — mirrors DESKTOP's own
+ * shared/schemas/sale-return.ts saleReturnRequestSchema exactly (same reason/notes bounds, same
+ * per-line saleItemId+quantity shape). */
+export const mobileSaleReturnRequestSchema = z.object({
+  reason: z.string().trim().min(1, "A reason is required").max(500),
+  notes: z.string().trim().max(500).optional(),
+  items: z
+    .array(
+      z.object({
+        saleItemId: z.string().trim().min(1),
+        quantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+      }),
+    )
+    .min(1, "Select at least one item to return"),
+});
+
 // --- Invoice cancellation approvals (Phase 3) ---
 // Mirrors DESKTOP's own shared/schemas/invoice-cancellation.ts exactly.
 

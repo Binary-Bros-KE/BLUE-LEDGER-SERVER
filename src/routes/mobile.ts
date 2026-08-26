@@ -6,6 +6,7 @@ import {
   mobileCancellationDecisionSchema,
   mobileDashboardQuerySchema,
   mobileQuotationStatusSchema,
+  mobileSaleReturnRequestSchema,
   mobileRequestCancelSchema,
   mobileSalesQuerySchema,
   mobileShareLinkSchema,
@@ -137,6 +138,23 @@ mobileRouter.post(
     const parsed = mobileBooleanValueSchema.parse(req.body);
     const result = await mobileSalesService.setSaleIncludeBusinessInfo(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
     res.json(result);
+  },
+);
+
+mobileRouter.get("/sales/:id/returnable-items", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileSalesService.getSaleReturnableItems(req.mobileSession!.tenantId, req.params.id as string);
+  res.json(result);
+});
+
+mobileRouter.post(
+  "/sales/:id/request-return",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const parsed = mobileSaleReturnRequestSchema.parse(req.body);
+    const result = await mobileSalesService.requestSaleReturn(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, parsed);
+    res.status(201).json(result);
   },
 );
 

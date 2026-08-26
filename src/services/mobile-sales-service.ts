@@ -1,6 +1,8 @@
-import { NotFoundError } from "../lib/http-error.js";
+import { randomUUID } from "node:crypto";
+import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
+import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
 import { buildSharedDocument, computePaymentStatus, type SharedDocumentResult } from "./share-service.js";
 
 export type MobileLocation = { id: string; locationName: string };
@@ -131,6 +133,141 @@ export async function setSaleIncludeBusinessInfo(tenantId: string, id: string, v
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Sale not found");
     const now = new Date();
     await tx.sale.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: now, syncedAt: now } });
+    return { id };
+  });
+}
+
+type RawSaleItemFull = {
+  id: string;
+  productId: string;
+  quantity: number;
+  unitPriceCents: number;
+  lineTotalCents: number;
+};
+
+type RawSaleReturnItem = { saleItemId: string; quantity: number };
+
+export type MobileReturnableItem = {
+  saleItemId: string;
+  productId: string;
+  productName: string;
+  quantitySold: number;
+  /** Already restocked by an APPROVED return — mirrors DESKTOP's own
+   * findApprovedReturnedQuantityForSaleItem (only approved returns count against eligibility;
+   * multiple pending requests against the same line aren't blocked outright). */
+  alreadyReturnedQuantity: number;
+  remainingQuantity: number;
+  unitPriceCents: number;
+};
+
+/** Backs the mobile "Request Return" form's item/quantity picker — the display-only SharedDocument
+ * (buildSharedDocument, used by getSale) has no saleItemId on its line items at all, so this is a
+ * separate, raw lookup, same "edit-data is a different shape from the display view" precedent
+ * mobile-invoices-service.ts's getInvoiceEditData already established. Receipts only (an invoice
+ * has its own separate Request Cancellation flow on both DESKTOP and mobile instead) — the caller
+ * decides whether to show the button; this function itself works for any completed sale. */
+export async function getSaleReturnableItems(tenantId: string, saleId: string): Promise<MobileReturnableItem[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const sale = await tx.sale.findUnique({ where: { id: saleId } });
+    if (!sale || sale.tenantId !== tenantId) throw new NotFoundError("Sale not found");
+    if (sale.saleStatus !== "completed") throw new HttpError(400, "Only completed sales can have returns");
+
+    const items = asArray<RawSaleItemFull>(sale.items);
+    const productIds = [...new Set(items.map((i) => i.productId))];
+    const products = await tx.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } });
+    const productNameById = new Map(products.map((p) => [p.id, p.name]));
+
+    const approvedReturns = await tx.saleReturn.findMany({ where: { tenantId, saleId, status: "approved" }, select: { items: true } });
+    const returnedBySaleItemId = new Map<string, number>();
+    for (const ret of approvedReturns) {
+      for (const item of asArray<RawSaleReturnItem>(ret.items)) {
+        returnedBySaleItemId.set(item.saleItemId, (returnedBySaleItemId.get(item.saleItemId) ?? 0) + item.quantity);
+      }
+    }
+
+    return items.map((item) => {
+      const alreadyReturnedQuantity = returnedBySaleItemId.get(item.id) ?? 0;
+      return {
+        saleItemId: item.id,
+        productId: item.productId,
+        productName: productNameById.get(item.productId) ?? "Unknown product",
+        quantitySold: item.quantity,
+        alreadyReturnedQuantity,
+        remainingQuantity: Math.max(0, item.quantity - alreadyReturnedQuantity),
+        unitPriceCents: item.unitPriceCents,
+      };
+    });
+  });
+}
+
+/** A cashier's request to return some or all of the items on a completed sale — gated by
+ * "sales":"edit" (the permission a normal Cashier already has), not "approvals":"approve". The
+ * original sale is never modified and NOTHING is restocked here — that only happens once a manager
+ * approves the request, and approval only ever happens from DESKTOP (see sale-return-service.ts's
+ * approveSaleReturn) — mobile deliberately has no approval UI for returns at all, request-only.
+ * Mirrors DESKTOP's own requestSaleReturn exactly, including its per-line eligible-quantity check. */
+export async function requestSaleReturn(
+  tenantId: string,
+  employeeId: string,
+  saleId: string,
+  input: { reason: string; notes?: string; items: Array<{ saleItemId: string; quantity: number }> },
+): Promise<{ id: string }> {
+  return withTenantContext(tenantId, async (tx) => {
+    const sale = await tx.sale.findUnique({ where: { id: saleId } });
+    if (!sale || sale.tenantId !== tenantId) throw new NotFoundError("Sale not found");
+    if (sale.saleStatus !== "completed") throw new HttpError(400, "Only completed sales can have returns");
+
+    const saleItems = asArray<RawSaleItemFull>(sale.items);
+    const saleItemById = new Map(saleItems.map((i) => [i.id, i]));
+
+    const approvedReturns = await tx.saleReturn.findMany({ where: { tenantId, saleId, status: "approved" }, select: { items: true } });
+    const returnedBySaleItemId = new Map<string, number>();
+    for (const ret of approvedReturns) {
+      for (const item of asArray<RawSaleReturnItem>(ret.items)) {
+        returnedBySaleItemId.set(item.saleItemId, (returnedBySaleItemId.get(item.saleItemId) ?? 0) + item.quantity);
+      }
+    }
+
+    const preparedItems = input.items.map((requested) => {
+      const saleItem = saleItemById.get(requested.saleItemId);
+      if (!saleItem) throw new HttpError(400, "One of the selected items does not belong to this sale");
+      const alreadyReturned = returnedBySaleItemId.get(saleItem.id) ?? 0;
+      const remaining = saleItem.quantity - alreadyReturned;
+      if (requested.quantity > remaining) {
+        throw new HttpError(400, `Only ${remaining} unit(s) of this item remain eligible for return`);
+      }
+      return {
+        id: `sale_return_item_${randomUUID()}`,
+        saleItemId: saleItem.id,
+        productId: saleItem.productId,
+        quantity: requested.quantity,
+        unitPriceCents: saleItem.unitPriceCents,
+        lineTotalCents: saleItem.unitPriceCents * requested.quantity,
+        createdAt: new Date().toISOString(),
+      };
+    });
+
+    const now = new Date();
+    const id = `sale_return_${randomUUID()}`;
+    await tx.saleReturn.create({
+      data: {
+        id,
+        tenantId,
+        deviceId: OWNER_APP_DEVICE_ID,
+        saleId,
+        status: "pending_approval",
+        reason: input.reason.trim(),
+        notes: input.notes?.trim() || null,
+        requestedBy: employeeId,
+        requestedAt: now,
+        approvedBy: null,
+        approvedAt: null,
+        items: preparedItems,
+        localCreatedAt: now,
+        localUpdatedAt: now,
+      },
+    });
+
     return { id };
   });
 }
