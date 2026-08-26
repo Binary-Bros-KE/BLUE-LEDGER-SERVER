@@ -1348,6 +1348,11 @@ model Purchase {
   amountPaidCents       Int
   /// Already a JSON-text column locally (individual payment entries) — carries through as Json.
   payments              Json
+  /// One entry per "Receive Goods"/"Receive All" click — {id, receivedBy, receivedByName,
+  /// receivedAt, items: [{purchaseItemId, productId, productName, sku, receivingQuantity,
+  /// previousQuantity, newQuantity}]}[]. Each entry's before/after quantities are frozen at the
+  /// moment that receiving action happened and are never recomputed by a later partial receive.
+  receivingEvents       Json    @default("[]")
   notes                 String?
   /// attachmentPath deliberately NOT synced — a local file path, no shared cloud storage yet.
   orderedAt             DateTime?
