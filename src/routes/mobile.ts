@@ -2,6 +2,7 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess, requireSuperAdmin } from "../middleware/mobile-auth.js";
 import {
+  mobileBooleanValueSchema,
   mobileCancellationDecisionSchema,
   mobileDashboardQuerySchema,
   mobileQuotationStatusSchema,
@@ -114,6 +115,30 @@ mobileRouter.get("/sales/:id", requireMobileAuth, requireOwnerAppAccess, async (
   }
   res.json(result);
 });
+
+mobileRouter.post(
+  "/sales/:id/include-tax-breakdown",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const parsed = mobileBooleanValueSchema.parse(req.body);
+    const result = await mobileSalesService.setSaleIncludeTaxBreakdown(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
+    res.json(result);
+  },
+);
+
+mobileRouter.post(
+  "/sales/:id/include-business-info",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("sales", "edit"),
+  async (req, res) => {
+    const parsed = mobileBooleanValueSchema.parse(req.body);
+    const result = await mobileSalesService.setSaleIncludeBusinessInfo(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
+    res.json(result);
+  },
+);
 
 mobileRouter.get("/invoices", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);
@@ -317,6 +342,30 @@ mobileRouter.get("/quotations/:id", requireMobileAuth, requireOwnerAppAccess, as
   }
   res.json(result);
 });
+
+mobileRouter.post(
+  "/quotations/:id/include-tax-breakdown",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("quotations", "edit"),
+  async (req, res) => {
+    const parsed = mobileBooleanValueSchema.parse(req.body);
+    const result = await mobileQuotationsService.setQuotationIncludeTaxBreakdown(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
+    res.json(result);
+  },
+);
+
+mobileRouter.post(
+  "/quotations/:id/include-business-info",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("quotations", "edit"),
+  async (req, res) => {
+    const parsed = mobileBooleanValueSchema.parse(req.body);
+    const result = await mobileQuotationsService.setQuotationIncludeBusinessInfo(req.mobileSession!.tenantId, req.params.id as string, parsed.value);
+    res.json(result);
+  },
+);
 
 mobileRouter.post(
   "/quotations",

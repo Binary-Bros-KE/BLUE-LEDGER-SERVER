@@ -1,3 +1,4 @@
+import { NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { buildSharedDocument, computePaymentStatus, type SharedDocumentResult } from "./share-service.js";
@@ -104,6 +105,30 @@ export async function listSales(tenantId: string, locationId: string | null): Pr
  * view-model the Share feature renders (buildSharedDocument), not a public-token lookup. */
 export async function getSale(tenantId: string, saleId: string): Promise<SharedDocumentResult | null> {
   return buildSharedDocument(tenantId, "sale", saleId);
+}
+
+/** Toggles the "Tax Breakdown" section on/off for an already-created sale (receipt or invoice) —
+ * mirrors DESKTOP's own setSaleIncludeTaxBreakdown exactly (works regardless of sale status, a
+ * historical receipt might need re-sharing without tax info). Covers both receipts and invoices,
+ * same as DESKTOP — an invoice is just a Sale row with invoiceNumber set. */
+export async function setSaleIncludeTaxBreakdown(tenantId: string, id: string, value: boolean): Promise<{ id: string }> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await tx.sale.findUnique({ where: { id } });
+    if (!row || row.tenantId !== tenantId) throw new NotFoundError("Sale not found");
+    await tx.sale.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: new Date() } });
+    return { id };
+  });
+}
+
+/** Same as setSaleIncludeTaxBreakdown above, for the independent "Include storefront information"
+ * toggle — see Sale["includeBusinessInfo"]'s own doc comment (schema.prisma). */
+export async function setSaleIncludeBusinessInfo(tenantId: string, id: string, value: boolean): Promise<{ id: string }> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await tx.sale.findUnique({ where: { id } });
+    if (!row || row.tenantId !== tenantId) throw new NotFoundError("Sale not found");
+    await tx.sale.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: new Date() } });
+    return { id };
+  });
 }
 
 export type MobileInvoiceListItem = {

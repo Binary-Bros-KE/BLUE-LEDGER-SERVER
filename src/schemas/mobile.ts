@@ -256,6 +256,13 @@ export const mobileQuotationStatusSchema = z.object({
   status: z.enum(["draft", "sent", "accepted", "rejected"]),
 });
 
+/** Body for the includeTaxBreakdown/includeBusinessInfo toggle endpoints — one flag, one call, same
+ * as DESKTOP's own setSaleIncludeTaxBreakdown/setSaleIncludeBusinessInfo IPC channels. Shared by
+ * both the sales and quotations routes. */
+export const mobileBooleanValueSchema = z.object({
+  value: z.boolean(),
+});
+
 // --- Invoice cancellation approvals (Phase 3) ---
 // Mirrors DESKTOP's own shared/schemas/invoice-cancellation.ts exactly.
 

@@ -311,6 +311,28 @@ export async function setQuotationStatus(tenantId: string, id: string, status: s
   });
 }
 
+/** Toggles the "Tax Breakdown" section on/off for an already-created quotation — mirrors DESKTOP's
+ * own setQuotationIncludeTaxBreakdown exactly (works regardless of status). */
+export async function setQuotationIncludeTaxBreakdown(tenantId: string, id: string, value: boolean): Promise<{ id: string }> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await tx.quotation.findUnique({ where: { id } });
+    if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
+    await tx.quotation.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: new Date() } });
+    return { id };
+  });
+}
+
+/** Same as setQuotationIncludeTaxBreakdown above, for the independent "Include storefront
+ * information" toggle — see Sale["includeBusinessInfo"]'s own doc comment (schema.prisma). */
+export async function setQuotationIncludeBusinessInfo(tenantId: string, id: string, value: boolean): Promise<{ id: string }> {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await tx.quotation.findUnique({ where: { id } });
+    if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
+    await tx.quotation.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: new Date() } });
+    return { id };
+  });
+}
+
 export type MobileQuotationStockCheckItem = {
   productId: string;
   productName: string;
