@@ -137,6 +137,13 @@ export type OutstandingCredit = {
   customersOverLimit: CustomerOverLimit[];
 };
 
+export type MyRecentSale = {
+  id: string;
+  documentNumber: string | null;
+  occurredAt: string;
+  amountCents: number;
+};
+
 export type OwnerDashboardResult = {
   period: MobilePeriod;
   periodStart: string;
@@ -150,6 +157,10 @@ export type OwnerDashboardResult = {
    * — the exact same SalesSnapshot shape as `sales` above, scoped to just that one employee's own
    * sales, via computeSalesAndProfit's own employeeId parameter. Null for every other caller. */
   mySales: SalesSnapshot | null;
+  /** The individual transactions behind mySales above — ports DESKTOP's own
+   * window.blueLedger.report.mySales (CashierDashboard.tsx's "My sales today" table). Most recent
+   * first, capped at 20 — a personal activity feed, not a full report. Null alongside mySales. */
+  myRecentSales: MyRecentSale[] | null;
 };
 
 /** Fetches sale rows + the approved-void exclusion set + item/return/product context shared by both
@@ -539,14 +550,40 @@ export async function getOwnerDashboard(
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
   const range = resolvePeriodRange(period, timezoneOffsetMinutes);
 
-  const { sales, profit, stock, credit, mySales } = await withTenantContext(tenantId, async (tx) => {
-    const [{ sales, profit }, stock, credit, mySalesResult] = await Promise.all([
+  const { sales, profit, stock, credit, mySales, myRecentSales } = await withTenantContext(tenantId, async (tx) => {
+    const [{ sales, profit }, stock, credit, mySalesResult, myRecentSalesRows, myVoidedSaleIds] = await Promise.all([
       computeSalesAndProfit(tx, tenantId, range, locationId),
       computeStockAlerts(tx, tenantId, locationId),
       computeOutstandingCredit(tx, tenantId, locationId),
       employeeId ? computeSalesAndProfit(tx, tenantId, range, locationId, employeeId) : Promise.resolve(null),
+      employeeId
+        ? tx.sale.findMany({
+            where: {
+              tenantId,
+              employeeId,
+              ...(locationId ? { locationId } : {}),
+              saleStatus: "completed",
+              completedAt: { gte: range.start, lt: range.endExclusive },
+            },
+            select: { id: true, receiptNumber: true, invoiceNumber: true, grandTotalCents: true, completedAt: true },
+            orderBy: { completedAt: "desc" },
+            take: 20,
+          })
+        : Promise.resolve([]),
+      employeeId ? tx.saleVoid.findMany({ where: { tenantId, status: "approved" }, select: { saleId: true } }) : Promise.resolve([]),
     ]);
-    return { sales, profit, stock, credit, mySales: mySalesResult ? mySalesResult.sales : null };
+    const voidedIds = new Set(myVoidedSaleIds.map((v) => v.saleId));
+    const myRecentSales: MyRecentSale[] | null = employeeId
+      ? myRecentSalesRows
+          .filter((row) => !voidedIds.has(row.id))
+          .map((row) => ({
+            id: row.id,
+            documentNumber: row.invoiceNumber ?? row.receiptNumber,
+            occurredAt: (row.completedAt ?? range.start).toISOString(),
+            amountCents: row.grandTotalCents,
+          }))
+      : null;
+    return { sales, profit, stock, credit, mySales: mySalesResult ? mySalesResult.sales : null, myRecentSales };
   });
 
   return {
@@ -559,5 +596,6 @@ export async function getOwnerDashboard(
     stock,
     credit,
     mySales,
+    myRecentSales,
   };
 }
