@@ -263,3 +263,37 @@ export const mobileCancellationDecisionSchema = z.object({
 });
 
 export type MobileCancellationDecisionInput = z.infer<typeof mobileCancellationDecisionSchema>;
+
+// --- Working Hours lockout (Super Admin only) ---
+
+const workingHoursDaySchema = z.object({
+  isOpen: z.boolean(),
+  openTime: z
+    .string()
+    .trim()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable(),
+  closeTime: z
+    .string()
+    .trim()
+    .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+    .nullable(),
+});
+
+export const mobileWorkingHoursUpsertSchema = z.object({
+  lockEnabled: z.boolean(),
+  lockMode: z.enum(["auto", "manual"]),
+  manuallyLocked: z.boolean(),
+  timezoneOffsetMinutes: timezoneOffsetMinutesField,
+  // Keyed "0".."6" — Sunday..Saturday, matches JS Date.getDay(). z.record's key type has to be
+  // spelled out explicitly here (Zod can't infer a numeric-string key set from a plain string).
+  schedule: z.record(z.string().regex(/^[0-6]$/), workingHoursDaySchema),
+});
+
+export type MobileWorkingHoursUpsertInput = z.infer<typeof mobileWorkingHoursUpsertSchema>;
+
+export const mobileToggleManualLockSchema = z.object({
+  locked: z.boolean(),
+});
+
+export type MobileToggleManualLockInput = z.infer<typeof mobileToggleManualLockSchema>;

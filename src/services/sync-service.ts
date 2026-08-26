@@ -21,6 +21,7 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
   roles: (tx) => tx.role,
   products: (tx) => tx.product,
   locations: (tx) => tx.location,
+  working_hours: (tx) => tx.workingHours,
   sales: (tx) => tx.sale,
   expense_categories: (tx) => tx.expenseCategory,
   expenses: (tx) => tx.expense,
@@ -125,6 +126,11 @@ const NATURAL_KEY_FIELDS: Partial<Record<SyncEntityName, string>> = {
   // with each other, which would otherwise land as two permanent duplicate rows (see the model's
   // own schema comment).
   main_store_allocations: "bucketKey",
+  // Same reasoning as main_store_allocations above — not boot-seeded, but two devices could each
+  // independently create the first-ever WorkingHours row for the same storefront while offline from
+  // each other (e.g. two Super Admins each first opening the new Working Hours screen for the same
+  // location before their devices have synced). Dedupe by the storefront it belongs to.
+  working_hours: "locationId",
   // Also not a boot-seeded default — real customer data, entered independently by staff on two
   // different devices before they'd ever synced with each other. But DESKTOP's own local schema
   // already enforces UNIQUE(tenantId, phone) as a hard invariant (a phone number IS the customer,
@@ -152,6 +158,7 @@ const REQUIRED_REF_FIELDS: Partial<Record<SyncEntityName, Array<{ field: string;
     { field: "locationId", delegate: (tx) => tx.location },
     { field: "productId", delegate: (tx) => tx.product },
   ],
+  working_hours: [{ field: "locationId", delegate: (tx) => tx.location }],
 };
 
 export type PushRowResult =

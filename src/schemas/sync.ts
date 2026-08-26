@@ -13,6 +13,7 @@ export const SYNC_ENTITY_NAMES = [
   "roles",
   "products",
   "locations",
+  "working_hours",
   "sales",
   "expense_categories",
   "expenses",

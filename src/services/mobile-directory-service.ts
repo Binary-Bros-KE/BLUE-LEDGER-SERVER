@@ -28,6 +28,9 @@ export type MobileSessionInfo = {
    * uses authoritatively at submit time. */
   vatRatePercent: number;
   pricesTaxInclusive: boolean;
+  /** Server-authoritative — see Role.isSuperAdmin's own doc comment. Lets APP gate its Working Hours
+   * tab (and any other Super-Admin-exclusive UI) without a name-based guess. */
+  isSuperAdmin: boolean;
 };
 
 /** Backs the Owner App's sidebar footer (name + role) and gives every tab the tenant's currency
@@ -52,6 +55,7 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       branchName: branch?.locationName ?? null,
       vatRatePercent: tenant.vatRatePercent,
       pricesTaxInclusive: tenant.pricesTaxInclusive,
+      isSuperAdmin: role?.isSuperAdmin ?? false,
     };
   });
 }

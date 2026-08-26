@@ -1,6 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess } from "../middleware/mobile-auth.js";
+import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess, requireSuperAdmin } from "../middleware/mobile-auth.js";
 import {
   mobileCancellationDecisionSchema,
   mobileDashboardQuerySchema,
@@ -26,6 +26,7 @@ import * as mobileSalesService from "../services/mobile-sales-service.js";
 import * as mobileStockLedgerService from "../services/mobile-stock-ledger-service.js";
 import * as mobileSuppliersService from "../services/mobile-suppliers-service.js";
 import * as mobileTransactionsService from "../services/mobile-transactions-service.js";
+import * as mobileWorkingHoursService from "../services/mobile-working-hours-service.js";
 import { createShareLink } from "../services/share-service.js";
 
 /** Read-only Owner App — see plan notes in schema.prisma's MobileLoginAttempt comment. Deliberately
@@ -474,3 +475,32 @@ mobileRouter.post("/share-links", requireMobileAuth, requireOwnerAppAccess, asyn
   });
   res.status(201).json(result);
 });
+
+// --- Working Hours lockout (Super Admin only — see requireSuperAdmin's own doc comment for why
+// this is a hardcoded flag check rather than a normal module/action permission). ---
+
+mobileRouter.get("/working-hours", requireMobileAuth, requireOwnerAppAccess, requireSuperAdmin, async (req, res) => {
+  const result = await mobileWorkingHoursService.listWorkingHours(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.get("/working-hours/:locationId", requireMobileAuth, requireOwnerAppAccess, requireSuperAdmin, async (req, res) => {
+  const result = await mobileWorkingHoursService.getWorkingHours(req.mobileSession!.tenantId, req.params.locationId as string);
+  res.json(result);
+});
+
+mobileRouter.put("/working-hours/:locationId", requireMobileAuth, requireOwnerAppAccess, requireSuperAdmin, async (req, res) => {
+  const result = await mobileWorkingHoursService.upsertWorkingHours(req.mobileSession!.tenantId, req.params.locationId as string, req.body);
+  res.json(result);
+});
+
+mobileRouter.post(
+  "/working-hours/:locationId/toggle-manual-lock",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireSuperAdmin,
+  async (req, res) => {
+    const result = await mobileWorkingHoursService.toggleManualLock(req.mobileSession!.tenantId, req.params.locationId as string, req.body);
+    res.json(result);
+  },
+);

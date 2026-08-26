@@ -549,6 +549,7 @@ model Tenant {
   updatedAt                DateTime                  @updatedAt
   products                 Product[]
   locations                Location[]
+  workingHours             WorkingHours[]
   sales                    Sale[]
   expenseCategories        ExpenseCategory[]
   expenses                 Expense[]
@@ -806,6 +807,14 @@ model Role {
   description     String?
   permissionsJson Json
   isSystemRole    Boolean
+  /// Server-authoritative "is this THE Super Admin role" flag — deliberately NOT derived from
+  /// roleName === "Super Admin" (fragile: a tenant can rename the role, or clone its full permission
+  /// set onto a differently-named role, in either case without setting this). Set true only by the
+  /// seed definition for the one role DESKTOP's role-service.ts DEFAULT_SYSTEM_ROLES calls "Super
+  /// Admin"; never exposed as an editable field in the Roles & Permissions UI. Drives the Working
+  /// Hours lockout bypass (see mobile-auth.ts's requireOwnerAppAccess) — a tenant-level Super Admin
+  /// always retains access even while every other employee is locked out.
+  isSuperAdmin    Boolean @default(false)
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
@@ -968,6 +977,49 @@ model Location {
 
   @@index([tenantId])
   @@map("locations")
+}
+
+/// One row per storefront, created on-demand the first time a Super Admin configures hours for it
+/// (never boot-seeded) — drives the Working Hours lockout feature. locationId stays a plain opaque
+/// string, same FK-avoidance precedent as every other cross-entity reference in this synced block
+/// (Employee.roleId, Sale.locationId, etc.), even though Location itself is a real synced entity.
+/// See lib/working-hours-lock.ts's computeWorkingHoursLockStatus for how these fields combine —
+/// that function is PORTED (not shared) into DESKTOP's shared/lib/ of the same name, since DESKTOP
+/// must be able to compute lock status fully offline from its own locally-synced copy of this row.
+model WorkingHours {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  locationId String
+
+  lockEnabled Boolean @default(false)
+  /// "auto" (schedule below drives the lock) | "manual" (schedule is ignored entirely — manuallyLocked
+  /// is a plain on/off switch a Super Admin flips). Plain string, not a Prisma enum — matches this
+  /// schema's existing convention for small closed string sets (e.g. Sale.transactionType).
+  lockMode       String  @default("auto")
+  manuallyLocked Boolean @default(false)
+  /// Snapshot of the configuring device's UTC offset in minutes (same sign convention as
+  /// APP's lib/period.ts timezoneOffsetMinutes()), captured at save time — lets both DESKTOP
+  /// (offline, its own device clock) and this server (mobile API enforcement, its own clock) compute
+  /// the SAME local wall-clock time for this storefront without any per-request timezone plumbing.
+  timezoneOffsetMinutes Int @default(0)
+
+  /// Keyed "0".."6" (0=Sunday..6=Saturday, matches JS Date.getDay()) — one entry per day of
+  /// {isOpen, openTime, closeTime}, openTime/closeTime "HH:mm" 24h strings (null when isOpen is
+  /// false). Same "loose Json, validated only at the read/write sites, not by sync's own row-level
+  /// Zod" convention as Role.permissionsJson — RLS + field allowlisting are the real backstop there,
+  /// not per-field shape validation.
+  schedule Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([locationId])
+  @@map("working_hours")
 }
 
 /// Phase 3's "document with line items" entity — covers both retail sales AND invoices (one local

@@ -3,14 +3,15 @@ import jwt from "jsonwebtoken";
 import { env } from "../env.js";
 import { HttpError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
+import { computeWorkingHoursLockStatus, type WorkingHoursConfig } from "../lib/working-hours-lock.js";
 
 /** The Owner App's session identity — a tenant Employee, never a Blue Ledger Account. Deliberately
  * a different shape from AuthenticatedAccount (middleware/auth.ts): no role/outletId, has tenantId
  * (which an Account token never carries), so the two token systems can never be confused for one
- * another even before the `aud` check below. `permissions` is populated by requireOwnerAppAccess
- * (module -> allowed actions, same shape as DESKTOP's own PermissionsMap) so a later
- * requireMobilePermission on the same request chain can reuse it instead of re-fetching. */
-export type MobileSession = { employeeId: string; tenantId: string; permissions?: Record<string, string[]> };
+ * another even before the `aud` check below. `permissions`/`isSuperAdmin` are populated by
+ * requireOwnerAppAccess so later middleware/routes on the same request chain can reuse them instead
+ * of re-fetching. */
+export type MobileSession = { employeeId: string; tenantId: string; permissions?: Record<string, string[]>; isSuperAdmin?: boolean };
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -64,7 +65,15 @@ export function requireMobileAuth(req: Request, _res: Response, next: NextFuncti
  * there is no separate "owner_app" gate any more (removed 2026-08-25) — per-tab/per-action scoping
  * (visibleNavGroups in APP, requireMobilePermission below) already controls what they can see or
  * do once inside, so a second all-or-nothing gate on top of that was redundant. Still populates
- * session.permissions so requireMobilePermission can reuse it instead of re-fetching. */
+ * session.permissions so requireMobilePermission can reuse it instead of re-fetching.
+ *
+ * Also enforces the Working Hours lockout — a Super Admin (role.isSuperAdmin) always passes
+ * regardless of the storefront's schedule/manual-lock state; every other employee assigned to a
+ * storefront (employee.branchId) gets 403'd here the moment it's locked, on their very next request,
+ * same "checked live every time, not just at login" discipline as the active-employee check above.
+ * This single insertion point covers every one of this router's ~40+ protected routes for free —
+ * every one of them already chains requireOwnerAppAccess right after requireMobileAuth. A
+ * branch-less employee has no storefront to check against and is never locked by this. */
 export async function requireOwnerAppAccess(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const session = req.mobileSession;
   if (!session) {
@@ -79,6 +88,15 @@ export async function requireOwnerAppAccess(req: Request, _res: Response, next: 
 
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
     session.permissions = (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
+    session.isSuperAdmin = role?.isSuperAdmin ?? false;
+
+    if (!session.isSuperAdmin && employee.branchId) {
+      const workingHours = await tx.workingHours.findFirst({ where: { locationId: employee.branchId } });
+      const status = computeWorkingHoursLockStatus(workingHours as unknown as WorkingHoursConfig | null);
+      if (status.locked) {
+        throw new HttpError(403, "This system is locked outside working hours. Contact your Super Admin.", "WORKING_HOURS_LOCKED");
+      }
+    }
   });
 
   next();
@@ -116,4 +134,16 @@ export function requireMobilePermission(module: string, action: string) {
     }
     next();
   };
+}
+
+/** Gates the Working Hours configuration routes — deliberately NOT a module/action permission like
+ * requireMobilePermission above (see the feature's own design notes: this is inherently a
+ * Super-Admin-exclusive control, not something a tenant should be able to delegate via the normal
+ * Roles & Permissions grid). Must run after requireOwnerAppAccess, whose session.isSuperAdmin this
+ * reuses — zero extra queries. */
+export function requireSuperAdmin(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.mobileSession?.isSuperAdmin) {
+    throw new HttpError(403, "Only your Super Admin can access this.");
+  }
+  next();
 }
