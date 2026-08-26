@@ -1,5 +1,8 @@
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
+import { isStorefrontLocationType } from "./mobile-sales-service.js";
+
+export type MobileProductStorefrontStock = { locationId: string; locationName: string; quantity: number };
 
 export type MobileProductListItem = {
   id: string;
@@ -37,6 +40,10 @@ export type MobileProductListItem = {
   /** Physical quantity actually on hand across every storefront (i.e. every non-Main-Store
    * location) combined — stock that has actually been moved out, not just earmarked. */
   storefrontQuantity: number;
+  /** Same total as storefrontQuantity, broken out per storefront — every active storefront-type
+   * location for the tenant appears here, even at 0 (mirrors DESKTOP's own StockByLocationRow.tsx,
+   * which shows "Storefront B: 0" rather than omitting it). */
+  storefrontBreakdown: MobileProductStorefrontStock[];
   totalQuantity: number;
   lowStock: boolean;
   outOfStock: boolean;
@@ -53,7 +60,7 @@ export type MobileProductListItem = {
  */
 export async function listProducts(tenantId: string): Promise<MobileProductListItem[]> {
   return withTenantContext(tenantId, async (tx) => {
-    const [products, categories, mainStoreLocation, movementSums] = await Promise.all([
+    const [products, categories, locations, movementSums] = await Promise.all([
       tx.product.findMany({
         where: { tenantId, trackStock: true, status: "active" },
         select: {
@@ -72,29 +79,35 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         orderBy: { name: "asc" },
       }),
       tx.category.findMany({ where: { tenantId }, select: { id: true, name: true } }),
-      // Mirrors DESKTOP's own findMainStoreLocationRow — only "distribution_center" is actually used
-      // at runtime there, even though "warehouse" is reserved in the type options too.
-      tx.location.findFirst({ where: { tenantId, locationType: "distribution_center" }, select: { id: true } }),
+      tx.location.findMany({ where: { tenantId }, select: { id: true, locationName: true, locationType: true } }),
       tx.stockMovement.groupBy({ by: ["productId", "locationId"], where: { tenantId }, _sum: { quantityChange: true } }),
     ]);
 
     const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
-    const mainStoreLocationId = mainStoreLocation?.id ?? null;
+    // Mirrors DESKTOP's own findMainStoreLocationRow — only "distribution_center" is actually used at
+    // runtime there, even though "warehouse" is reserved in the type options too.
+    const mainStoreLocationId = locations.find((l) => l.locationType === "distribution_center")?.id ?? null;
+    const storefronts = locations.filter((l) => isStorefrontLocationType(l.locationType));
 
-    const mainStoreQtyByProduct = new Map<string, number>();
-    const storefrontQtyByProduct = new Map<string, number>();
+    // qtyByProductThenLocation: productId -> locationId -> quantity, so both the Main Store figure
+    // and each storefront's own figure fall out of the same single groupBy query.
+    const qtyByProductThenLocation = new Map<string, Map<string, number>>();
     for (const row of movementSums) {
       const qty = row._sum.quantityChange ?? 0;
-      if (mainStoreLocationId && row.locationId === mainStoreLocationId) {
-        mainStoreQtyByProduct.set(row.productId, (mainStoreQtyByProduct.get(row.productId) ?? 0) + qty);
-      } else {
-        storefrontQtyByProduct.set(row.productId, (storefrontQtyByProduct.get(row.productId) ?? 0) + qty);
-      }
+      const byLocation = qtyByProductThenLocation.get(row.productId) ?? new Map<string, number>();
+      byLocation.set(row.locationId, (byLocation.get(row.locationId) ?? 0) + qty);
+      qtyByProductThenLocation.set(row.productId, byLocation);
     }
 
     return products.map((product) => {
-      const mainStoreQuantity = mainStoreLocationId ? (mainStoreQtyByProduct.get(product.id) ?? 0) : null;
-      const storefrontQuantity = storefrontQtyByProduct.get(product.id) ?? 0;
+      const byLocation = qtyByProductThenLocation.get(product.id);
+      const mainStoreQuantity = mainStoreLocationId ? (byLocation?.get(mainStoreLocationId) ?? 0) : null;
+      const storefrontBreakdown: MobileProductStorefrontStock[] = storefronts.map((location) => ({
+        locationId: location.id,
+        locationName: location.locationName,
+        quantity: byLocation?.get(location.id) ?? 0,
+      }));
+      const storefrontQuantity = storefrontBreakdown.reduce((sum, entry) => sum + entry.quantity, 0);
       const totalQuantity = (mainStoreQuantity ?? 0) + storefrontQuantity;
 
       return {
@@ -111,6 +124,7 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         reorderLevel: product.reorderLevel,
         mainStoreQuantity,
         storefrontQuantity,
+        storefrontBreakdown,
         totalQuantity,
         lowStock: totalQuantity > 0 && product.reorderLevel > 0 && totalQuantity < product.reorderLevel,
         outOfStock: totalQuantity <= 0,
