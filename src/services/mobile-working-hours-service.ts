@@ -102,6 +102,14 @@ export async function upsertWorkingHours(tenantId: string, locationId: string, i
       timezoneOffsetMinutes: parsed.timezoneOffsetMinutes,
       schedule: parsed.schedule,
       localUpdatedAt: now,
+      // syncedAt is `@default(now())` — Prisma only ever applies a plain default at INSERT time,
+      // never on a later UPDATE. DESKTOP's own pull is a delta query (`syncedAt: { gt: since }`),
+      // so leaving this out of the update path freezes it at row-creation time FOREVER — every edit
+      // from mobile becomes permanently invisible to DESKTOP's pull, not just delayed. Same bug
+      // class this project already hit and fixed once in the generic sync path (see
+      // sync-service.ts's own sanitizeRow comment) — this direct-Prisma mobile service bypasses
+      // that fix entirely, so it needs its own explicit set here.
+      syncedAt: now,
     };
 
     const row = existing
@@ -134,7 +142,10 @@ export async function toggleManualLock(tenantId: string, locationId: string, inp
     const existing = await tx.workingHours.findFirst({ where: { tenantId, locationId } });
     if (!existing) throw new HttpError(400, "Set up working hours for this storefront before using manual lock.");
 
-    const row = await tx.workingHours.update({ where: { id: existing.id }, data: { manuallyLocked: parsed.locked, localUpdatedAt: new Date() } });
+    // syncedAt set explicitly here too — see upsertWorkingHours's own comment on why this can't be
+    // left to Prisma's column default.
+    const now = new Date();
+    const row = await tx.workingHours.update({ where: { id: existing.id }, data: { manuallyLocked: parsed.locked, localUpdatedAt: now, syncedAt: now } });
     return {
       locationId,
       locationName: location.locationName,
