@@ -161,6 +161,12 @@ export type OwnerDashboardResult = {
    * window.blueLedger.report.mySales (CashierDashboard.tsx's "My sales today" table). Most recent
    * first, capped at 20 — a personal activity feed, not a full report. Null alongside mySales. */
   myRecentSales: MyRecentSale[] | null;
+  /** Count of distinct sales, storefront-scoped like `sales` above, with a void or return request
+   * still sitting at "pending_approval" and requested within this period — "how many of today's
+   * sales are stuck waiting on a manager." Not employee-scoped (any cashier's submission counts) —
+   * unlike mySales, this is meant to be visible on every dashboard variant, Cashier included, since
+   * it carries no revenue/money figure. */
+  pendingApprovalsToday: number;
 };
 
 /** Fetches sale rows + the approved-void exclusion set + item/return/product context shared by both
@@ -471,6 +477,33 @@ async function computeStockAlerts(
   };
 }
 
+/** Storefront-scoped, never employee-scoped — see OwnerDashboardResult.pendingApprovalsToday's own
+ * doc comment. SaleVoid/SaleReturn have no locationId of their own, so scoping to one storefront
+ * resolves it via the underlying sale, same pattern as computeSalesAndProfit's returnSaleIdsInScope. */
+async function computePendingApprovalsToday(
+  tx: Parameters<Parameters<typeof withTenantContext>[1]>[0],
+  tenantId: string,
+  range: PeriodRange,
+  locationId?: string | null,
+): Promise<number> {
+  const { start, endExclusive } = range;
+  const [pendingVoids, pendingReturns] = await Promise.all([
+    tx.saleVoid.findMany({
+      where: { tenantId, status: "pending_approval", requestedAt: { gte: start, lt: endExclusive } },
+      select: { saleId: true },
+    }),
+    tx.saleReturn.findMany({
+      where: { tenantId, status: "pending_approval", requestedAt: { gte: start, lt: endExclusive } },
+      select: { saleId: true },
+    }),
+  ]);
+  const saleIds = [...new Set([...pendingVoids.map((v) => v.saleId), ...pendingReturns.map((r) => r.saleId)])];
+  if (saleIds.length === 0 || !locationId) return saleIds.length;
+
+  const matchingSales = await tx.sale.findMany({ where: { tenantId, locationId, id: { in: saleIds } }, select: { id: true } });
+  return matchingSales.length;
+}
+
 async function computeOutstandingCredit(
   tx: Parameters<Parameters<typeof withTenantContext>[1]>[0],
   tenantId: string,
@@ -554,11 +587,12 @@ export async function getOwnerDashboard(
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
   const range = resolvePeriodRange(period, timezoneOffsetMinutes);
 
-  const { sales, profit, stock, credit, mySales, myRecentSales } = await withTenantContext(tenantId, async (tx) => {
-    const [{ sales, profit }, stock, credit, mySalesResult, myRecentSalesRows, myVoidedSaleIds] = await Promise.all([
+  const { sales, profit, stock, credit, mySales, myRecentSales, pendingApprovalsToday } = await withTenantContext(tenantId, async (tx) => {
+    const [{ sales, profit }, stock, credit, pendingApprovalsToday, mySalesResult, myRecentSalesRows, myVoidedSaleIds] = await Promise.all([
       computeSalesAndProfit(tx, tenantId, range, locationId),
       computeStockAlerts(tx, tenantId, locationId),
       computeOutstandingCredit(tx, tenantId, locationId),
+      computePendingApprovalsToday(tx, tenantId, range, locationId),
       employeeId ? computeSalesAndProfit(tx, tenantId, range, locationId, employeeId) : Promise.resolve(null),
       employeeId
         ? tx.sale.findMany({
@@ -587,7 +621,7 @@ export async function getOwnerDashboard(
             amountCents: row.grandTotalCents,
           }))
       : null;
-    return { sales, profit, stock, credit, mySales: mySalesResult ? mySalesResult.sales : null, myRecentSales };
+    return { sales, profit, stock, credit, mySales: mySalesResult ? mySalesResult.sales : null, myRecentSales, pendingApprovalsToday };
   });
 
   return {
@@ -601,5 +635,6 @@ export async function getOwnerDashboard(
     credit,
     mySales,
     myRecentSales,
+    pendingApprovalsToday,
   };
 }
