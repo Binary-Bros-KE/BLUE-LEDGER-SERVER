@@ -259,16 +259,20 @@ export async function computeSalesAndProfit(
     tx.paymentMethod.findMany({ where: { tenantId }, select: { id: true, name: true } }),
   ]);
 
-  // SaleReturn has no locationId of its own (an opaque saleId reference, same convention as its
-  // other FK-avoidance fields elsewhere in this app) — when scoping to one storefront, resolve
-  // which of these returns' underlying sales actually belong to it via one extra lookup, so a
-  // filtered dashboard's refund netting doesn't pull in another storefront's returns.
+  // SaleReturn has no locationId/employeeId of its own (an opaque saleId reference, same convention
+  // as its other FK-avoidance fields elsewhere in this app) — when scoping to one storefront and/or
+  // one employee, resolve which of these returns' underlying sales actually belong to that scope via
+  // one extra lookup, so a filtered dashboard's refund netting doesn't pull in another storefront's
+  // (or, critically, another EMPLOYEE'S) returns. Missing the employeeId half of this exact guard is
+  // what let mySales (getOwnerDashboard's Cashier figure) go negative for an employee who made zero
+  // sales — any return approved anywhere in the tenant that day was being subtracted from every
+  // employee's personal total, not just the one who actually made the returned sale.
   let returnSaleIdsInScope: Set<string> | null = null;
-  if (locationId) {
+  if (locationId || employeeId) {
     const candidateSaleIds = [...new Set(approvedReturnsInRange.map((r) => r.saleId))];
     const matchingSales =
       candidateSaleIds.length > 0
-        ? await tx.sale.findMany({ where: { tenantId, locationId, id: { in: candidateSaleIds } }, select: { id: true } })
+        ? await tx.sale.findMany({ where: { tenantId, ...locationWhere, ...employeeWhere, id: { in: candidateSaleIds } }, select: { id: true } })
         : [];
     returnSaleIdsInScope = new Set(matchingSales.map((s) => s.id));
   }
