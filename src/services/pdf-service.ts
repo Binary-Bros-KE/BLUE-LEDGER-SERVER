@@ -8,12 +8,20 @@ let browserPromise: Promise<Browser> | null = null;
 
 function getBrowser(): Promise<Browser> {
   if (!browserPromise) {
-    browserPromise = puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    // If launch() rejects (e.g. a transient resource spike, or Chromium briefly unavailable during a
+    // deploy/restart), the REJECTED promise would otherwise sit cached in browserPromise forever —
+    // every future PDF request would replay that exact same failure until the whole SERVER process
+    // is manually restarted, turning one transient hiccup into a permanent "every download 500s" outage.
+    // Clearing it back to null on failure lets the next call actually retry instead.
+    browserPromise = puppeteer.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] }).catch((err: unknown) => {
+      browserPromise = null;
+      throw err;
+    });
   }
   return browserPromise;
 }
 
-export async function renderHtmlToPdf(html: string): Promise<Buffer> {
+async function renderWithBrowser(html: string): Promise<Buffer> {
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
@@ -44,5 +52,20 @@ export async function renderHtmlToPdf(html: string): Promise<Buffer> {
     return Buffer.from(uint8);
   } finally {
     await page.close();
+  }
+}
+
+/** If the shared Chromium process has died mid-session (OOM, crashed, killed) rather than never
+ * having launched at all, browserPromise still resolves to that now-unusable Browser object forever
+ * — page.newPage()/setContent()/pdf() would keep throwing "Target closed"/"Protocol error" on every
+ * single request until a manual server restart. Retry once with a freshly launched browser before
+ * giving up, so a crashed Chromium self-heals on the very next PDF request instead of taking every
+ * document download down until someone notices and restarts the process. */
+export async function renderHtmlToPdf(html: string): Promise<Buffer> {
+  try {
+    return await renderWithBrowser(html);
+  } catch {
+    browserPromise = null;
+    return await renderWithBrowser(html);
   }
 }
