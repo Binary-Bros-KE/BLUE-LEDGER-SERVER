@@ -755,6 +755,21 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
     lines.push(`⚠️ *Balance Due: ${money(doc.balanceDueCents)}*`);
   }
 
+  // Same "Payments Made" content and Payments-before-Tax-Breakdown ordering as the printed/PDF
+  // invoice (document-html.ts's buildInvoiceDocumentHtml) — an invoice's actual payment history,
+  // distinct from the single-transaction paymentMethodName/paymentReference/amountReceivedCents
+  // block below (which only ever applies to a receipt's one-shot payment, never an invoice's).
+  if (doc.payments.length > 0) {
+    lines.push(SEPARATOR);
+    lines.push("*Payments Made*");
+    for (const payment of doc.payments) {
+      lines.push(
+        `${formatDocumentDate(payment.receivedAt)} · ${payment.paymentMethodName}${payment.reference ? ` (${payment.reference})` : ""}: *${money(payment.amountCents)}*`,
+      );
+      lines.push(`  Received by ${payment.receivedByName}`);
+    }
+  }
+
   if (doc.taxBreakdown.length > 0) {
     lines.push(SEPARATOR);
     lines.push("*Tax Breakdown*");
