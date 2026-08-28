@@ -1441,9 +1441,11 @@ model StockRequest {
   requestedAt     DateTime
   reviewedBy      String?
   reviewedAt      DateTime?
-  /// stock_request_items rows — {id, productId, quantityRequested, createdAt}[]. Never independently
-  /// edited after creation (confirmed — no update/delete function exists for them), so a plain
-  /// replace-all on pull is safe.
+  /// stock_request_items rows — {id, productId, quantityRequested, previousQuantity, newQuantity,
+  /// mainStorePreviousQuantity, mainStoreNewQuantity, createdAt}[]. The last four are null until the
+  /// request is approved, then frozen at that moment (DESKTOP's approveStockRequest) — a plain
+  /// replace-all on pull stays safe since it's driven by the pushing device's current item state, not
+  /// an "only ever inserted once" assumption.
   items           Json
 
   localCreatedAt DateTime
