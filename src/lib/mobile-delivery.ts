@@ -72,12 +72,33 @@ export async function buildDeliveryJson(
   };
 }
 
+/** Mirrors DESKTOP's own expense-service.ts resolveDeliveryExpensePaymentMethodId verbatim: falls
+ * back to the tenant's "Cash" payment method (how a delivery cost — paid to a rider/courier, out of
+ * pocket — is almost always actually settled), then to whatever active payment method exists at all,
+ * for the cases createDeliveryCostExpenseIfNeeded has no document payment to go on (an invoice with
+ * no payment yet, a quotation-to-invoice conversion, duplicateInvoice). Every tenant has "Cash"
+ * seeded at bootstrap, so the final `null` should never actually happen in practice. */
+async function resolveDeliveryExpensePaymentMethodId(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  paymentMethodId: string | null,
+): Promise<string | null> {
+  if (paymentMethodId) return paymentMethodId;
+  const cash = await tx.paymentMethod.findFirst({ where: { tenantId, code: "CASH", isActive: true } });
+  if (cash) return cash.id;
+  const anyActive = await tx.paymentMethod.findFirst({ where: { tenantId, isActive: true }, orderBy: { sortOrder: "asc" } });
+  return anyActive?.id ?? null;
+}
+
 /** Mirrors DESKTOP's own expense-service.ts createDeliveryCostExpenseIfNeeded verbatim: a
  * delivery's costCents (what THIS shop paid the rider/courier, distinct from feeCents — what the
  * CUSTOMER paid, already folded into the document's own grand total) auto-creates a real Expense
- * record. Guarded the same way DESKTOP is: needs a real cost AND a payment method to record it
- * against — a quotation never calls this at all (nothing has been paid for yet), matching DESKTOP's
- * own quotation-service.ts, which never creates this expense either. */
+ * record. Books UNCONDITIONALLY once there's a real cost, regardless of the invoice's own payment
+ * status — a deliberate client decision: recording a delivery cost means money has already gone out
+ * the moment it's recorded, whether or not the customer has paid the invoice yet. Falls back via
+ * resolveDeliveryExpensePaymentMethodId when the document itself has no payment method to point to.
+ * A quotation never calls this at all (nothing has shipped yet), matching DESKTOP's own
+ * quotation-service.ts — the cost only becomes a real expense once/if the quotation converts. */
 export async function createDeliveryCostExpenseIfNeeded(
   tx: Prisma.TransactionClient,
   tenantId: string,
@@ -93,7 +114,9 @@ export async function createDeliveryCostExpenseIfNeeded(
     now: Date;
   },
 ): Promise<void> {
-  if (params.delivery.costCents <= 0 || !params.paymentMethodId) return;
+  if (params.delivery.costCents <= 0) return;
+  const paymentMethodId = await resolveDeliveryExpensePaymentMethodId(tx, tenantId, params.paymentMethodId);
+  if (!paymentMethodId) return;
 
   let category = await tx.expenseCategory.findFirst({ where: { tenantId, name: DELIVERY_COST_CATEGORY_NAME } });
   if (!category) {
@@ -133,7 +156,7 @@ export async function createDeliveryCostExpenseIfNeeded(
       categoryId: category.id,
       amountCents: params.delivery.costCents,
       paidBy: null,
-      paymentMethodId: params.paymentMethodId,
+      paymentMethodId,
       storefrontId: params.locationId,
       reference: null,
       description: descriptionLines.join("\n"),
