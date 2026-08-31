@@ -564,6 +564,7 @@ model Tenant {
   stockRequests            StockRequest[]
   stockReceipts            StockReceipt[]
   mainStoreAllocations     MainStoreAllocation[]
+  inventoryBalances        Inventory[]
   mpesaTillSettings        MpesaTillSettings[]
   mpesaTransactions        MpesaTransaction[]
   billingMpesaTransactions BillingMpesaTransaction[]
@@ -1512,6 +1513,39 @@ model MainStoreAllocation {
   @@unique([tenantId, bucketKey])
   @@index([tenantId])
   @@map("main_store_allocations")
+}
+
+/// Server-side running stock balance per (product, location) — the Postgres-side equivalent of
+/// DESKTOP's own local `inventory` table (SQLite, one row per product+location, O(1) reads, kept
+/// correct incrementally by applyValidatedStockMovement). Postgres never had an equivalent: every
+/// mobile read of "current stock" (Products tab, Dashboard stock alerts, Checkout/Quotation stock
+/// checks — see mobile-inventory-service.ts, mobile-metrics-service.ts, mobile-cart.ts,
+/// mobile-quotations-service.ts) instead ran `stockMovement.groupBy` and summed the ENTIRE
+/// stock_movements ledger on every single request — unbounded, and only indexed on tenantId (not
+/// even productId/locationId), so it got slower forever as a tenant's history grew. Flagged live by
+/// the business owner: "what if a product has 5000 movements... will mobile pull 5000 for every
+/// product" — confirmed true, both for that request and for every other read above.
+///
+/// NOT a synced entity — no id from a device, no deviceId/localCreatedAt/localUpdatedAt/syncedAt, no
+/// ENTITY_DELEGATES entry, never pushed or pulled. It's maintained entirely server-side by a Postgres
+/// trigger (fn_stock_movements_maintain_inventory, see the server_inventory_balance migration) that
+/// fires on every stock_movements INSERT — whether that row arrived via DESKTOP's own sync push OR
+/// was written directly by a mobile checkout/invoice/quotation action — so it can never independently
+/// drift from the ledger the way a manually-maintained copy could (exactly the class of bug
+/// main_store_allocations just had — see that model's own migration 77 on the DESKTOP side). Every
+/// service in this codebase only ever READS this table; nothing writes it directly.
+model Inventory {
+  id         String   @id
+  tenantId   String
+  tenant     Tenant   @relation(fields: [tenantId], references: [id])
+  productId  String
+  locationId String
+  quantity   Int      @default(0)
+  updatedAt  DateTime @default(now())
+
+  @@unique([productId, locationId])
+  @@index([tenantId])
+  @@map("inventory")
 }
 
 /// Per-STOREFRONT M-Pesa Till (Buy Goods) STK Push credentials — deliberately NOT part of the

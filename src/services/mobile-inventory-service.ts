@@ -51,16 +51,16 @@ export type MobileProductListItem = {
 
 /**
  * Every active, stock-tracked product with its current quantity split between the Main Store
- * (distribution center) and storefronts — derived from the same StockMovement ledger that already
- * powers the dashboard's Stock Alerts (mobile-metrics-service.ts's computeStockAlerts), just grouped
- * by location as well as product so the Main-Store/storefront split falls out of the same query.
- * Low/out-of-stock thresholds are IDENTICAL to that existing function (quantity <= 0 = out of
- * stock; 0 < reorderLevel and quantity < reorderLevel = low stock) — one source of truth for what
- * "low stock" means across the whole Owner App.
+ * (distribution center) and storefronts — read from the `inventory` running-balance table (see that
+ * Prisma model's own doc comment) rather than summed live from the StockMovement ledger. Grouped by
+ * location as well as product so the Main-Store/storefront split falls out of one query, same shape
+ * as before. Low/out-of-stock thresholds are IDENTICAL to mobile-metrics-service.ts's own
+ * computeStockAlerts (quantity <= 0 = out of stock; 0 < reorderLevel and quantity < reorderLevel =
+ * low stock) — one source of truth for what "low stock" means across the whole Owner App.
  */
 export async function listProducts(tenantId: string): Promise<MobileProductListItem[]> {
   return withTenantContext(tenantId, async (tx) => {
-    const [products, categories, locations, movementSums] = await Promise.all([
+    const [products, categories, locations, balances] = await Promise.all([
       tx.product.findMany({
         where: { tenantId, trackStock: true, status: "active" },
         select: {
@@ -80,7 +80,7 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
       }),
       tx.category.findMany({ where: { tenantId }, select: { id: true, name: true } }),
       tx.location.findMany({ where: { tenantId }, select: { id: true, locationName: true, locationType: true } }),
-      tx.stockMovement.groupBy({ by: ["productId", "locationId"], where: { tenantId }, _sum: { quantityChange: true } }),
+      tx.inventory.findMany({ where: { tenantId }, select: { productId: true, locationId: true, quantity: true } }),
     ]);
 
     const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
@@ -90,12 +90,11 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
     const storefronts = locations.filter((l) => isStorefrontLocationType(l.locationType));
 
     // qtyByProductThenLocation: productId -> locationId -> quantity, so both the Main Store figure
-    // and each storefront's own figure fall out of the same single groupBy query.
+    // and each storefront's own figure fall out of the same single balances query.
     const qtyByProductThenLocation = new Map<string, Map<string, number>>();
-    for (const row of movementSums) {
-      const qty = row._sum.quantityChange ?? 0;
+    for (const row of balances) {
       const byLocation = qtyByProductThenLocation.get(row.productId) ?? new Map<string, number>();
-      byLocation.set(row.locationId, (byLocation.get(row.locationId) ?? 0) + qty);
+      byLocation.set(row.locationId, row.quantity);
       qtyByProductThenLocation.set(row.productId, byLocation);
     }
 

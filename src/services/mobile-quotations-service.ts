@@ -393,16 +393,17 @@ export async function checkQuotationStock(tenantId: string, id: string): Promise
     const trackedItems = items.filter((item) => !item.isLocallySourced);
     if (trackedItems.length === 0) return [];
 
-    const [products, movementSums] = await Promise.all([
+    const [products, balances] = await Promise.all([
       tx.product.findMany({ where: { id: { in: trackedItems.map((i) => i.productId) } }, select: { id: true, name: true } }),
-      tx.stockMovement.groupBy({
-        by: ["productId"],
+      // Read from the `inventory` running-balance table (see that Prisma model's own doc comment) —
+      // O(quote size), not a live sum over each product's entire movement history at this location.
+      tx.inventory.findMany({
         where: { tenantId, locationId: row.locationId, productId: { in: trackedItems.map((i) => i.productId) } },
-        _sum: { quantityChange: true },
+        select: { productId: true, quantity: true },
       }),
     ]);
     const productNameById = new Map(products.map((p) => [p.id, p.name]));
-    const stockByProduct = new Map(movementSums.map((m) => [m.productId, m._sum.quantityChange ?? 0]));
+    const stockByProduct = new Map(balances.map((b) => [b.productId, b.quantity]));
 
     return trackedItems.map((item) => {
       const availableQuantity = stockByProduct.get(item.productId) ?? 0;

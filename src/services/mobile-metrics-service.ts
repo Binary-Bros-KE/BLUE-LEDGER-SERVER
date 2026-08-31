@@ -444,18 +444,23 @@ async function computeStockAlerts(
   tenantId: string,
   locationId?: string | null,
 ): Promise<StockAlerts> {
-  const [products, movementSums] = await Promise.all([
+  const [products, balances] = await Promise.all([
     tx.product.findMany({
       where: { tenantId, trackStock: true, status: "active" },
       select: { id: true, name: true, reorderLevel: true },
     }),
-    // Scoped to one storefront, "quantity" becomes that location's own stock rather than the
-    // company-wide total across every location — matches DESKTOP's own per-location Inventory
-    // Report philosophy once a storefront filter is applied.
-    tx.stockMovement.groupBy({ by: ["productId"], where: { tenantId, ...(locationId ? { locationId } : {}) }, _sum: { quantityChange: true } }),
+    // Read from the `inventory` running-balance table (see that Prisma model's own doc comment) —
+    // not a live sum over the whole StockMovement ledger. Scoped to one storefront, "quantity" is
+    // summed across just that location's own rows rather than every location — matches DESKTOP's own
+    // per-location Inventory Report philosophy once a storefront filter is applied.
+    tx.inventory.groupBy({
+      by: ["productId"],
+      where: { tenantId, ...(locationId ? { locationId } : {}) },
+      _sum: { quantity: true },
+    }),
   ]);
 
-  const quantityByProduct = new Map(movementSums.map((row) => [row.productId, row._sum.quantityChange ?? 0]));
+  const quantityByProduct = new Map(balances.map((row) => [row.productId, row._sum.quantity ?? 0]));
 
   const lowStockProducts: StockAlertProduct[] = [];
   const outOfStockProducts: { productId: string; productName: string }[] = [];

@@ -93,14 +93,15 @@ export async function prepareMobileCart(
   const products = await tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) }, tenantId } });
   const productById = new Map(products.map((p) => [p.id, p]));
 
-  const movementSums = options.checkStock
-    ? await tx.stockMovement.groupBy({
-        by: ["productId"],
+  // Read from the `inventory` running-balance table (see that Prisma model's own doc comment) —
+  // O(cart size), not a live sum over this product's entire movement history at this location.
+  const balances = options.checkStock
+    ? await tx.inventory.findMany({
         where: { tenantId, locationId, productId: { in: items.map((i) => i.productId) } },
-        _sum: { quantityChange: true },
+        select: { productId: true, quantity: true },
       })
     : [];
-  const stockByProduct = new Map(movementSums.map((m) => [m.productId, m._sum.quantityChange ?? 0]));
+  const stockByProduct = new Map(balances.map((b) => [b.productId, b.quantity]));
 
   // Batch-validate every distinct local supplier referenced across the cart in one query.
   const localSupplierIds = [
