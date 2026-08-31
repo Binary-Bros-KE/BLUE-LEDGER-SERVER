@@ -16,6 +16,7 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
   payment_methods: (tx) => tx.paymentMethod,
   riders: (tx) => tx.rider,
   suppliers: (tx) => tx.supplier,
+  supplier_balance_entries: (tx) => tx.supplierBalanceEntry,
   customers: (tx) => tx.customer,
   employees: (tx) => tx.employee,
   roles: (tx) => tx.role,

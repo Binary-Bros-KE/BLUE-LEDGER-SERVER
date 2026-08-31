@@ -8,6 +8,7 @@ export const SYNC_ENTITY_NAMES = [
   "payment_methods",
   "riders",
   "suppliers",
+  "supplier_balance_entries",
   "customers",
   "employees",
   "roles",

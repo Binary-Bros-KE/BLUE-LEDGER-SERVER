@@ -541,6 +541,7 @@ model Tenant {
   paymentMethods PaymentMethod[]
   riders         Rider[]
   suppliers      Supplier[]
+  supplierBalanceEntries SupplierBalanceEntry[]
   customers      Customer[]
   employees      Employee[]
   roles          Role[]
@@ -688,6 +689,37 @@ model Supplier {
 
   @@index([tenantId])
   @@map("suppliers")
+}
+
+/// What's owed to a supplier ("stuff ordered, not yet paid") — an append-only ledger, same shape and
+/// same reasoning as StockMovement: not conflict-aware (two devices each recording their own
+/// purchase/payment for the same supplier just both land as independent rows, never competing over
+/// one), and deliberately the ONLY synced source of truth for this figure. DESKTOP's own
+/// suppliers.balance_cents (a running total derived from this ledger) is a purely LOCAL cache column,
+/// never pushed here — see that column's own migration comment for why a plain synced balance field
+/// would risk the exact lost-update drift MainStoreAllocation's old design had.
+model SupplierBalanceEntry {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  supplierId    String
+  entryType     String
+  amountCents   Int
+  referenceType String?
+  referenceId   String?
+  notes         String?
+  performedBy   String?
+
+  /// No separate localUpdatedAt column locally (the row is immutable) — DESKTOP sends its
+  /// localCreatedAt value for both fields, same convention as StockMovement.
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("supplier_balance_entries")
 }
 
 model Customer {
