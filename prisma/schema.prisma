@@ -1484,6 +1484,11 @@ model StockMovement {
   notes                  String?
   allocationStorefrontId String?
   allocationExplicit     Boolean @default(false)
+  /// This location's actual on-hand quantity immediately before/after THIS specific movement,
+  /// frozen at the moment it happened on the device that recorded it — never recomputed here.
+  /// Null for a movement recorded before this field existed.
+  previousQuantity       Int?
+  newQuantity            Int?
 
   /// No separate localUpdatedAt column locally (the row is immutable) — DESKTOP sends its
   /// localCreatedAt value for both fields.
