@@ -561,6 +561,7 @@ model Tenant {
   saleReturns              SaleReturn[]
   quotations               Quotation[]
   purchases                Purchase[]
+  borrows                  Borrow[]
   stockMovements           StockMovement[]
   stockRequests            StockRequest[]
   stockReceipts            StockReceipt[]
@@ -1421,6 +1422,40 @@ model Purchase {
 
   @@index([tenantId])
   @@map("purchases")
+}
+
+/// "Borrow & Lend" — physical stock moving between this tenant and another shop (represented by the
+/// existing Supplier model, no separate "shops" concept — see DESKTOP's shared/types/borrow.ts for
+/// the full feature reasoning). Same header+items+append-only-events shape as Purchase, just with no
+/// pricing at all.
+model Borrow {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  borrowNumber String
+  /// "borrowed" (this tenant borrowed FROM the supplier — stock added here) or "lent" (this tenant
+  /// lent TO the supplier — stock removed here). See DESKTOP's shared/types/borrow.ts.
+  direction    String
+  supplierId   String
+  locationId   String
+  status       String
+  notes        String?
+  /// One entry per "Record Return" click — {id, returnedBy, returnedByName, returnedAt,
+  /// items: [{borrowItemId, productId, productName, sku, returnQuantity, previousQuantity,
+  /// newQuantity}]}[]. Each entry's before/after quantities are frozen at the moment that return
+  /// happened, same pattern as Purchase.receivingEvents.
+  returnEvents Json    @default("[]")
+  /// borrow_items rows — {id, productId, quantity, returnedQuantity, createdAt, updatedAt}[].
+  items        Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("borrows")
 }
 
 /// Phase 4 — the only entity in this whole sync system that is NOT a document and NOT last-write-

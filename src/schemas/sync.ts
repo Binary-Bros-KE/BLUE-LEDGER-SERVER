@@ -25,6 +25,7 @@ export const SYNC_ENTITY_NAMES = [
   "sale_returns",
   "quotations",
   "purchases",
+  "borrows",
   "stock_movements",
   "stock_requests",
   "stock_receipts",
