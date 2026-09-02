@@ -66,6 +66,19 @@ export const syncCountsSchema = z.object({
 
 export type SyncCountsInput = z.infer<typeof syncCountsSchema>;
 
+/** On-demand "just fetch these exact parent rows now" — the desktop calls this the instant a pulled
+ * child row fails a local foreign key, instead of waiting for the referenced entity's own delta pull
+ * to eventually catch up (or, worse, permanently stalling on it). Same row shape back as /sync/pull.
+ * Capped at one desktop PUSH_BATCH_SIZE worth of ids per call. */
+export const syncFetchByIdSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  deviceId: z.string().trim().min(1),
+  entity: entityEnum,
+  ids: z.array(z.string().trim().min(1)).min(1).max(200),
+});
+
+export type SyncFetchByIdInput = z.infer<typeof syncFetchByIdSchema>;
+
 /** Backs the pre-approval live check (see sync-service.ts's getRowStatus) — a stock request/sale
  * void/sale return needs to confirm no OTHER device has already decided it before this one creates
  * a real side effect (a stock movement), not just after the fact via the normal push/pull cycle. */

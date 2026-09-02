@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { withTenantContext } from "../lib/tenant-context.js";
 import {
   syncCountsSchema,
+  syncFetchByIdSchema,
   syncPullSchema,
   syncPushSchema,
   syncRowStatusSchema,
@@ -166,7 +167,13 @@ export type PushRowResult =
   | { id: string; status: "ok" }
   | { id: string; status: "error"; error: string }
   | { id: string; status: "conflict"; serverRow: unknown }
-  | { id: string; status: "aliased"; canonicalId: string };
+  | { id: string; status: "aliased"; canonicalId: string }
+  // The row references something that isn't on the cloud (yet, or at all). NOT an error and NOT a
+  // silent success — the desktop keeps it queued and retries, and only surfaces it as a visible
+  // failure after many attempts of the same rejection. Replaces the old status:"ok" here, which
+  // cleared the row from the desktop's outbox and lost it forever (see the REQUIRED_REF_FIELDS
+  // check below).
+  | { id: string; status: "deferred"; error: string };
 
 /** Upserts a batch of rows for one entity, scoped to the calling tenant via withTenantContext (RLS
  * enforces this is the ONLY tenant these writes can land in, even if something upstream were ever
@@ -286,9 +293,13 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
             }
             if (brokenRef) {
               console.error(
-                `[sync] Rejected ${parsed.entity} row ${id} from device ${parsed.deviceId}: ${brokenRef} does not exist for this tenant.`,
+                `[sync] Deferred ${parsed.entity} row ${id} from device ${parsed.deviceId}: ${brokenRef} does not exist for this tenant yet.`,
               );
-              results.push({ id, status: "ok" });
+              results.push({
+                id,
+                status: "deferred",
+                error: `${brokenRef} has not synced to the cloud yet`,
+              });
               continue;
             }
           }
@@ -338,6 +349,22 @@ export async function pullRows(
     const cursor = lastRow ? lastRow.syncedAt.toISOString() : (parsed.since?.toISOString() ?? new Date(0).toISOString());
 
     return { rows, cursor, hasMore };
+  });
+}
+
+/** On-demand fetch of specific rows by id — same row shape as pullRows, no cursor, no pagination.
+ * The desktop calls this the moment a pulled child row fails a local foreign key: rather than
+ * stalling that whole entity's delta pull until the referenced entity happens to catch up, it grabs
+ * exactly the missing parent(s) right now and applies them first. Tenant-scoped via
+ * withTenantContext / RLS, identical to every other endpoint here. */
+export async function fetchRowsById(input: unknown): Promise<{ rows: unknown[] }> {
+  const parsed = syncFetchByIdSchema.parse(input);
+
+  return withTenantContext(parsed.tenantId, async (tx) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see pushRows.
+    const delegate = ENTITY_DELEGATES[parsed.entity](tx) as any;
+    const rows: unknown[] = await delegate.findMany({ where: { id: { in: parsed.ids } } });
+    return { rows };
   });
 }
 

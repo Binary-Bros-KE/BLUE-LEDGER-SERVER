@@ -18,6 +18,11 @@ syncRouter.post("/pull", async (req, res) => {
   res.json(result);
 });
 
+syncRouter.post("/fetch-by-id", async (req, res) => {
+  const result = await syncService.fetchRowsById(req.body);
+  res.json(result);
+});
+
 syncRouter.post("/counts", async (req, res) => {
   const result = await syncService.getCounts(req.body);
   res.json(result);
