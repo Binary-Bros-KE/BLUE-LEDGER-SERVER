@@ -437,7 +437,9 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         dateLabel: (sale.completedAt ?? sale.localCreatedAt).toISOString(),
         employeeName: employee ? `${employee.firstName} ${employee.lastName}`.trim() : "—",
         branchName: sale.includeBusinessInfo ? (location?.locationName ?? "—") : "",
-        customerName: customer?.name ?? null,
+        // "Walk-in - Scott" when there's no real customer but a walk-in label was given at Checkout —
+        // see DESKTOP's own walkInAwareCustomerName (sale-repository.ts) for the full reasoning.
+        customerName: customer?.name ?? (sale.walkInName ? `Walk-in - ${sale.walkInName}` : null),
         businessKraPin: sale.includeBusinessInfo ? tenantRow.kraPin : null,
         customerKraPin: customer?.kraPin ?? null,
         includeBusinessInfo: sale.includeBusinessInfo,

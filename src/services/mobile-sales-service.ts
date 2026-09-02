@@ -12,6 +12,14 @@ import {
   type SharedDocumentResult,
 } from "./share-service.js";
 
+/** Mirrors DESKTOP's own walkInAwareCustomerName (sale-repository.ts) — bakes a walk-in sale's
+ * free-text label ("Scott") into the same customerName field every consumer already reads, so the
+ * Owner App shows "Walk-in - Scott" without any caller needing to separately check walkInName. */
+function walkInAwareCustomerName(realCustomerName: string | null, walkInName: string | null): string | null {
+  if (realCustomerName) return realCustomerName;
+  return walkInName ? `Walk-in - ${walkInName}` : null;
+}
+
 export type MobileLocation = { id: string; locationName: string };
 
 /** Backs the Owner App's storefront filter chips — same "All" + per-branch pattern already used for
@@ -152,7 +160,10 @@ export async function listSales(tenantId: string, locationId: string | null): Pr
     return sales.map((sale) => ({
       id: sale.id,
       receiptNumber: sale.receiptNumber,
-      customerName: sale.customerId ? (customerNameById.get(sale.customerId) ?? null) : null,
+      customerName: walkInAwareCustomerName(
+        sale.customerId ? (customerNameById.get(sale.customerId) ?? null) : null,
+        sale.walkInName,
+      ),
       employeeName: employeeNameById.get(sale.employeeId) ?? "—",
       locationName: locationNameById.get(sale.locationId) ?? "—",
       locationId: sale.locationId,

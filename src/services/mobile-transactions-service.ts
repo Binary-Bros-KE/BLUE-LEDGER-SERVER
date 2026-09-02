@@ -94,7 +94,10 @@ export async function listTransactions(tenantId: string, locationId: string | nu
     for (const sale of sales) {
       const status: "complete" | "failed" = sale.paymentStatus === "cancelled" || voidedSaleIds.has(sale.id) ? "failed" : "complete";
       const locationName = locationNameById.get(sale.locationId) ?? "—";
-      const partyName = (sale.customerId ? customerNameById.get(sale.customerId) : null) ?? "Walk-in customer";
+      // "Walk-in - Scott" when a walk-in label was given at Checkout — see DESKTOP's own
+      // walkInAwareCustomerName (sale-repository.ts) for the full reasoning.
+      const realCustomerName = sale.customerId ? (customerNameById.get(sale.customerId) ?? null) : null;
+      const partyName = realCustomerName ?? (sale.walkInName ? `Walk-in - ${sale.walkInName}` : "Walk-in customer");
 
       if (sale.invoiceNumber !== null) {
         for (const payment of asArray<RawSalePayment>(sale.payments)) {

@@ -1079,6 +1079,12 @@ model Sale {
   locationId          String
   employeeId          String
   customerId          String?
+  /// A free-text label a cashier can attach to a walk-in sale ("Scott") at Checkout, WITHOUT
+  /// creating a real Customer record — only ever set alongside a null customerId; DESKTOP's
+  /// sale-service.ts clears it the instant a real customer is selected. Read-side it's baked
+  /// straight into the raw customerName every consumer already reads ("Walk-in - Scott"), same
+  /// "derive the label, don't touch every consumer" approach as main_store_allocations' sourceType.
+  walkInName          String?
   saleStatus          String
   subtotalCents       Int
   discountAmountCents Int
