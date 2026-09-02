@@ -3,4 +3,4 @@
 -- instant a real customer is selected). Read-side, it's baked into the existing customerName every
 -- consumer already reads (see mobile-sales-service.ts / share-service.ts / mobile-transactions-service.ts's
 -- own walk-in-aware helpers) rather than requiring every consumer to separately check a new field.
-ALTER TABLE "Sale" ADD COLUMN "walkInName" TEXT;
+ALTER TABLE "sales" ADD COLUMN "walkInName" TEXT;
