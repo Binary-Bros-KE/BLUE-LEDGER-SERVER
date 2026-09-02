@@ -26,7 +26,17 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # `set -e` is the actual fix here: without it, a failing step partway through this script
+          # (git pull, migrate deploy, the build — any of them) did NOT stop the rest from running,
+          # and the job still reported green as long as `pm2 restart` itself succeeded — twice, live,
+          # on 2026-09-02: once a migration failed but the server still rebuilt and restarted against
+          # a database that never actually got the migration, and separately git pull itself started
+          # silently failing (no credentials) while the deploy "succeeded" against unchanged code both
+          # times. `set -e` makes the very first failing command abort the script immediately with a
+          # non-zero exit, which appleboy/ssh-action surfaces as a real, visibly failed job — the
+          # deploy state now always matches what actually happened.
           script: |
+            set -e
             cd ~/BLUE-LEDGER-SERVER
             git pull origin main
             npm install
@@ -34,3 +44,4 @@ jobs:
             npx prisma migrate deploy
             npm run build
             pm2 restart blueledger-server
+            echo "Deploy completed successfully at $(date)"
