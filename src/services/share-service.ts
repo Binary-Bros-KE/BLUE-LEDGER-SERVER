@@ -6,6 +6,7 @@ import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { createShareLinkSchema } from "../schemas/share.js";
 import { computeAddedTaxCents, computeTaxBreakdown, taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
+import { groupItemsBySections } from "../lib/document-sections.js";
 
 const SHARE_LINK_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000; // ~1 year, matching the user's own ask
 
@@ -101,9 +102,22 @@ export type SharedLineItem = {
   discountAmountCents: number;
   taxAmountCents: number;
   lineTotalCents: number;
+  /** Client request: groups this line under a named section (e.g. "Lighting") on the printed
+   * document — null for every service-charge/delivery-fee line (buildExtraLines) and for any real
+   * product line that never opted into a section. See DESKTOP's SaleItem["sectionLabel"] (shared/
+   * types/sale.ts) — the same concept, carried through the items JSONB column unchanged. */
+  sectionLabel: string | null;
 };
 
 export type { TaxBreakdownEntry } from "../lib/tax-breakdown.js";
+
+/** One titled free-text block below an invoice/quotation's items (e.g. "Installation
+ * Instructions") — see DESKTOP's NotesSection (shared/lib/document-sections.ts), the identical
+ * concept, carried through the notesSections JSONB column unchanged. */
+export type SharedNotesSection = {
+  title: string;
+  body: string;
+};
 
 export type SharedPayment = {
   receivedAt: string;
@@ -177,6 +191,9 @@ export type SharedDocumentResult = {
   /** invoiceNotes for a sale, notes for a quotation — same free-text field, different column name
    * per source table. */
   notes: string | null;
+  /** Client request: any number of additional titled note blocks below notes — see
+   * SharedNotesSection's own doc comment. Defaults to []. */
+  notesSections: SharedNotesSection[];
   // invoice-only
   dueDate: string | null;
   balanceDueCents: number | null;
@@ -252,6 +269,7 @@ type RawItem = {
   taxType: string;
   taxAmountCents: number;
   lineTotalCents: number;
+  sectionLabel?: string | null;
 };
 type RawServiceCharge = { name: string; feeCents: number };
 type RawPayment = { paymentMethodName: string; reference: string | null; receivedByName: string; receivedAt: string; amountCents: number };
@@ -381,6 +399,7 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
     discountAmountCents: 0,
     taxAmountCents: 0,
     lineTotalCents: charge.feeCents,
+    sectionLabel: null,
   }));
   const deliveryRow = delivery as RawDelivery;
   // A seller who absorbs the delivery cost themselves charges the customer nothing for it — skip
@@ -396,6 +415,7 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
           discountAmountCents: 0,
           taxAmountCents: 0,
           lineTotalCents: deliveryRow.feeCents,
+          sectionLabel: null,
         },
       ]
     : [];
@@ -453,6 +473,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
           discountAmountCents: item.discountAmountCents,
           taxAmountCents: item.taxAmountCents,
           lineTotalCents: item.lineTotalCents,
+          sectionLabel: item.sectionLabel ?? null,
         })),
         extraLines: buildExtraLines(sale.serviceCharges, sale.delivery),
         subtotalCents: sale.subtotalCents,
@@ -476,6 +497,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         })),
         transactionType: sale.transactionType,
         notes: sale.invoiceNotes,
+        notesSections: asArray<SharedNotesSection>(sale.notesSections),
         dueDate: isInvoice ? sale.dueDate : null,
         balanceDueCents: isInvoice ? sale.balanceDueCents : null,
         paymentStatus: isInvoice
@@ -527,6 +549,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         discountAmountCents: item.discountAmountCents,
         taxAmountCents: item.taxAmountCents,
         lineTotalCents: item.lineTotalCents,
+        sectionLabel: item.sectionLabel ?? null,
       })),
       extraLines: buildExtraLines(quotation.serviceCharges, quotation.delivery),
       subtotalCents: quotation.subtotalCents,
@@ -544,6 +567,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       payments: [],
       transactionType: null,
       notes: quotation.notes,
+      notesSections: asArray<SharedNotesSection>(quotation.notesSections),
       dueDate: null,
       balanceDueCents: null,
       paymentStatus: null,
@@ -742,12 +766,23 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
   if (doc.validUntil) lines.push(`Valid until: ${formatDocumentDate(doc.validUntil)}`);
 
   lines.push(SEPARATOR);
-  const allItems = [...doc.items, ...doc.extraLines];
-  allItems.forEach((item, index) => {
+  // Client request: grouped by section (e.g. "Lighting", "Sound") the same way the printed
+  // document is — see groupItemsBySections' own doc comment. extraLines (service charges/delivery)
+  // are never sectioned, so they still print flat afterward, same as before this feature.
+  const totalLineCount = doc.items.length + doc.extraLines.length;
+  let printedCount = 0;
+  const printItem = (item: SharedLineItem): void => {
     lines.push(`📦 ${item.name}`);
     lines.push(`${item.quantity} x ${money(item.unitPriceCents)} = *${money(item.lineTotalCents)}*`);
-    if (index < allItems.length - 1) lines.push("");
-  });
+    printedCount += 1;
+    if (printedCount < totalLineCount) lines.push("");
+  };
+  for (const group of groupItemsBySections(doc.items)) {
+    if (group.label) lines.push(`*${group.label.toUpperCase()}*`);
+    group.items.forEach(printItem);
+    if (group.label) lines.push(`_${group.label} Subtotal: ${money(group.subtotalCents)}_`);
+  }
+  doc.extraLines.forEach(printItem);
 
   lines.push(SEPARATOR);
   lines.push(`Subtotal: ${money(doc.subtotalCents)}`);

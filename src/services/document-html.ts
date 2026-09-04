@@ -1,4 +1,5 @@
 import { formatDocumentDate, formatDocumentDateTime } from "../lib/document-date.js";
+import { groupItemsBySections } from "../lib/document-sections.js";
 import { taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
 import { formatMoney } from "./share-service.js";
 import type {
@@ -121,6 +122,10 @@ const LETTERHEAD_STYLES = `
   table.items-table th { text-align: left; font-size: 10px; text-transform: uppercase; font-weight: bold; padding: 7px 8px; border-bottom: 1.5px solid #4b5563; background: #f0f0f0; }
   table.items-table th + th, table.items-table td + td { border-left: 1.5px solid #4b5563; }
   table.items-table td { padding: 7px 8px; vertical-align: top; font-size: 11px; border-bottom: 1.5px solid #4b5563; }
+  /* Client request: named item sections — see buildItemAndExtraRows' own doc comment. Mirrors
+     DESKTOP's printer-service.ts identically. */
+  table.items-table td.section-header { text-transform: uppercase; font-size: 10px; font-weight: bold; background: #f0f0f0; }
+  table.items-table tr.section-subtotal td { font-weight: bold; background: #f8f7f4; }
   .items-spacer { flex: 1 1 auto; }
   .center { text-align: center; }
   .right { text-align: right; white-space: nowrap; }
@@ -324,36 +329,56 @@ function buildReceiptDocumentHtml(doc: SharedDocumentResult): string {
  * column — mirrors DESKTOP's buildExtraChargeRows exactly (those aren't real product lines, so
  * their Discount column is always "-", never a real 0). Tax is deliberately NOT a per-item column
  * here — see buildTaxBreakdownHtml, the one place tax is actually shown, below the totals. */
+/** Client request: groups real product lines by sectionLabel (e.g. "Lighting", "Sound") — a header
+ * row spanning every column before each named group, that group's own rows (numbered continuously
+ * across the whole table, extraLines included), then a right-aligned subtotal row. The (label:
+ * null) group — every item with no section, which is ALL of them on a document that never uses
+ * this feature — renders with neither header nor subtotal, so the common case is byte-identical to
+ * before this feature. Ported from DESKTOP's printer-service.ts buildGroupedItemRows, merged with
+ * its own buildExtraChargeRows since this function already combines both concerns. extraLines
+ * (service charges/delivery) are never sectioned, so they always print flat afterward. */
 function buildItemAndExtraRows(items: SharedLineItem[], extraLines: SharedLineItem[], money: (cents: number | null) => string): string {
-  const itemRows = items
-    .map(
-      (item, index) => `
+  const rows: string[] = [];
+  let index = 0;
+  for (const group of groupItemsBySections(items)) {
+    if (group.label) {
+      rows.push(`<tr><td colspan="6" class="section-header">${escapeHtml(group.label)}</td></tr>`);
+    }
+    for (const item of group.items) {
+      index += 1;
+      rows.push(`
       <tr>
-        <td>${index + 1}</td>
+        <td>${index}</td>
         <td>${escapeHtml(item.name)}${item.sku ? `<div class="muted">${escapeHtml(item.sku)}</div>` : ""}</td>
         <td class="center">${item.quantity}</td>
         <td class="right">${money(item.unitPriceCents)}</td>
         <td class="right">${item.discountAmountCents > 0 ? `-${money(item.discountAmountCents)}` : "-"}</td>
         <td class="right">${money(item.lineTotalCents)}</td>
-      </tr>`,
-    )
-    .join("");
+      </tr>`);
+    }
+    if (group.label) {
+      rows.push(`
+      <tr class="section-subtotal">
+        <td colspan="5" class="right">${escapeHtml(group.label)} Subtotal</td>
+        <td class="right">${money(group.subtotalCents)}</td>
+      </tr>`);
+    }
+  }
 
-  const extraRows = extraLines
-    .map(
-      (line, index) => `
+  for (const line of extraLines) {
+    index += 1;
+    rows.push(`
       <tr>
-        <td>${items.length + index + 1}</td>
+        <td>${index}</td>
         <td>${escapeHtml(line.name)}</td>
         <td class="center">1</td>
         <td class="right">${money(line.unitPriceCents)}</td>
         <td class="right">-</td>
         <td class="right">${money(line.lineTotalCents)}</td>
-      </tr>`,
-    )
-    .join("");
+      </tr>`);
+  }
 
-  return itemRows + extraRows;
+  return rows.join("");
 }
 
 function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
@@ -465,6 +490,8 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
 
     ${doc.notes ? `<div class="notes"><strong>Notes</strong><p>${escapeHtml(doc.notes)}</p></div>` : ""}
 
+    ${doc.notesSections.map((section) => `<div class="notes"><strong>${escapeHtml(section.title)}</strong><p>${escapeHtml(section.body)}</p></div>`).join("")}
+
     <div class="footer">${escapeHtml(doc.receiptFooter ?? "Thank you for your business!")}</div>
   </div>
 </body>
@@ -550,6 +577,8 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
     ${doc.includeTaxBreakdown ? buildTaxBreakdownHtml(doc.taxBreakdown, doc.vatRatePercent, (cents) => money(cents)) : ""}
 
     ${doc.notes ? `<div class="notes"><strong>Notes</strong><p>${escapeHtml(doc.notes)}</p></div>` : ""}
+
+    ${doc.notesSections.map((section) => `<div class="notes"><strong>${escapeHtml(section.title)}</strong><p>${escapeHtml(section.body)}</p></div>`).join("")}
 
     <div class="terms">
       This quotation is valid until ${formatDate(doc.validUntil)}. Prices, discounts, and availability

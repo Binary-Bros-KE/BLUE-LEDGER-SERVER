@@ -1105,6 +1105,11 @@ model Sale {
   amountPaidCents     Int
   balanceDueCents     Int
   invoiceNotes        String?
+  /// Client request: any number of additional titled note blocks below invoiceNotes (e.g.
+  /// "Installation Instructions") — {title: string, body: string}[]. Purely additive; invoiceNotes
+  /// is unchanged and still the simple default case. Never a genuine null (DESKTOP's own column is
+  /// NOT NULL DEFAULT '[]'), so no NULLABLE_JSON_FIELDS entry needed in sync-service.ts.
+  notesSections       Json    @default("[]")
   /// Whether the "Tax Breakdown" section prints/downloads/shares on this specific document — a
   /// per-document toggle (default true), not a tenant-wide setting. Read by the /share routes'
   /// document-html.ts renderer and the JSON share-service.ts response so the public share link
@@ -1120,10 +1125,12 @@ model Sale {
   payments            Json
   /// sale_items rows for this sale — {id, productId, quantity, unitPriceCents,
   /// discountAmountCents, taxType, taxAmountCents, lineTotalCents, isLocallySourced,
-  /// localCostCents, localSupplierId, createdAt}[]. taxType is a snapshot of the category
-  /// ("vat"/"exempted"/"zero_rated") applied at sale time. isLocallySourced/localCostCents/
+  /// localCostCents, localSupplierId, sectionLabel, createdAt}[]. taxType is a snapshot of the
+  /// category ("vat"/"exempted"/"zero_rated") applied at sale time. isLocallySourced/localCostCents/
   /// localSupplierId mark a line bought from another shop on the spot rather than this shop's
   /// own stock — localCostCents/localSupplierId are only meaningful when isLocallySourced is true.
+  /// sectionLabel (client request) groups this line under a named section (e.g. "Lighting") on the
+  /// printed document — null means no section, only ever set on invoices/quotations, never retail.
   items               Json
   /// sale_service_charges rows for this sale — {id, name, feeCents, costCents, createdAt}[].
   serviceCharges      Json
@@ -1354,6 +1361,8 @@ model Quotation {
   grandTotalCents     Int
   validUntil          String
   notes               String?
+  /// Same additional titled note blocks as Sale.notesSections, the identical concept.
+  notesSections       Json    @default("[]")
   /// Same per-document toggle as Sale.includeTaxBreakdown, the identical concept.
   includeTaxBreakdown Boolean @default(true)
   /// Same per-document toggle as Sale.includeBusinessInfo, the identical concept.
