@@ -5,7 +5,15 @@ import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { createShareLinkSchema } from "../schemas/share.js";
-import { computeAddedTaxCents, computeTaxBreakdown, taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
+import {
+  computeAddedTaxCents,
+  computeTaxBreakdown,
+  taxBreakdownLabel,
+  withTaxableServiceCharges,
+  type ServiceChargeTaxType,
+  type TaxableServiceCharge,
+  type TaxBreakdownEntry,
+} from "../lib/tax-breakdown.js";
 import { groupItemsBySections } from "../lib/document-sections.js";
 
 const SHARE_LINK_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000; // ~1 year, matching the user's own ask
@@ -271,7 +279,18 @@ type RawItem = {
   lineTotalCents: number;
   sectionLabel?: string | null;
 };
-type RawServiceCharge = { name: string; feeCents: number };
+// Client request: a service charge can now carry its own tax classification (see DESKTOP's
+// shared/schemas/charges.ts ServiceChargeTaxType) — taxType/taxInclusive are optional here because
+// a charge synced from a device that predates this feature won't have them; ?? "none"/?? null/?? 0
+// below mirror DESKTOP's own sync-engine.ts fallbacks for the identical reason.
+type RawServiceCharge = {
+  name: string;
+  feeCents: number;
+  taxType?: ServiceChargeTaxType;
+  taxInclusive?: boolean | null;
+  taxAmountCents?: number;
+  lineTotalCents?: number;
+};
 type RawPayment = { paymentMethodName: string; reference: string | null; receivedByName: string; receivedAt: string; amountCents: number };
 type RawDelivery = {
   id: string;
@@ -397,8 +416,8 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
     quantity: 1,
     unitPriceCents: charge.feeCents,
     discountAmountCents: 0,
-    taxAmountCents: 0,
-    lineTotalCents: charge.feeCents,
+    taxAmountCents: charge.taxAmountCents ?? 0,
+    lineTotalCents: charge.lineTotalCents ?? charge.feeCents,
     sectionLabel: null,
   }));
   const deliveryRow = delivery as RawDelivery;
@@ -420,6 +439,18 @@ function buildExtraLines(serviceCharges: unknown, delivery: unknown): SharedLine
       ]
     : [];
   return [...charges, ...deliveryLine];
+}
+
+/** Fallbacks mirror DESKTOP's sync-engine.ts pull-apply fallbacks — a service charge synced from a
+ * device that predates this feature carries no tax fields at all, and must be treated as "none"
+ * (untaxed), not crash or silently misclassify as VAT. */
+function asTaxableServiceCharges(serviceCharges: unknown): TaxableServiceCharge[] {
+  return asArray<RawServiceCharge>(serviceCharges).map((charge) => ({
+    feeCents: charge.feeCents,
+    taxType: charge.taxType ?? "none",
+    taxAmountCents: charge.taxAmountCents ?? 0,
+    lineTotalCents: charge.lineTotalCents ?? charge.feeCents,
+  }));
 }
 
 /** Exported for reuse by the Owner App's mobile-sales-service.ts — the owner viewing their own
@@ -479,8 +510,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         subtotalCents: sale.subtotalCents,
         discountAmountCents: sale.discountAmountCents,
         taxAmountCents: sale.taxAmountCents,
-        addedTaxCents: computeAddedTaxCents(items),
-        taxBreakdown: computeTaxBreakdown(items),
+        addedTaxCents: computeAddedTaxCents(withTaxableServiceCharges(items, asTaxableServiceCharges(sale.serviceCharges))),
+        taxBreakdown: computeTaxBreakdown(withTaxableServiceCharges(items, asTaxableServiceCharges(sale.serviceCharges))),
         includeTaxBreakdown: sale.includeTaxBreakdown,
         vatRatePercent: tenantRow.vatRatePercent,
         grandTotalCents: sale.grandTotalCents,
@@ -555,8 +586,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       subtotalCents: quotation.subtotalCents,
       discountAmountCents: quotation.discountAmountCents,
       taxAmountCents: quotation.taxAmountCents,
-      addedTaxCents: computeAddedTaxCents(items),
-      taxBreakdown: computeTaxBreakdown(items),
+      addedTaxCents: computeAddedTaxCents(withTaxableServiceCharges(items, asTaxableServiceCharges(quotation.serviceCharges))),
+      taxBreakdown: computeTaxBreakdown(withTaxableServiceCharges(items, asTaxableServiceCharges(quotation.serviceCharges))),
       includeTaxBreakdown: quotation.includeTaxBreakdown,
       vatRatePercent: tenantRow.vatRatePercent,
       grandTotalCents: quotation.grandTotalCents,

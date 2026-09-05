@@ -137,6 +137,46 @@ export function computeTaxBreakdown(
  * DESKTOP/Share/Owner-App renderings) use computeTaxBreakdown instead. pricingMode is always null
  * here — taxBreakdownLabel renders the base "Standard (16%)" with no suffix for these rows.
  */
+/** A service charge's own tax classification — a superset of TaxType with "none" (no classification
+ * at all — a charge the client never opted into taxing). Ported from DESKTOP's shared/schemas/
+ * charges.ts ServiceChargeTaxType. */
+export type ServiceChargeTaxType = "none" | TaxType;
+
+/** One service charge's own frozen tax figures, as pushed inside Sale/Quotation.serviceCharges'
+ * loose JSON column — see SaleServiceCharge's own doc comment (DESKTOP shared/types/sale.ts). */
+export type TaxableServiceCharge = {
+  feeCents: number;
+  taxType: ServiceChargeTaxType;
+  taxAmountCents: number;
+  lineTotalCents: number;
+};
+
+/**
+ * Ported from DESKTOP's tax-calculation.ts withTaxableServiceCharges — see its own doc comment.
+ * Folds a document's service charges into the same {unitPriceCents, quantity, discountAmountCents,
+ * taxType, taxAmountCents, lineTotalCents} shape line items already use, so computeTaxBreakdown/
+ * computeAddedTaxCents need zero changes. Charges marked "none" are excluded — see the DESKTOP
+ * original for why that's the actual mechanism behind "services default to no tax."
+ */
+export function withTaxableServiceCharges<
+  T extends { unitPriceCents: number; quantity: number; discountAmountCents: number; taxType: string; taxAmountCents: number; lineTotalCents: number },
+>(
+  lines: T[],
+  serviceCharges: TaxableServiceCharge[],
+): Array<{ unitPriceCents: number; quantity: number; discountAmountCents: number; taxType: string; taxAmountCents: number; lineTotalCents: number }> {
+  const taxableCharges = serviceCharges
+    .filter((charge) => charge.taxType !== "none")
+    .map((charge) => ({
+      unitPriceCents: charge.feeCents,
+      quantity: 1,
+      discountAmountCents: 0,
+      taxType: charge.taxType,
+      taxAmountCents: charge.taxAmountCents,
+      lineTotalCents: charge.lineTotalCents,
+    }));
+  return [...lines, ...taxableCharges];
+}
+
 export function computeTaxCategoryTotals(
   lines: Array<{ taxType: string; taxAmountCents: number; lineTotalCents: number }>,
 ): TaxBreakdownEntry[] {

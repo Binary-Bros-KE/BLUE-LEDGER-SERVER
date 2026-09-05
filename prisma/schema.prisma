@@ -1145,7 +1145,10 @@ model Sale {
   /// sectionLabel (client request) groups this line under a named section (e.g. "Lighting") on the
   /// printed document — null means no section, only ever set on invoices/quotations, never retail.
   items               Json
-  /// sale_service_charges rows for this sale — {id, name, feeCents, costCents, createdAt}[].
+  /// sale_service_charges rows for this sale — {id, name, feeCents, costCents, taxType,
+  /// taxInclusive, taxAmountCents, lineTotalCents, createdAt}[]. taxType/taxInclusive/
+  /// taxAmountCents/lineTotalCents are optional — a charge synced from a device predating this
+  /// feature has none of them (see share-service.ts's own "none"/0/feeCents fallbacks).
   serviceCharges      Json
   /// The attached delivery_notes row for this sale, or null — {id, deliveryNoteNumber, riderId,
   /// recipientName, country, town, physicalAddress, notes, feeCents, costCents, isDelivered,
