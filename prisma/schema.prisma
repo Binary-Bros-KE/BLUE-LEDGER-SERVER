@@ -800,8 +800,10 @@ model Employee {
   passwordHash String?
 
   // Still deliberately NOT synced: failedLoginAttempts/lockedUntil (live local security state,
-  // meaningless/stale the moment it left the device), photoPath (a local file path — no shared
-  // cloud image storage exists yet).
+  // meaningless/stale the moment it left the device).
+  /// Client request: now synced too — see Product.imagePath's own comment for the same reasoning
+  /// (named after the employee's own id via DESKTOP's finalizeEmployeePhotoPath, image-service.ts).
+  photoPath String?
 
   /// A saved starting point for DESKTOP's "Process Salary" form only — never read anywhere else,
   /// and editing/removing a line while processing one salary never touches these. Nullable so the
@@ -938,6 +940,12 @@ model Product {
   trackStock           Boolean
   allowNegativeStock   Boolean
   status               String
+  /// Client request: now synced (was deliberately excluded — see this column's own removed
+  /// comment history) — the image FILE itself still never reaches this server (no shared cloud
+  /// image storage), but the path is now named after the product's own id (DESKTOP's
+  /// finalizeProductImagePath, image-service.ts), so once it syncs, manually copying the images
+  /// folder from one device to another makes the copy resolve correctly on the second device too.
+  imagePath            String?
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
@@ -961,6 +969,10 @@ model Location {
   locationName                  String
   displayName                   String?
   locationType                  String
+  /// Client request: now synced too — see Product.imagePath's own comment for the same reasoning
+  /// (named after the storefront's own id via DESKTOP's finalizeLocationLogoPath, image-service.ts).
+  logoPath                      String?
+  logoRatio                     String?
   phone                         String?
   alternativePhone              String?
   email                         String?
@@ -997,7 +1009,8 @@ model Location {
   /// pattern as the receipt pair above. showProductImagesOn* only ever affects DESKTOP's own
   /// downloaded/printed PDF (see that column's own doc comment in DESKTOP's location.ts) — synced
   /// here purely so every device sharing this storefront sees the same toggle, never read by
-  /// share-service.ts/document-html.ts (product images are local-file-only, can't reach this DB).
+  /// share-service.ts/document-html.ts (the actual image FILES are still local-file-only and never
+  /// reach this DB, even though Product.imagePath itself now does — see that column's own comment).
   invoiceHeader                 String?
   invoiceFooter                 String?
   quotationHeader               String?
