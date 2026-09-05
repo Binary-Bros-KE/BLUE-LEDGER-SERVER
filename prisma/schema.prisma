@@ -258,6 +258,12 @@ model Plan {
   featureCrm            Boolean @default(false)
   featureMultiStore     Boolean @default(false)
   featureCloudSync      Boolean @default(false)
+  /// E-commerce / client website add-on (see ECOMMERCE-ARCHITECTURE.md). When true (AND the
+  /// license is usable), the tenant's WebStore can go LIVE and the desktop shows the Orders /
+  /// Online Store tabs. When false, resolveLiveStore (middleware/shop-tenant.ts) returns
+  /// "store unavailable" on every storefront request — the public site goes dark immediately,
+  /// the POS is untouched.
+  featureEcommerce      Boolean @default(false)
 
   subscriptions Subscription[]
 
@@ -270,6 +276,71 @@ model Plan {
 enum PlanStatus {
   ACTIVE
   INACTIVE
+}
+
+enum WebStoreStatus {
+  /// Provisioned, tenant is still configuring it — not served publicly.
+  DRAFT
+  /// Published and served (subject to the live featureEcommerce + license check on every request).
+  LIVE
+  /// Manually taken offline by an admin, independent of plan/license state.
+  SUSPENDED
+}
+
+enum DomainStatus {
+  /// No custom domain yet — only the <subdomain>.<STOREFRONT_BASE_DOMAIN> preview URL works.
+  NONE
+  /// customDomain set; waiting for the tenant's CNAME to point at us.
+  PENDING_DNS
+  /// CNAME resolved; waiting for the first TLS handshake (Caddy on-demand cert).
+  VERIFYING_TLS
+  /// Custom domain fully serving over HTTPS.
+  LIVE
+}
+
+/// E-commerce storefront config, 1:1 with Tenant (see ECOMMERCE-ARCHITECTURE.md). This is a
+/// ROUTING / CONFIG table, not synced tenant business data: it is looked up by domain BEFORE any
+/// tenant context exists (the domain -> tenantId mapping is inherently pre-auth), exactly like
+/// `Device` is looked up by id in middleware/device-auth.ts. It therefore deliberately has NO
+/// Row-Level Security — every query filters by `tenantId` in application code, same discipline as
+/// every other registry table (License, Subscription, Device). The tenant's actual products /
+/// customers / orders that the storefront serves ARE RLS'd and are only ever read via
+/// withTenantContext() once this row has resolved the tenantId.
+model WebStore {
+  id       String @id @default(uuid())
+  tenantId String @unique
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+
+  /// Always issued at provision time. `<subdomain>.<STOREFRONT_BASE_DOMAIN>` is the preview /
+  /// fallback URL; never the primary one shown to customers once a custom domain is live.
+  subdomain    String  @unique
+  /// The shop's real domain, e.g. "acmehardware.co.ke" — the primary URL everywhere once LIVE.
+  customDomain String? @unique
+  domainStatus DomainStatus @default(NONE)
+
+  status WebStoreStatus @default(DRAFT)
+
+  /// Opaque reference to the tenant's own `locations` row that fulfils online orders (stock +
+  /// prices are read for this location). Not a foreign key — locations live in the synced data,
+  /// resolved via withTenantContext, not joined here.
+  fulfilmentLocationId String?
+
+  /// ISO currency code, seeded from Tenant.currency at provision time.
+  currency String @default("KES")
+
+  /// Storefront look: { logoUrl, bannerUrl, accentColor, heroHeadline, aboutText, socials{...} }.
+  themeJson          Json @default("{}")
+  /// { mode: "zones" | "pickup_only" | "flat", zones: [{name, feeCents, areas[]}], flatFeeCents,
+  ///   minOrderCents }.
+  deliveryJson       Json @default("{}")
+  /// { payOnDelivery: bool, mpesa: bool, bankTransfer: { enabled, instructions } }.
+  paymentOptionsJson Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([customDomain])
+  @@map("web_stores")
 }
 
 /// One per Tenant — the fundamental entitlement to run the software at all. Separate from
@@ -526,11 +597,19 @@ model Tenant {
   /// in activation-service.ts for where this is actually applied (`?? plan.maxDevices`).
   maxDevicesOverride Int?
 
+  /// Per-tenant e-commerce / client-website add-on (see ECOMMERCE-ARCHITECTURE.md). Same
+  /// "per-tenant override on a plan-wide capability" idea as maxDevicesOverride above:
+  /// Plan.featureEcommerce bundles the website into a plan tier; this flag sells it à la carte to
+  /// one client without touching the shared plan. resolveLiveStore (middleware/shop-tenant.ts)
+  /// grants the storefront if EITHER is true. Flipped by the admin dashboard's Online Store panel.
+  ecommerceEnabled  Boolean @default(false)
+
   /// Internal notes for the Blue Ledger team; never shown to the tenant.
   notes String?
 
   license             License?
   subscription        Subscription?
+  webStore            WebStore?
   payments            SubscriptionPayment[]
   devices             Device[]
   mobileLoginAttempts MobileLoginAttempt[]
@@ -946,6 +1025,17 @@ model Product {
   /// finalizeProductImagePath, image-service.ts), so once it syncs, manually copying the images
   /// folder from one device to another makes the copy resolve correctly on the second device too.
   imagePath            String?
+
+  /// --- E-commerce (see ECOMMERCE-ARCHITECTURE.md §8). Set from the desktop "Online Store" tab,
+  /// synced like any other column. Absent/false = this product is not on the web store. ---
+  /// Whether this product appears in the online catalog at all.
+  publishedOnline  Boolean @default(false)
+  /// Web-only description override; null = fall back to `description`.
+  onlineDescription String?
+  /// Web-only price override in cents; null = fall back to `sellingPriceCents`.
+  onlinePriceCents  Int?
+  /// Array of {url, thumbUrl} for images hosted in Cloudflare R2 — the URLs sync, never the bytes.
+  onlineImageUrls   Json    @default("[]")
 
   localCreatedAt DateTime
   localUpdatedAt DateTime

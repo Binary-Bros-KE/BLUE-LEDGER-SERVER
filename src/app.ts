@@ -16,6 +16,7 @@ import { mpesaRouter } from "./routes/mpesa.js";
 import { outletsRouter } from "./routes/outlets.js";
 import { plansRouter } from "./routes/plans.js";
 import { shareRouter } from "./routes/share.js";
+import { shopRouter } from "./routes/shop.js";
 import { syncRouter } from "./routes/sync.js";
 import { tenantsRouter } from "./routes/tenants.js";
 
@@ -248,6 +249,7 @@ app.use("/plans", plansRouter);
 app.use("/activation", activationRouter);
 app.use("/sync", syncRouter);
 app.use("/mobile", mobileRouter);
+app.use("/shop", shopRouter);
 app.use("/share", shareRouter);
 app.use("/mpesa", mpesaRouter);
 app.use("/billing-mpesa", billingMpesaRouter);

@@ -1,8 +1,10 @@
 import { Router, type Request } from "express";
 import { HttpError } from "../lib/http-error.js";
 import { requireAuth, requireSuperAdmin, type AuthenticatedAccount } from "../middleware/auth.js";
+import { shopDomainSchema, shopProvisionSchema, shopPublishSchema, shopUpdateSchema } from "../schemas/shop.js";
 import * as deviceService from "../services/device-service.js";
 import * as licenseService from "../services/license-service.js";
+import * as shopAdminService from "../services/shop-admin-service.js";
 import * as subscriptionPaymentService from "../services/subscription-payment-service.js";
 import * as subscriptionService from "../services/subscription-service.js";
 import * as tenantService from "../services/tenant-service.js";
@@ -104,4 +106,44 @@ tenantsRouter.get("/:id/payment-schedule", async (req, res) => {
   requireAccount(req);
   const schedule = await subscriptionPaymentService.getPaymentSchedule(req.params.id as string, req.account);
   res.json(schedule);
+});
+
+// --- Online Store (e-commerce onboarding — see ECOMMERCE-ARCHITECTURE.md) ---
+// Read follows the tenant's own visibility; every mutation is SUPER_ADMIN only, same tier as
+// license/subscription edits.
+tenantsRouter.get("/:id/shop", async (req, res) => {
+  requireAccount(req);
+  await tenantService.getTenant(req.params.id as string, req.account); // 404s a MARKETER probing another outlet
+  res.json(await shopAdminService.getShopOverview(req.params.id as string));
+});
+
+tenantsRouter.post("/:id/shop", requireSuperAdmin, async (req, res) => {
+  const parsed = shopProvisionSchema.parse(req.body);
+  res.status(201).json(await shopAdminService.provisionStore(req.params.id as string, parsed));
+});
+
+tenantsRouter.patch("/:id/shop", requireSuperAdmin, async (req, res) => {
+  const parsed = shopUpdateSchema.parse(req.body);
+  res.json(await shopAdminService.updateStore(req.params.id as string, parsed));
+});
+
+tenantsRouter.post("/:id/shop/domain", requireSuperAdmin, async (req, res) => {
+  const parsed = shopDomainSchema.parse(req.body);
+  res.json(await shopAdminService.setDomain(req.params.id as string, parsed));
+});
+
+tenantsRouter.post("/:id/shop/domain/verify", requireSuperAdmin, async (req, res) => {
+  res.json(await shopAdminService.verifyDomain(req.params.id as string));
+});
+
+tenantsRouter.get("/:id/shop/products", async (req, res) => {
+  requireAccount(req);
+  await tenantService.getTenant(req.params.id as string, req.account);
+  const search = typeof req.query.search === "string" ? req.query.search.trim() || undefined : undefined;
+  res.json(await shopAdminService.listPublishableProducts(req.params.id as string, search));
+});
+
+tenantsRouter.post("/:id/shop/products/publish", requireSuperAdmin, async (req, res) => {
+  const parsed = shopPublishSchema.parse(req.body);
+  res.json(await shopAdminService.setPublished(req.params.id as string, parsed));
 });

@@ -41,6 +41,23 @@ const envSchema = z.object({
   // /billing-pesapal/ipn URL (see that route's own comment) — Pesapal requires an IPN be registered
   // and referenced by id on every order, and the id from a DIFFERENT project's IPN URL is useless here.
   PESAPAL_IPN_ID: z.string().min(1, "PESAPAL_IPN_ID is required — see billing-pesapal.ts's register-ipn route"),
+
+  // --- E-commerce storefront (see ECOMMERCE-ARCHITECTURE.md) ---
+  // The apex domain under which every store's preview/fallback subdomain lives —
+  // `<web_stores.subdomain>.<STOREFRONT_BASE_DOMAIN>`. The real per-shop custom domain is matched
+  // separately (web_stores.customDomain). resolveLiveStore (middleware/shop-tenant.ts) reads this.
+  STOREFRONT_BASE_DOMAIN: z.string().min(1).default("localhost:3200"),
+  // The hostname a client CNAMEs their own domain at (the storefront deployment). Shown in the
+  // admin's "connect your domain" instructions, and what verifyDomain checks the CNAME resolves to.
+  // Empty = skip the target check (any successful DNS resolution passes) — fine for early testing.
+  STOREFRONT_PUBLIC_HOST: z.string().default(""),
+  // Cloudflare R2 for product images (§8). All optional until the P3 upload route ships — the
+  // server must still boot for P0/P1 without an object store configured at all.
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET: z.string().default("blueledger-shop-images"),
+  R2_PUBLIC_BASE_URL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
