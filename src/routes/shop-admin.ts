@@ -5,6 +5,8 @@ import {
   productImageDeleteSchema,
   productImageUploadSchema,
   storeConfigUpdateSchema,
+  themeImageUploadSchema,
+  themeUpdateSchema,
 } from "../schemas/shop.js";
 import * as shopOwnerService from "../services/shop-owner-service.js";
 
@@ -49,4 +51,15 @@ shopAdminRouter.post("/upload", async (req, res) => {
 shopAdminRouter.post("/image/delete", async (req, res) => {
   const parsed = productImageDeleteSchema.parse(req.body);
   res.json(await shopOwnerService.deleteImage(req.syncContext!.tenantId, parsed));
+});
+
+// --- Trylist theme (storefront look) ---
+shopAdminRouter.post("/theme/update", async (req, res) => {
+  const parsed = themeUpdateSchema.parse(req.body);
+  res.json(await shopOwnerService.updateTheme(req.syncContext!.tenantId, parsed));
+});
+
+shopAdminRouter.post("/theme/upload", async (req, res) => {
+  const parsed = themeImageUploadSchema.parse(req.body);
+  res.json(await shopOwnerService.uploadThemeAsset(req.syncContext!.tenantId, parsed));
 });

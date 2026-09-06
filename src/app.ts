@@ -41,7 +41,7 @@ app.use(morgan("dev"));
 // Product-photo uploads (POST /shop-admin/upload) carry a base64 image body — a ≤5 MB file
 // inflates to ~6.9 MB of text. Mounted BEFORE the global parser so it wins for this one path;
 // body-parser sets `req._body` after parsing, so the 10 MB parser below then no-ops for it.
-app.use("/shop-admin/upload", express.json({ limit: "12mb" }));
+app.use(["/shop-admin/upload", "/shop-admin/theme/upload"], express.json({ limit: "12mb" }));
 app.use(express.json({ limit: "10mb" }));
 
 app.get("/health", (_req, res) => {

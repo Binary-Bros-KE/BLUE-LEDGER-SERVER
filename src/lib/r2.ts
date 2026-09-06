@@ -103,13 +103,13 @@ function client(config: R2Config): S3Client {
 
 export type UploadedImage = { url: string; thumbUrl: string };
 
-/** Validate → re-encode to WebP (full + thumb) → PutObject both. Returns the two public URLs.
- * `productName` (optional) only shapes the object key into `<slug>-<shortid>.webp`. */
-export async function uploadProductImage(
-  tenantId: string,
-  productId: string,
+/** Shared core: validate → re-encode to WebP (full + thumb at the given max dimensions) →
+ * PutObject both under `<keyPrefix>/<slug>-<8hex>.webp`. Returns the two public URLs. */
+async function resizeAndStore(
+  keyPrefix: string,
+  slug: string,
   raw: Buffer,
-  productName?: string,
+  opts: { fullDim: number; thumbDim: number },
 ): Promise<UploadedImage> {
   const config = requireConfig();
 
@@ -124,20 +124,25 @@ export async function uploadProductImage(
     // .rotate() with no args bakes in the EXIF orientation so portrait phone photos aren't sideways.
     const source = sharp(raw, { failOn: "error" }).rotate();
     [full, thumb] = await Promise.all([
-      source.clone().resize(1500, 1500, { fit: "inside", withoutEnlargement: true }).webp({ quality: 80 }).toBuffer(),
-      source.clone().resize(400, 400, { fit: "inside", withoutEnlargement: true }).webp({ quality: 70 }).toBuffer(),
+      source
+        .clone()
+        .resize(opts.fullDim, opts.fullDim, { fit: "inside", withoutEnlargement: true })
+        .webp({ quality: 80 })
+        .toBuffer(),
+      source
+        .clone()
+        .resize(opts.thumbDim, opts.thumbDim, { fit: "inside", withoutEnlargement: true })
+        .webp({ quality: 70 })
+        .toBuffer(),
     ]);
   } catch {
     throw new HttpError(415, "That file doesn't look like a readable image.");
   }
 
   const s3 = client(config);
-  const prefix = `tenants/${tenantId}/products/${productId}`;
-  // <slug>-<8 hex> — the short suffix keeps re-uploads / multiple photos of one product unique
-  // without a full uuid's worth of noise in the URL.
-  const base = `${slugify(productName ?? "product")}-${randomUUID().slice(0, 8)}`;
-  const key = `${prefix}/${base}.webp`;
-  const thumbKey = `${prefix}/${base}_thumb.webp`;
+  const base = `${slug}-${randomUUID().slice(0, 8)}`;
+  const key = `${keyPrefix}/${base}.webp`;
+  const thumbKey = `${keyPrefix}/${base}_thumb.webp`;
 
   try {
     await Promise.all([
@@ -180,9 +185,40 @@ export async function uploadProductImage(
   return { url: `${config.publicBaseUrl}/${key}`, thumbUrl: `${config.publicBaseUrl}/${thumbKey}` };
 }
 
-/** Best-effort delete of an image pair given the "full" public URL. An orphaned object costs a
- * fraction of a cent, so any failure here is swallowed — a periodic sweep can reconcile. */
-export async function deleteProductImage(url: string): Promise<void> {
+/** Product photo — `tenants/<t>/products/<p>/<name-slug>-<8hex>.webp`. `productName` only shapes
+ * the (SEO-friendly) filename. */
+export function uploadProductImage(
+  tenantId: string,
+  productId: string,
+  raw: Buffer,
+  productName?: string,
+): Promise<UploadedImage> {
+  return resizeAndStore(
+    `tenants/${tenantId}/products/${productId}`,
+    slugify(productName ?? "product"),
+    raw,
+    { fullDim: 1500, thumbDim: 400 },
+  );
+}
+
+/** Theme decoration image (hero shot / background, story rows, category images) —
+ * `tenants/<t>/theme/<slot>-<8hex>.webp`. Backgrounds get a larger long edge so a full-bleed
+ * banner still looks crisp. */
+export function uploadThemeImage(
+  tenantId: string,
+  slot: string,
+  raw: Buffer,
+): Promise<UploadedImage> {
+  const isBackground = slot.includes("background") || slot.includes("hero") || slot.includes("category");
+  return resizeAndStore(`tenants/${tenantId}/theme`, slugify(slot), raw, {
+    fullDim: isBackground ? 2000 : 1500,
+    thumbDim: 400,
+  });
+}
+
+/** Best-effort delete of an image pair given the "full" public URL. Works for any object this
+ * module wrote (product or theme). An orphan costs a fraction of a cent, so failures are swallowed. */
+export async function deleteStoredImage(url: string): Promise<void> {
   const config = resolveConfig();
   if (!config) return;
   const prefixUrl = `${config.publicBaseUrl}/`;

@@ -1,13 +1,22 @@
 import { Prisma } from "@prisma/client";
 import { env } from "../env.js";
 import { HttpError } from "../lib/http-error.js";
-import { isR2Configured, deleteProductImage, uploadProductImage, type UploadedImage } from "../lib/r2.js";
+import {
+  isR2Configured,
+  deleteStoredImage,
+  uploadProductImage,
+  uploadThemeImage,
+  type UploadedImage,
+} from "../lib/r2.js";
+import { mergeTheme } from "../lib/trylist-theme.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import type {
   ProductImageDeleteInput,
   ProductImageUploadInput,
   StoreConfigUpdateInput,
+  ThemeImageUploadInput,
+  ThemeUpdateInput,
 } from "../schemas/shop.js";
 
 /**
@@ -129,6 +138,43 @@ export async function deleteImage(
   _tenantId: string,
   input: ProductImageDeleteInput,
 ): Promise<{ ok: true }> {
-  await deleteProductImage(input.url);
+  await deleteStoredImage(input.url);
   return { ok: true };
+}
+
+// --- Trylist theme (storefront look) ------------------------------------------------------------
+
+async function requireStore(tenantId: string): Promise<Prisma.JsonValue> {
+  const store = await prisma.webStore.findUnique({ where: { tenantId }, select: { themeJson: true } });
+  if (!store) {
+    throw new HttpError(404, "Your online store hasn't been set up yet — contact Blue Ledger support.");
+  }
+  return store.themeJson;
+}
+
+function asObject(json: Prisma.JsonValue): Record<string, unknown> {
+  return json && typeof json === "object" && !Array.isArray(json) ? { ...(json as Record<string, unknown>) } : {};
+}
+
+/** Deep-merges a partial Trylist theme into web_stores.themeJson. `story` replaces wholesale;
+ * `null` on any field (incl. a categoryImages entry) clears it. Stamps `name: "trylist"`. */
+export async function updateTheme(tenantId: string, input: ThemeUpdateInput): Promise<StoreOwnerView> {
+  const current = asObject(await requireStore(tenantId));
+  const merged = mergeTheme(current, { name: "trylist", ...(input as Record<string, unknown>) });
+  await prisma.webStore.update({
+    where: { tenantId },
+    data: { themeJson: merged as Prisma.InputJsonValue },
+  });
+  return loadView(tenantId);
+}
+
+/** Uploads a theme decoration image to R2 and returns its URLs. The desktop then writes the URL
+ * into the theme via updateTheme — this endpoint never touches themeJson itself (keeps story-row
+ * reordering etc. entirely client-side). */
+export async function uploadThemeAsset(
+  tenantId: string,
+  input: ThemeImageUploadInput,
+): Promise<UploadedImage> {
+  const raw = Buffer.from(input.dataBase64, "base64");
+  return uploadThemeImage(tenantId, input.slot, raw);
 }

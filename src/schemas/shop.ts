@@ -91,10 +91,63 @@ export const productImageUploadSchema = z.object({
 });
 
 export const productImageDeleteSchema = z.object({
-  productId: z.string().trim().min(1).max(64),
+  // Optional: the same endpoint deletes theme decoration images too (URL is all it needs).
+  productId: z.string().trim().min(1).max(64).optional(),
   url: z.string().trim().url().max(2048),
+});
+
+// --- Trylist theme (storefront look — /shop-admin/theme/*) ----------------------------------------
+
+const themeCtaSchema = z
+  .object({
+    label: z.string().trim().max(60).nullish(),
+    href: z.string().trim().max(500).nullish(),
+  })
+  .strict()
+  .nullish();
+
+const themeStoryRowSchema = z
+  .object({
+    imageUrl: z.string().trim().max(2048).nullish(),
+    title: z.string().trim().max(120).nullish(),
+    body: z.string().trim().max(600).nullish(),
+    ctaLabel: z.string().trim().max(60).nullish(),
+    ctaHref: z.string().trim().max(500).nullish(),
+  })
+  .strict();
+
+/** Partial Trylist theme — deep-merged into web_stores.themeJson (see lib/trylist-theme.ts).
+ * Hero/story/category *images* are set via /shop-admin/theme/upload + this endpoint (the desktop
+ * uploads, gets a URL, then sends it here). `null` on any field clears it. */
+export const themeUpdateSchema = z
+  .object({
+    name: z.literal("trylist").optional(),
+    hero: z
+      .object({
+        headline: z.string().trim().max(200).nullish(),
+        sub: z.string().trim().max(400).nullish(),
+        primaryCta: themeCtaSchema,
+        secondaryCta: themeCtaSchema,
+        shotImageUrl: z.string().trim().max(2048).nullish(),
+        backgroundImageUrl: z.string().trim().max(2048).nullish(),
+      })
+      .strict()
+      .optional(),
+    story: z.array(themeStoryRowSchema).max(3).optional(),
+    categoryImages: z.record(z.string().min(1).max(64), z.string().trim().max(2048).nullable()).optional(),
+  })
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, "Nothing to update");
+
+export const themeImageUploadSchema = z.object({
+  // Only shapes the object-key filename (hero-shot / hero-background / story / category-<id>).
+  slot: z.string().trim().min(1).max(80),
+  filename: z.string().trim().min(1).max(255),
+  dataBase64: z.string().min(1).max(9_000_000),
 });
 
 export type StoreConfigUpdateInput = z.infer<typeof storeConfigUpdateSchema>;
 export type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 export type ProductImageDeleteInput = z.infer<typeof productImageDeleteSchema>;
+export type ThemeUpdateInput = z.infer<typeof themeUpdateSchema>;
+export type ThemeImageUploadInput = z.infer<typeof themeImageUploadSchema>;
