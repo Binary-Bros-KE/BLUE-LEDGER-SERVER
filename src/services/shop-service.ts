@@ -20,6 +20,9 @@ export type CatalogItem = {
   wholesaleMinQuantity: number;
   categoryId: string | null;
   categoryName: string | null;
+  /** Every category this product shows under online — its POS `categoryId` plus any online-only
+   * extras (`onlineCategoryIds`), deduped. */
+  categoryIds: string[];
   unitOfMeasure: string | null;
   images: unknown; // [{ url, thumbUrl }] once the P3 upload pipeline is wired
   stock: StockBadge;
@@ -29,6 +32,11 @@ export type ShopCategory = { id: string; name: string; count: number };
 
 function toImages(value: Prisma.JsonValue | null): unknown {
   return Array.isArray(value) ? value : [];
+}
+
+/** A JSON column that's meant to be a string array — tolerate anything else as empty. */
+function toIdArray(value: Prisma.JsonValue | null): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
 }
 
 function stockBadge(
@@ -44,6 +52,7 @@ function stockBadge(
 type ProductRow = Prisma.ProductGetPayload<Record<string, never>>;
 
 function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string | null): CatalogItem {
+  const extra = toIdArray(row.onlineCategoryIds);
   return {
     id: row.id,
     name: row.name,
@@ -54,6 +63,7 @@ function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string
     wholesaleMinQuantity: row.wholesaleMinQuantity,
     categoryId: row.categoryId,
     categoryName,
+    categoryIds: [...new Set([...(row.categoryId ? [row.categoryId] : []), ...extra])],
     unitOfMeasure: row.unitOfMeasure,
     images: toImages(row.onlineImageUrls),
     stock: stockBadge(qty, row),
@@ -115,20 +125,27 @@ export async function getStorePayload(ctx: ShopContext) {
 
 export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
   return withTenantContext(ctx.tenantId, async (tx) => {
-    const where: Prisma.ProductWhereInput = {
-      publishedOnline: true,
-      status: "active",
-      ...(query.categoryId ? { categoryId: query.categoryId } : {}),
-      ...(query.search
-        ? {
-            OR: [
-              { name: { contains: query.search, mode: "insensitive" } },
-              { sku: { contains: query.search, mode: "insensitive" } },
-              { barcode: { contains: query.search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    };
+    // AND of independent OR-groups: [published+active] AND [in this category, POS or online-extra]
+    // AND [matches the search term].
+    const and: Prisma.ProductWhereInput[] = [{ publishedOnline: true, status: "active" }];
+    if (query.categoryId) {
+      and.push({
+        OR: [
+          { categoryId: query.categoryId },
+          { onlineCategoryIds: { array_contains: query.categoryId } },
+        ],
+      });
+    }
+    if (query.search) {
+      and.push({
+        OR: [
+          { name: { contains: query.search, mode: "insensitive" } },
+          { sku: { contains: query.search, mode: "insensitive" } },
+          { barcode: { contains: query.search, mode: "insensitive" } },
+        ],
+      });
+    }
+    const where: Prisma.ProductWhereInput = { AND: and };
 
     const [total, rows] = await Promise.all([
       tx.product.count({ where }),
@@ -199,24 +216,28 @@ export async function listDeliveryMethods(ctx: ShopContext): Promise<DeliveryOpt
   });
 }
 
-/** Published-product count per category — feeds the storefront's category grid. */
+/** Published-product count per category — feeds the storefront's category grid. Counts a product
+ * under its POS `categoryId` AND every id in `onlineCategoryIds` (a product in "Aerials" +
+ * "Best Sellers" counts once for each). Can't be a groupBy because of the JSON array — one scan of
+ * the published set (bounded) and tally in memory. */
 export async function listCategories(ctx: ShopContext): Promise<ShopCategory[]> {
   return withTenantContext(ctx.tenantId, async (tx) => {
-    const grouped = await tx.product.groupBy({
-      by: ["categoryId"],
-      where: { publishedOnline: true, status: "active", categoryId: { not: null } },
-      _count: { _all: true },
+    const rows = await tx.product.findMany({
+      where: { publishedOnline: true, status: "active" },
+      select: { categoryId: true, onlineCategoryIds: true },
     });
 
-    const ids = grouped.map((g) => g.categoryId).filter((id): id is string => Boolean(id));
-    const names = await categoryNames(tx, ids);
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      const ids = new Set<string>();
+      if (r.categoryId) ids.add(r.categoryId);
+      for (const id of toIdArray(r.onlineCategoryIds)) ids.add(id);
+      for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
 
-    return grouped
-      .map((g) => ({
-        id: g.categoryId as string,
-        name: names.get(g.categoryId as string) ?? "Uncategorised",
-        count: g._count._all,
-      }))
+    const names = await categoryNames(tx, [...counts.keys()]);
+    return [...counts.entries()]
+      .map(([id, count]) => ({ id, name: names.get(id) ?? "Uncategorised", count }))
       .sort((a, b) => b.count - a.count);
   });
 }

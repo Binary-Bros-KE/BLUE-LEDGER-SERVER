@@ -1056,6 +1056,11 @@ model Product {
   onlinePriceCents  Int?
   /// Array of {url, thumbUrl} for images hosted in Cloudflare R2 — the URLs sync, never the bytes.
   onlineImageUrls   Json    @default("[]")
+  /// Extra category ids this product appears under ONLINE ONLY (a JSON string array). The POS keeps
+  /// its single `categoryId`; the storefront treats a product as "in category X" when
+  /// `categoryId == X || onlineCategoryIds contains X`. Lets one product sit under e.g. its real
+  /// category + "Best Sellers" + "New Arrivals" without a many-to-many table.
+  onlineCategoryIds Json    @default("[]")
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
