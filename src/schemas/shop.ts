@@ -119,6 +119,9 @@ const themeStoryRowSchema = z
 /** Partial Trylist theme — deep-merged into web_stores.themeJson (see lib/trylist-theme.ts).
  * Hero/story/category *images* are set via /shop-admin/theme/upload + this endpoint (the desktop
  * uploads, gets a URL, then sends it here). `null` on any field clears it. */
+// NOT .strict() at the top level — the device sends `{ tenantId, deviceId, ...patch }` and those
+// two must be stripped, not rejected (requireDevice already validated them). Unknown *theme* keys
+// are still caught by the nested .strict() objects.
 export const themeUpdateSchema = z
   .object({
     name: z.literal("trylist").optional(),
@@ -136,8 +139,10 @@ export const themeUpdateSchema = z
     story: z.array(themeStoryRowSchema).max(3).optional(),
     categoryImages: z.record(z.string().min(1).max(64), z.string().trim().max(2048).nullable()).optional(),
   })
-  .strict()
-  .refine((v) => Object.keys(v).length > 0, "Nothing to update");
+  .refine(
+    (v) => ["name", "hero", "story", "categoryImages"].some((k) => k in v),
+    "Nothing to update",
+  );
 
 export const themeImageUploadSchema = z.object({
   // Only shapes the object-key filename (hero-shot / hero-background / story / category-<id>).
