@@ -116,6 +116,14 @@ const themeStoryRowSchema = z
   })
   .strict();
 
+const themeProductSectionSchema = z
+  .object({
+    title: z.string().trim().max(80).nullish(),
+    categoryId: z.string().trim().max(64).nullish(),
+    ctaLabel: z.string().trim().max(60).nullish(),
+  })
+  .strict();
+
 /** Partial Trylist theme — deep-merged into web_stores.themeJson (see lib/trylist-theme.ts).
  * Hero/story/category *images* are set via /shop-admin/theme/upload + this endpoint (the desktop
  * uploads, gets a URL, then sends it here). `null` on any field clears it. */
@@ -138,9 +146,10 @@ export const themeUpdateSchema = z
       .optional(),
     story: z.array(themeStoryRowSchema).max(3).optional(),
     categoryImages: z.record(z.string().min(1).max(64), z.string().trim().max(2048).nullable()).optional(),
+    productSections: z.array(themeProductSectionSchema).max(6).optional(),
   })
   .refine(
-    (v) => ["name", "hero", "story", "categoryImages"].some((k) => k in v),
+    (v) => ["name", "hero", "story", "categoryImages", "productSections"].some((k) => k in v),
     "Nothing to update",
   );
 

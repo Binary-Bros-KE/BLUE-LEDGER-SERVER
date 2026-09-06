@@ -17,6 +17,13 @@ export type TrylistStoryRow = {
   ctaHref?: string;
 };
 
+/** A curated products row on the home page: a heading + one category's products + a "see all" CTA. */
+export type TrylistProductSection = {
+  title?: string;
+  categoryId?: string;
+  ctaLabel?: string;
+};
+
 export type TrylistTheme = {
   name?: "trylist";
   hero?: {
@@ -31,6 +38,9 @@ export type TrylistTheme = {
   story?: TrylistStoryRow[];
   /** categoryId → image URL, used for both the home grid tile and the /products/<cat> header. */
   categoryImages?: Record<string, string>;
+  /** 0–6 curated category rows on the home page (Best Sellers, New Arrivals, …). Empty = fall
+   * back to the single default product grid. */
+  productSections?: TrylistProductSection[];
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
