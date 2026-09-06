@@ -10,6 +10,18 @@ import type { CatalogQuery } from "../schemas/shop.js";
 
 export type StockBadge = "in_stock" | "low" | "out_of_stock" | "made_to_order";
 
+export type OnlineContentBlock = {
+  type: "paragraph" | "specs" | "notes";
+  heading: string | null;
+  body: string | null;
+  items: string[];
+};
+
+export type OnlineContent = {
+  quickSpecs: string[];
+  blocks: OnlineContentBlock[];
+};
+
 export type CatalogItem = {
   id: string;
   name: string;
@@ -25,6 +37,8 @@ export type CatalogItem = {
   categoryIds: string[];
   unitOfMeasure: string | null;
   images: unknown; // [{ url, thumbUrl }] once the P3 upload pipeline is wired
+  /** Rich detail-page content (quick specs + ordered paragraph/specs/notes blocks). */
+  content: OnlineContent;
   stock: StockBadge;
 };
 
@@ -37,6 +51,32 @@ function toImages(value: Prisma.JsonValue | null): unknown {
 /** A JSON column that's meant to be a string array — tolerate anything else as empty. */
 function toIdArray(value: Prisma.JsonValue | null): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string" && v.length > 0) : [];
+}
+
+function toStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((v) => (typeof v === "string" ? v.trim() : "")).filter((v) => v.length > 0)
+    : [];
+}
+
+/** Normalise the free-form onlineContentJson blob into the exact OnlineContent shape. Anything
+ * malformed degrades to empty rather than throwing on a page render. */
+function toOnlineContent(value: Prisma.JsonValue | null): OnlineContent {
+  const o = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const blocksRaw = Array.isArray(o.blocks) ? o.blocks : [];
+  const blocks: OnlineContentBlock[] = blocksRaw
+    .map((b): OnlineContentBlock | null => {
+      const bb = b && typeof b === "object" ? (b as Record<string, unknown>) : {};
+      const type = bb.type === "specs" || bb.type === "notes" ? bb.type : "paragraph";
+      const heading = typeof bb.heading === "string" && bb.heading.trim() ? bb.heading.trim() : null;
+      const body = typeof bb.body === "string" && bb.body.trim() ? bb.body.trim() : null;
+      const items = toStringList(bb.items);
+      if (type === "specs" ? items.length === 0 : !body) return null;
+      return { type, heading, body, items };
+    })
+    .filter((b): b is OnlineContentBlock => b !== null)
+    .slice(0, 12);
+  return { quickSpecs: toStringList(o.quickSpecs).slice(0, 20), blocks };
 }
 
 function stockBadge(
@@ -66,6 +106,7 @@ function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string
     categoryIds: [...new Set([...(row.categoryId ? [row.categoryId] : []), ...extra])],
     unitOfMeasure: row.unitOfMeasure,
     images: toImages(row.onlineImageUrls),
+    content: toOnlineContent(row.onlineContentJson),
     stock: stockBadge(qty, row),
   };
 }

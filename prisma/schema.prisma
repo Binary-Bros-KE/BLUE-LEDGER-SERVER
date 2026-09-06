@@ -1061,6 +1061,10 @@ model Product {
   /// `categoryId == X || onlineCategoryIds contains X`. Lets one product sit under e.g. its real
   /// category + "Best Sellers" + "New Arrivals" without a many-to-many table.
   onlineCategoryIds Json    @default("[]")
+  /// Rich web-only product content, rendered on the product detail page and exposed to crawlers.
+  /// Shape: { quickSpecs: string[], blocks: [{ type: "paragraph"|"specs"|"notes", heading?, body?,
+  /// items?: string[] }] }. `{}` = none (the page just shows the description).
+  onlineContentJson Json    @default("{}")
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
