@@ -159,9 +159,39 @@ const themeTradeTileSchema = z
 // NOT .strict() at the top level — the device sends `{ tenantId, deviceId, ...patch }` and those
 // two must be stripped, not rejected (requireDevice already validated them). Unknown *theme* keys
 // are still caught by the nested .strict() objects.
+const themeBrandSchema = z
+  .object({
+    logoImageUrl: z.string().trim().max(2048).nullish(),
+    nameLine1: z.string().trim().max(40).nullish(),
+    nameLine2: z.string().trim().max(40).nullish(),
+  })
+  .strict();
+
+const themeTopBarSchema = z
+  .object({
+    announcement: z.string().trim().max(120).nullish(),
+  })
+  .strict();
+
+/** Contact pop-up channels — numbers/handles as free text (normalised storefront-side). */
+const themeContactSchema = z
+  .object({
+    whatsappSalesLabel: z.string().trim().max(60).nullish(),
+    whatsappSalesNumber: z.string().trim().max(30).nullish(),
+    whatsappSupportLabel: z.string().trim().max(60).nullish(),
+    whatsappSupportNumber: z.string().trim().max(30).nullish(),
+    email: z.string().trim().max(200).nullish(),
+    instagram: z.string().trim().max(80).nullish(),
+    facebook: z.string().trim().max(80).nullish(),
+  })
+  .strict();
+
 export const themeUpdateSchema = z
   .object({
     name: z.literal("trylist").optional(),
+    brand: themeBrandSchema.optional(),
+    topBar: themeTopBarSchema.optional(),
+    contact: themeContactSchema.optional(),
     hero: z
       .object({
         headline: z.string().trim().max(200).nullish(),
@@ -180,7 +210,10 @@ export const themeUpdateSchema = z
     tradeTile: themeTradeTileSchema.optional(),
   })
   .refine(
-    (v) => ["name", "hero", "story", "categoryImages", "productSections", "dealTile", "tradeTile"].some((k) => k in v),
+    (v) =>
+      ["name", "brand", "topBar", "contact", "hero", "story", "categoryImages", "productSections", "dealTile", "tradeTile"].some(
+        (k) => k in v,
+      ),
     "Nothing to update",
   );
 

@@ -47,8 +47,36 @@ export type TrylistTradeTile = {
   imageUrl?: string;
 };
 
+/** Header logo — an uploaded mark that replaces the letter-square, plus the two-line store name. */
+export type TrylistBrand = {
+  logoImageUrl?: string;
+  nameLine1?: string;
+  nameLine2?: string;
+};
+
+/** The navy strip above the header. `announcement` is the promo line; contact + track-order live
+ * here too but track-order is inert for now. */
+export type TrylistTopBar = {
+  announcement?: string;
+};
+
+/** Channels shown in the "Contact us" pop-up (triggered from the top bar + CTAs). Each is
+ * optional; the modal only renders the ones that have a value. */
+export type TrylistContact = {
+  whatsappSalesLabel?: string;
+  whatsappSalesNumber?: string;
+  whatsappSupportLabel?: string;
+  whatsappSupportNumber?: string;
+  email?: string;
+  instagram?: string;
+  facebook?: string;
+};
+
 export type TrylistTheme = {
   name?: "trylist";
+  brand?: TrylistBrand;
+  topBar?: TrylistTopBar;
+  contact?: TrylistContact;
   hero?: {
     headline?: string;
     sub?: string;
