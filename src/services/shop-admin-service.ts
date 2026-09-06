@@ -4,7 +4,7 @@ import { env } from "../env.js";
 import { HttpError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
-import type { ShopDomainInput, ShopProvisionInput, ShopPublishInput, ShopUpdateInput } from "../schemas/shop.js";
+import type { ShopDomainInput, ShopProvisionInput, ShopUpdateInput } from "../schemas/shop.js";
 
 // The dashboard's "Online Store" panel reads this whole thing, and every mutation returns a fresh
 // copy so the panel can re-render off one response.
@@ -22,16 +22,6 @@ export type ShopOverview = {
   publishedCount: number;
   activeProductCount: number;
   categoryCount: number;
-};
-
-export type PublishableProduct = {
-  id: string;
-  name: string;
-  sku: string;
-  categoryName: string | null;
-  sellingPriceCents: number;
-  onlinePriceCents: number | null;
-  publishedOnline: boolean;
 };
 
 async function loadTenant(tenantId: string) {
@@ -211,60 +201,7 @@ export async function verifyDomain(tenantId: string): Promise<ShopOverview & { d
   return { ...overview, detail };
 }
 
-export function listPublishableProducts(tenantId: string, search?: string): Promise<PublishableProduct[]> {
-  return withTenantContext(tenantId, async (tx) => {
-    const where: Prisma.ProductWhereInput = {
-      status: "active",
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: "insensitive" } },
-              { sku: { contains: search, mode: "insensitive" } },
-              { barcode: { contains: search, mode: "insensitive" } },
-            ],
-          }
-        : {}),
-    };
-
-    const rows = await tx.product.findMany({
-      where,
-      orderBy: [{ publishedOnline: "desc" }, { name: "asc" }],
-      take: 500,
-      select: {
-        id: true,
-        name: true,
-        sku: true,
-        categoryId: true,
-        sellingPriceCents: true,
-        onlinePriceCents: true,
-        publishedOnline: true,
-      },
-    });
-
-    const catIds = [...new Set(rows.map((r) => r.categoryId).filter((id): id is string => Boolean(id)))];
-    const cats = catIds.length
-      ? await tx.category.findMany({ where: { id: { in: catIds } }, select: { id: true, name: true } })
-      : [];
-    const names = new Map(cats.map((c) => [c.id, c.name]));
-
-    return rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      sku: r.sku,
-      categoryName: r.categoryId ? (names.get(r.categoryId) ?? null) : null,
-      sellingPriceCents: r.sellingPriceCents,
-      onlinePriceCents: r.onlinePriceCents,
-      publishedOnline: r.publishedOnline,
-    }));
-  });
-}
-
-export async function setPublished(tenantId: string, input: ShopPublishInput): Promise<ShopOverview> {
-  await withTenantContext(tenantId, async (tx) => {
-    const where: Prisma.ProductWhereInput = input.all
-      ? { status: "active" }
-      : { status: "active", id: { in: input.productIds ?? [] } };
-    await tx.product.updateMany({ where, data: { publishedOnline: input.published } });
-  });
-  return buildOverview(tenantId);
-}
+// Publishing products, and setting online price / description / photos, is done by the shop owner
+// from the desktop POS "Online Store" tab — it writes plain (synced) Product columns locally and
+// the sync engine carries them to the cloud. The dashboard used to own a bulk-publish endpoint
+// here; it was removed so there's exactly one place that decides what's in the online catalogue.

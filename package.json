@@ -15,6 +15,7 @@
     "seed:super-admin": "tsx prisma/seed-super-admin.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3",
     "@prisma/client": "^6",
     "bcryptjs": "^3",
     "cors": "^2.8.5",
@@ -25,6 +26,7 @@
     "jsonwebtoken": "^9",
     "morgan": "^1.10.0",
     "puppeteer": "^25.3.0",
+    "sharp": "^0.34.0",
     "zod": "^4"
   },
   "devDependencies": {

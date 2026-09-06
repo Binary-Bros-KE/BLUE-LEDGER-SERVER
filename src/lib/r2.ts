@@ -1,0 +1,148 @@
+import { randomUUID } from "node:crypto";
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import sharp from "sharp";
+import { env } from "../env.js";
+import { HttpError } from "./http-error.js";
+
+/**
+ * Cloudflare R2 (S3-compatible) object storage for product photos — see
+ * ECOMMERCE-ARCHITECTURE.md §8. One shared bucket for every tenant, keyed
+ * `tenants/<tenantId>/products/<productId>/<uuid>.webp`.
+ *
+ * The raw upload is NEVER stored: on ingest it's re-encoded to two WebP derivatives (a ~1500px
+ * "full" and a ~400px thumbnail), which is what makes the storage bill effectively zero at this
+ * scale. The 5 MB limit below is an *upload* cap, not a storage figure.
+ *
+ * All four env vars are optional so the server boots without them. Until they're set,
+ * `isR2Configured()` is false and the upload route returns 501 — the feature ships dark and
+ * lights up the moment the credentials land on the VPS `.env`.
+ */
+
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const CACHE_FOREVER = "public, max-age=31536000, immutable";
+
+type R2Config = {
+  accountId: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  publicBaseUrl: string;
+  bucket: string;
+};
+
+function resolveConfig(): R2Config | null {
+  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_BASE_URL, R2_BUCKET } = env;
+  if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_PUBLIC_BASE_URL) {
+    return null;
+  }
+  return {
+    accountId: R2_ACCOUNT_ID,
+    accessKeyId: R2_ACCESS_KEY_ID,
+    secretAccessKey: R2_SECRET_ACCESS_KEY,
+    publicBaseUrl: R2_PUBLIC_BASE_URL.replace(/\/+$/, ""),
+    bucket: R2_BUCKET,
+  };
+}
+
+export function isR2Configured(): boolean {
+  return resolveConfig() !== null;
+}
+
+let cachedClient: S3Client | null = null;
+
+function requireConfig(): R2Config {
+  const config = resolveConfig();
+  if (!config) {
+    throw new HttpError(
+      501,
+      "Image uploads aren't set up on this server yet — the Cloudflare R2 credentials are missing.",
+      "R2_NOT_CONFIGURED",
+    );
+  }
+  return config;
+}
+
+function client(config: R2Config): S3Client {
+  if (!cachedClient) {
+    cachedClient = new S3Client({
+      region: "auto",
+      endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
+      credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+    });
+  }
+  return cachedClient;
+}
+
+export type UploadedImage = { url: string; thumbUrl: string };
+
+/** Validate → re-encode to WebP (full + thumb) → PutObject both. Returns the two public URLs. */
+export async function uploadProductImage(
+  tenantId: string,
+  productId: string,
+  raw: Buffer,
+): Promise<UploadedImage> {
+  const config = requireConfig();
+
+  if (raw.byteLength === 0) throw new HttpError(400, "The uploaded file is empty");
+  if (raw.byteLength > MAX_UPLOAD_BYTES) {
+    throw new HttpError(413, "That image is larger than 5 MB — please pick a smaller file.");
+  }
+
+  let full: Buffer;
+  let thumb: Buffer;
+  try {
+    // .rotate() with no args bakes in the EXIF orientation so portrait phone photos aren't sideways.
+    const source = sharp(raw, { failOn: "error" }).rotate();
+    [full, thumb] = await Promise.all([
+      source.clone().resize(1500, 1500, { fit: "inside", withoutEnlargement: true }).webp({ quality: 80 }).toBuffer(),
+      source.clone().resize(400, 400, { fit: "inside", withoutEnlargement: true }).webp({ quality: 70 }).toBuffer(),
+    ]);
+  } catch {
+    throw new HttpError(415, "That file doesn't look like a readable image.");
+  }
+
+  const s3 = client(config);
+  const id = randomUUID();
+  const prefix = `tenants/${tenantId}/products/${productId}`;
+  const key = `${prefix}/${id}.webp`;
+  const thumbKey = `${prefix}/${id}_thumb.webp`;
+
+  await Promise.all([
+    s3.send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        Body: full,
+        ContentType: "image/webp",
+        CacheControl: CACHE_FOREVER,
+      }),
+    ),
+    s3.send(
+      new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: thumbKey,
+        Body: thumb,
+        ContentType: "image/webp",
+        CacheControl: CACHE_FOREVER,
+      }),
+    ),
+  ]);
+
+  return { url: `${config.publicBaseUrl}/${key}`, thumbUrl: `${config.publicBaseUrl}/${thumbKey}` };
+}
+
+/** Best-effort delete of an image pair given the "full" public URL. An orphaned object costs a
+ * fraction of a cent, so any failure here is swallowed — a periodic sweep can reconcile. */
+export async function deleteProductImage(url: string): Promise<void> {
+  const config = resolveConfig();
+  if (!config) return;
+  const prefixUrl = `${config.publicBaseUrl}/`;
+  if (!url.startsWith(prefixUrl)) return;
+
+  const key = url.slice(prefixUrl.length);
+  const thumbKey = key.replace(/\.webp$/, "_thumb.webp");
+  const s3 = client(config);
+  await Promise.allSettled([
+    s3.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key })),
+    s3.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: thumbKey })),
+  ]);
+}

@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import { HttpError } from "../lib/http-error.js";
 import { requireAuth, requireSuperAdmin, type AuthenticatedAccount } from "../middleware/auth.js";
-import { shopDomainSchema, shopProvisionSchema, shopPublishSchema, shopUpdateSchema } from "../schemas/shop.js";
+import { shopDomainSchema, shopProvisionSchema, shopUpdateSchema } from "../schemas/shop.js";
 import * as deviceService from "../services/device-service.js";
 import * as licenseService from "../services/license-service.js";
 import * as shopAdminService from "../services/shop-admin-service.js";
@@ -136,14 +136,6 @@ tenantsRouter.post("/:id/shop/domain/verify", requireSuperAdmin, async (req, res
   res.json(await shopAdminService.verifyDomain(req.params.id as string));
 });
 
-tenantsRouter.get("/:id/shop/products", async (req, res) => {
-  requireAccount(req);
-  await tenantService.getTenant(req.params.id as string, req.account);
-  const search = typeof req.query.search === "string" ? req.query.search.trim() || undefined : undefined;
-  res.json(await shopAdminService.listPublishableProducts(req.params.id as string, search));
-});
-
-tenantsRouter.post("/:id/shop/products/publish", requireSuperAdmin, async (req, res) => {
-  const parsed = shopPublishSchema.parse(req.body);
-  res.json(await shopAdminService.setPublished(req.params.id as string, parsed));
-});
+// NOTE: publishing products and setting online price/description/photos is done by the shop owner
+// from the desktop POS "Online Store" tab (device-authed /shop-admin/* + synced Product columns),
+// NOT here. The dashboard only owns provisioning + the domain/DNS plumbing above.

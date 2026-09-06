@@ -55,15 +55,43 @@ export const shopDomainSchema = z.object({
   customDomain: hostnameSchema.nullable(),
 });
 
-export const shopPublishSchema = z
-  .object({
-    published: z.boolean(),
-    productIds: z.array(z.string().trim().min(1)).max(5000).optional(),
-    all: z.boolean().optional(),
-  })
-  .refine((v) => v.all === true || (v.productIds?.length ?? 0) > 0, "Pass productIds or all:true");
-
 export type ShopProvisionInput = z.infer<typeof shopProvisionSchema>;
 export type ShopUpdateInput = z.infer<typeof shopUpdateSchema>;
 export type ShopDomainInput = z.infer<typeof shopDomainSchema>;
-export type ShopPublishInput = z.infer<typeof shopPublishSchema>;
+
+// --- Store owner (desktop POS — /shop-admin, device-authed) --------------------------------------
+//
+// The tenant runs their own online store from the POS "Online Store" tab. Publish state and
+// online price/description overrides are plain synced Product columns (written locally, carried by
+// the normal sync engine) — they need NO endpoint here. This surface only covers the two things
+// sync can't do: pushing image *bytes* to object storage, and reading/writing the cloud-only
+// `web_stores` look/delivery/payment config.
+
+/** A free-form JSON config blob (themeJson / deliveryJson / paymentOptionsJson on web_stores).
+ * Bounded to keep a single row sane; the storefront is the only reader and treats it defensively. */
+const jsonBlobSchema = z.record(z.string(), z.unknown());
+
+export const storeConfigUpdateSchema = z
+  .object({
+    themeJson: jsonBlobSchema.optional(),
+    deliveryJson: jsonBlobSchema.optional(),
+    paymentOptionsJson: jsonBlobSchema.optional(),
+  })
+  .refine((v) => Object.keys(v).length > 0, "Nothing to update");
+
+export const productImageUploadSchema = z.object({
+  productId: z.string().trim().min(1).max(64),
+  filename: z.string().trim().min(1).max(255),
+  // base64 of a ≤5 MB file inflates to ~6.9 MB of text; 9 MB ceiling leaves headroom for the
+  // JSON envelope under the route's dedicated 12 MB body limit.
+  dataBase64: z.string().min(1).max(9_000_000),
+});
+
+export const productImageDeleteSchema = z.object({
+  productId: z.string().trim().min(1).max(64),
+  url: z.string().trim().url().max(2048),
+});
+
+export type StoreConfigUpdateInput = z.infer<typeof storeConfigUpdateSchema>;
+export type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
+export type ProductImageDeleteInput = z.infer<typeof productImageDeleteSchema>;

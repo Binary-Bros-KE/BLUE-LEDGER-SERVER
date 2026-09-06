@@ -98,6 +98,11 @@ export type ActivationResult = BusinessProfileFields & {
   maxBranches: number;
   maxUsers: number;
   maxDevices: number;
+  /** Whether this tenant may run an online store — the per-tenant à-la-carte flag OR the plan
+   * tier's bundled flag. The desktop stores this locally and shows/hides the "Online Store" nav
+   * item on it (same pattern as the other plan-gated features). Re-sent on every heartbeat so a
+   * dashboard-side toggle reaches the device within one heartbeat cycle. */
+  ecommerceEnabled: boolean;
   businessProfileUpdatedAt: string | null;
 };
 
@@ -169,6 +174,7 @@ export async function registerDevice(input: unknown): Promise<ActivationResult> 
     maxBranches: tenant.subscription.plan.maxBranches,
     maxUsers: tenant.subscription.plan.maxUsers,
     maxDevices: effectiveMaxDevices,
+    ecommerceEnabled: tenant.ecommerceEnabled || tenant.subscription.plan.featureEcommerce,
     ...extractBusinessProfileFields(tenant),
   };
 }
@@ -184,6 +190,7 @@ export type HeartbeatResult = BusinessProfileFields & {
   maxBranches: number;
   maxUsers: number;
   maxDevices: number;
+  ecommerceEnabled: boolean;
   businessProfileUpdatedAt: string | null;
 };
 
@@ -231,6 +238,7 @@ export async function heartbeat(input: unknown): Promise<HeartbeatResult> {
     maxBranches: subscription?.plan.maxBranches ?? 1,
     maxUsers: subscription?.plan.maxUsers ?? 1,
     maxDevices: license.tenant.maxDevicesOverride ?? subscription?.plan.maxDevices ?? 1,
+    ecommerceEnabled: license.tenant.ecommerceEnabled || (subscription?.plan.featureEcommerce ?? false),
     ...extractBusinessProfileFields(license.tenant),
   };
 }

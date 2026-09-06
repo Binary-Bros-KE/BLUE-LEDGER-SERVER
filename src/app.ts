@@ -16,6 +16,7 @@ import { mpesaRouter } from "./routes/mpesa.js";
 import { outletsRouter } from "./routes/outlets.js";
 import { plansRouter } from "./routes/plans.js";
 import { shareRouter } from "./routes/share.js";
+import { shopAdminRouter } from "./routes/shop-admin.js";
 import { shopRouter } from "./routes/shop.js";
 import { syncRouter } from "./routes/sync.js";
 import { tenantsRouter } from "./routes/tenants.js";
@@ -37,6 +38,10 @@ app.use(morgan("dev"));
 // nested documents (sales/quotations/purchases carry items/serviceCharges/delivery inline). The
 // desktop client now chunks pushes into bounded batches (see sync-engine.ts's PUSH_BATCH_SIZE), so
 // this is headroom for one unusually heavy batch, not a substitute for that chunking.
+// Product-photo uploads (POST /shop-admin/upload) carry a base64 image body — a ≤5 MB file
+// inflates to ~6.9 MB of text. Mounted BEFORE the global parser so it wins for this one path;
+// body-parser sets `req._body` after parsing, so the 10 MB parser below then no-ops for it.
+app.use("/shop-admin/upload", express.json({ limit: "12mb" }));
 app.use(express.json({ limit: "10mb" }));
 
 app.get("/health", (_req, res) => {
@@ -250,6 +255,7 @@ app.use("/activation", activationRouter);
 app.use("/sync", syncRouter);
 app.use("/mobile", mobileRouter);
 app.use("/shop", shopRouter);
+app.use("/shop-admin", shopAdminRouter);
 app.use("/share", shareRouter);
 app.use("/mpesa", mpesaRouter);
 app.use("/billing-mpesa", billingMpesaRouter);
