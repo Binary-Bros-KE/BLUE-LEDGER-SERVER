@@ -67,6 +67,15 @@ function client(config: R2Config): S3Client {
       region: "auto",
       endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
       credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+      // Cloudflare R2 does not accept the AWS SDK's newer default flexible-checksum trailers
+      // (STREAMING-UNSIGNED-PAYLOAD-TRAILER + aws-chunked) — the signed request is rejected with a
+      // bare 403 AccessDenied. Pin both back to "only when the operation requires it", which is how
+      // every R2 guide configures the v3 SDK.
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED",
+      // Path-style addressing (endpoint/bucket/key) — the long-standing R2-recommended setting;
+      // avoids any per-bucket vhost DNS/TLS edge case.
+      forcePathStyle: true,
     });
   }
   return cachedClient;
