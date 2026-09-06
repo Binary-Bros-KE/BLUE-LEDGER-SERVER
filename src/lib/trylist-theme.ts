@@ -89,6 +89,9 @@ export type TrylistTheme = {
   story?: TrylistStoryRow[];
   /** categoryId → image URL, used for both the home grid tile and the /products/<cat> header. */
   categoryImages?: Record<string, string>;
+  /** Fallback background for the page-header band (breadcrumb + title) on /products, and on any
+   * category / product-detail header whose category has no image of its own. */
+  headerImageUrl?: string;
   /** 0–6 curated category rows on the home page (Best Sellers, New Arrivals, …). Empty = fall
    * back to the single default product grid. */
   productSections?: TrylistProductSection[];

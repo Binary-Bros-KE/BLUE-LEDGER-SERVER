@@ -205,13 +205,14 @@ export const themeUpdateSchema = z
       .optional(),
     story: z.array(themeStoryRowSchema).max(3).optional(),
     categoryImages: z.record(z.string().min(1).max(64), z.string().trim().max(2048).nullable()).optional(),
+    headerImageUrl: z.string().trim().max(2048).nullish(),
     productSections: z.array(themeProductSectionSchema).max(6).optional(),
     dealTile: themeDealTileSchema.optional(),
     tradeTile: themeTradeTileSchema.optional(),
   })
   .refine(
     (v) =>
-      ["name", "brand", "topBar", "contact", "hero", "story", "categoryImages", "productSections", "dealTile", "tradeTile"].some(
+      ["name", "brand", "topBar", "contact", "hero", "story", "categoryImages", "headerImageUrl", "productSections", "dealTile", "tradeTile"].some(
         (k) => k in v,
       ),
     "Nothing to update",
