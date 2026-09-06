@@ -41,6 +41,10 @@ shopRouter.get("/categories", async (req, res) => {
   res.json(await shopService.listCategories(req.shopContext!));
 });
 
+shopRouter.get("/delivery", async (req, res) => {
+  res.json(await shopService.listDeliveryMethods(req.shopContext!));
+});
+
 shopRouter.get("/product/:id", async (req, res) => {
   res.json(await shopService.getProductDetail(req.shopContext!, req.params.id as string));
 });

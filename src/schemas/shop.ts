@@ -146,8 +146,32 @@ export const themeImageUploadSchema = z.object({
   dataBase64: z.string().min(1).max(9_000_000),
 });
 
+// --- Delivery methods (storefront checkout options — /shop-admin/delivery/*) ----------------------
+
+export const deliveryMethodCreateSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).nullish(),
+  // ≤ 1,000,000.00 in cents — a sane ceiling, not a real limit anyone hits.
+  priceCents: z.coerce.number().int().min(0).max(100_000_000),
+  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
+  active: z.boolean().optional(),
+});
+
+export const deliveryMethodUpdateSchema = deliveryMethodCreateSchema
+  .partial()
+  .extend({ id: z.string().trim().min(1).max(64) })
+  .refine((v) => Object.keys(v).length > 1, "Nothing to update");
+
+export const deliveryMethodDeleteSchema = z.object({ id: z.string().trim().min(1).max(64) });
+
+export const deliveryReorderSchema = z.object({
+  orderedIds: z.array(z.string().trim().min(1).max(64)).min(1).max(300),
+});
+
 export type StoreConfigUpdateInput = z.infer<typeof storeConfigUpdateSchema>;
 export type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 export type ProductImageDeleteInput = z.infer<typeof productImageDeleteSchema>;
 export type ThemeUpdateInput = z.infer<typeof themeUpdateSchema>;
 export type ThemeImageUploadInput = z.infer<typeof themeImageUploadSchema>;
+export type DeliveryMethodCreateInput = z.infer<typeof deliveryMethodCreateSchema>;
+export type DeliveryMethodUpdateInput = z.infer<typeof deliveryMethodUpdateSchema>;

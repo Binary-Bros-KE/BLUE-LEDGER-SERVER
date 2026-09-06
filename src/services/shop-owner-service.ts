@@ -12,6 +12,8 @@ import { mergeTheme } from "../lib/trylist-theme.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import type {
+  DeliveryMethodCreateInput,
+  DeliveryMethodUpdateInput,
   ProductImageDeleteInput,
   ProductImageUploadInput,
   StoreConfigUpdateInput,
@@ -177,4 +179,112 @@ export async function uploadThemeAsset(
 ): Promise<UploadedImage> {
   const raw = Buffer.from(input.dataBase64, "base64");
   return uploadThemeImage(tenantId, input.slot, raw);
+}
+
+// --- Delivery methods (storefront checkout options) -------------------------------------------
+
+export type DeliveryMethod = {
+  id: string;
+  name: string;
+  description: string | null;
+  priceCents: number;
+  sortOrder: number;
+  active: boolean;
+};
+
+const DELIVERY_ORDER = [
+  { sortOrder: "asc" as const },
+  { priceCents: "asc" as const },
+  { name: "asc" as const },
+];
+
+function toDeliveryMethod(r: {
+  id: string;
+  name: string;
+  description: string | null;
+  priceCents: number;
+  sortOrder: number;
+  active: boolean;
+}): DeliveryMethod {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    priceCents: r.priceCents,
+    sortOrder: r.sortOrder,
+    active: r.active,
+  };
+}
+
+/** Every method (active or not), in display order — the POS editor list. */
+export function listDeliveryMethods(tenantId: string): Promise<DeliveryMethod[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const rows = await tx.webDeliveryMethod.findMany({ orderBy: DELIVERY_ORDER });
+    return rows.map(toDeliveryMethod);
+  });
+}
+
+export function createDeliveryMethod(
+  tenantId: string,
+  input: DeliveryMethodCreateInput,
+): Promise<DeliveryMethod[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const max = await tx.webDeliveryMethod.aggregate({ _max: { sortOrder: true } });
+    await tx.webDeliveryMethod.create({
+      data: {
+        tenantId,
+        name: input.name,
+        description: input.description ?? null,
+        priceCents: input.priceCents,
+        sortOrder: input.sortOrder ?? (max._max.sortOrder ?? 0) + 1,
+        active: input.active ?? true,
+      },
+    });
+    const rows = await tx.webDeliveryMethod.findMany({ orderBy: DELIVERY_ORDER });
+    return rows.map(toDeliveryMethod);
+  });
+}
+
+export function updateDeliveryMethod(
+  tenantId: string,
+  input: DeliveryMethodUpdateInput,
+): Promise<DeliveryMethod[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const { id, ...rest } = input;
+    const data: Record<string, unknown> = {};
+    if (rest.name !== undefined) data.name = rest.name;
+    if (rest.description !== undefined) data.description = rest.description ?? null;
+    if (rest.priceCents !== undefined) data.priceCents = rest.priceCents;
+    if (rest.sortOrder !== undefined) data.sortOrder = rest.sortOrder;
+    if (rest.active !== undefined) data.active = rest.active;
+    // updateMany (not update): a bad id (another tenant, deleted row) is a silent no-op under RLS,
+    // never a P2025 throw.
+    await tx.webDeliveryMethod.updateMany({ where: { id }, data });
+    const rows = await tx.webDeliveryMethod.findMany({ orderBy: DELIVERY_ORDER });
+    return rows.map(toDeliveryMethod);
+  });
+}
+
+export function deleteDeliveryMethod(tenantId: string, id: string): Promise<DeliveryMethod[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    await tx.webDeliveryMethod.deleteMany({ where: { id } });
+    const rows = await tx.webDeliveryMethod.findMany({ orderBy: DELIVERY_ORDER });
+    return rows.map(toDeliveryMethod);
+  });
+}
+
+/** Rewrites sortOrder to match the given id order. */
+export function reorderDeliveryMethods(
+  tenantId: string,
+  orderedIds: string[],
+): Promise<DeliveryMethod[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    await Promise.all(
+      orderedIds.map((id, i) =>
+        tx.webDeliveryMethod.updateMany({ where: { id }, data: { sortOrder: i } }),
+      ),
+    );
+    const rows = await tx.webDeliveryMethod.findMany({ orderBy: DELIVERY_ORDER });
+    return rows.map(toDeliveryMethod);
+  });
 }

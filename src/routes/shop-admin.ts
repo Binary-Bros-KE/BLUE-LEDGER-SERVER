@@ -2,6 +2,10 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { requireDevice } from "../middleware/device-auth.js";
 import {
+  deliveryMethodCreateSchema,
+  deliveryMethodDeleteSchema,
+  deliveryMethodUpdateSchema,
+  deliveryReorderSchema,
   productImageDeleteSchema,
   productImageUploadSchema,
   storeConfigUpdateSchema,
@@ -62,4 +66,29 @@ shopAdminRouter.post("/theme/update", async (req, res) => {
 shopAdminRouter.post("/theme/upload", async (req, res) => {
   const parsed = themeImageUploadSchema.parse(req.body);
   res.json(await shopOwnerService.uploadThemeAsset(req.syncContext!.tenantId, parsed));
+});
+
+// --- Delivery methods (storefront checkout options) ---
+shopAdminRouter.post("/delivery", async (req, res) => {
+  res.json(await shopOwnerService.listDeliveryMethods(req.syncContext!.tenantId));
+});
+
+shopAdminRouter.post("/delivery/create", async (req, res) => {
+  const parsed = deliveryMethodCreateSchema.parse(req.body);
+  res.json(await shopOwnerService.createDeliveryMethod(req.syncContext!.tenantId, parsed));
+});
+
+shopAdminRouter.post("/delivery/update", async (req, res) => {
+  const parsed = deliveryMethodUpdateSchema.parse(req.body);
+  res.json(await shopOwnerService.updateDeliveryMethod(req.syncContext!.tenantId, parsed));
+});
+
+shopAdminRouter.post("/delivery/delete", async (req, res) => {
+  const parsed = deliveryMethodDeleteSchema.parse(req.body);
+  res.json(await shopOwnerService.deleteDeliveryMethod(req.syncContext!.tenantId, parsed.id));
+});
+
+shopAdminRouter.post("/delivery/reorder", async (req, res) => {
+  const parsed = deliveryReorderSchema.parse(req.body);
+  res.json(await shopOwnerService.reorderDeliveryMethods(req.syncContext!.tenantId, parsed.orderedIds));
 });

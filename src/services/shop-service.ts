@@ -176,6 +176,29 @@ export async function getProductDetail(ctx: ShopContext, productId: string) {
   });
 }
 
+export type DeliveryOption = {
+  id: string;
+  name: string;
+  description: string | null;
+  priceCents: number;
+};
+
+/** Active storefront delivery options, in display order — the checkout's "Shipping method" list. */
+export async function listDeliveryMethods(ctx: ShopContext): Promise<DeliveryOption[]> {
+  return withTenantContext(ctx.tenantId, async (tx) => {
+    const rows = await tx.webDeliveryMethod.findMany({
+      where: { active: true },
+      orderBy: [{ sortOrder: "asc" }, { priceCents: "asc" }, { name: "asc" }],
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      priceCents: r.priceCents,
+    }));
+  });
+}
+
 /** Published-product count per category — feeds the storefront's category grid. */
 export async function listCategories(ctx: ShopContext): Promise<ShopCategory[]> {
   return withTenantContext(ctx.tenantId, async (tx) => {

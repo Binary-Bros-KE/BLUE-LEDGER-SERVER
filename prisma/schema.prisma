@@ -343,6 +343,26 @@ model WebStore {
   @@map("web_stores")
 }
 
+/// Storefront delivery options a shopper chooses at checkout — a named zone/service, an optional
+/// note (areas covered / "same-day", "next-day"), and a fee. Cloud-only (NOT synced to desktop):
+/// the tenant edits these from the POS "Online Store" tab while online, same model as the theme
+/// config. RLS'd — ALWAYS read/written via withTenantContext() (FORCE RLS is fail-closed), once
+/// the storefront request has resolved its tenant.
+model WebDeliveryMethod {
+  id          String   @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  priceCents  Int      @default(0)
+  sortOrder   Int      @default(0)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("web_delivery_methods")
+}
+
 /// One per Tenant — the fundamental entitlement to run the software at all. Separate from
 /// Subscription (the commercial arrangement) so a license can be manually suspended/reactivated
 /// (with a reason) independent of billing state.
