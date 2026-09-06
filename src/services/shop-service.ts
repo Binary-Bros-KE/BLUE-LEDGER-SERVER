@@ -257,16 +257,24 @@ export async function listDeliveryMethods(ctx: ShopContext): Promise<DeliveryOpt
   });
 }
 
-/** Published-product count per category — feeds the storefront's category grid. Counts a product
- * under its POS `categoryId` AND every id in `onlineCategoryIds` (a product in "Aerials" +
- * "Best Sellers" counts once for each). Can't be a groupBy because of the JSON array — one scan of
- * the published set (bounded) and tally in memory. */
+/** EVERY active category the POS has (not only the ones with published products), each with its
+ * online published-product count. A product counts under its POS `categoryId` AND every id in
+ * `onlineCategoryIds` (so one product can add to "Speakers" + "Best Sellers"). The count can't be
+ * a groupBy because of the JSON array — one scan of the published set (bounded) and tally in
+ * memory. Ordered by the POS's own category sort order, then name. */
 export async function listCategories(ctx: ShopContext): Promise<ShopCategory[]> {
   return withTenantContext(ctx.tenantId, async (tx) => {
-    const rows = await tx.product.findMany({
-      where: { publishedOnline: true, status: "active" },
-      select: { categoryId: true, onlineCategoryIds: true },
-    });
+    const [cats, rows] = await Promise.all([
+      tx.category.findMany({
+        where: { status: "active" },
+        select: { id: true, name: true, sortOrder: true },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+      }),
+      tx.product.findMany({
+        where: { publishedOnline: true, status: "active" },
+        select: { categoryId: true, onlineCategoryIds: true },
+      }),
+    ]);
 
     const counts = new Map<string, number>();
     for (const r of rows) {
@@ -276,10 +284,7 @@ export async function listCategories(ctx: ShopContext): Promise<ShopCategory[]> 
       for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
     }
 
-    const names = await categoryNames(tx, [...counts.keys()]);
-    return [...counts.entries()]
-      .map(([id, count]) => ({ id, name: names.get(id) ?? "Uncategorised", count }))
-      .sort((a, b) => b.count - a.count);
+    return cats.map((c) => ({ id: c.id, name: c.name, count: counts.get(c.id) ?? 0 }));
   });
 }
 
