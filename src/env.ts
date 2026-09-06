@@ -58,6 +58,10 @@ const envSchema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().default("blueledger-shop-images"),
   R2_PUBLIC_BASE_URL: z.string().optional(),
+  // Optional override of the S3 API endpoint. Default is `https://<accountId>.r2.cloudflarestorage.com`.
+  // Set this to whatever Cloudflare shows as the bucket's "S3 API" host (minus the /bucket suffix)
+  // if the account/bucket uses a jurisdiction-specific endpoint (e.g. `<id>.eu.r2.cloudflarestorage.com`).
+  R2_ENDPOINT: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

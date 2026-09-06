@@ -22,7 +22,7 @@ const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const CACHE_FOREVER = "public, max-age=31536000, immutable";
 
 type R2Config = {
-  accountId: string;
+  endpoint: string;
   accessKeyId: string;
   secretAccessKey: string;
   publicBaseUrl: string;
@@ -30,12 +30,18 @@ type R2Config = {
 };
 
 function resolveConfig(): R2Config | null {
-  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_BASE_URL, R2_BUCKET } = env;
+  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_BASE_URL, R2_BUCKET, R2_ENDPOINT } =
+    env;
   if (!R2_ACCOUNT_ID || !R2_ACCESS_KEY_ID || !R2_SECRET_ACCESS_KEY || !R2_PUBLIC_BASE_URL) {
     return null;
   }
+  // Accept a full "S3 API" string with the bucket path appended (that's how the Cloudflare UI shows
+  // it) and strip it back to a bare origin.
+  const endpoint = (R2_ENDPOINT?.trim() || `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`)
+    .replace(/\/+$/, "")
+    .replace(new RegExp(`/${R2_BUCKET}$`), "");
   return {
-    accountId: R2_ACCOUNT_ID,
+    endpoint,
     accessKeyId: R2_ACCESS_KEY_ID,
     secretAccessKey: R2_SECRET_ACCESS_KEY,
     publicBaseUrl: R2_PUBLIC_BASE_URL.replace(/\/+$/, ""),
@@ -65,7 +71,7 @@ function client(config: R2Config): S3Client {
   if (!cachedClient) {
     cachedClient = new S3Client({
       region: "auto",
-      endpoint: `https://${config.accountId}.r2.cloudflarestorage.com`,
+      endpoint: config.endpoint,
       credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
       // Cloudflare R2 does not accept the AWS SDK's newer default flexible-checksum trailers
       // (STREAMING-UNSIGNED-PAYLOAD-TRAILER + aws-chunked) — the signed request is rejected with a
@@ -115,26 +121,43 @@ export async function uploadProductImage(
   const key = `${prefix}/${id}.webp`;
   const thumbKey = `${prefix}/${id}_thumb.webp`;
 
-  await Promise.all([
-    s3.send(
-      new PutObjectCommand({
-        Bucket: config.bucket,
-        Key: key,
-        Body: full,
-        ContentType: "image/webp",
-        CacheControl: CACHE_FOREVER,
-      }),
-    ),
-    s3.send(
-      new PutObjectCommand({
-        Bucket: config.bucket,
-        Key: thumbKey,
-        Body: thumb,
-        ContentType: "image/webp",
-        CacheControl: CACHE_FOREVER,
-      }),
-    ),
-  ]);
+  try {
+    await Promise.all([
+      s3.send(
+        new PutObjectCommand({
+          Bucket: config.bucket,
+          Key: key,
+          Body: full,
+          ContentType: "image/webp",
+          CacheControl: CACHE_FOREVER,
+        }),
+      ),
+      s3.send(
+        new PutObjectCommand({
+          Bucket: config.bucket,
+          Key: thumbKey,
+          Body: thumb,
+          ContentType: "image/webp",
+          CacheControl: CACHE_FOREVER,
+        }),
+      ),
+    ]);
+  } catch (err) {
+    // Surface the real R2 reason to the operator instead of a bare 500. The overwhelmingly common
+    // one is a 403 "AccessDenied" from a bucket-scoped "Object Read & Write" token — R2 requires an
+    // "Admin Read & Write" token for S3 PutObject (a known Cloudflare limitation).
+    const e = err as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+    const code = e.Code ?? e.name ?? "UploadError";
+    const status = e.$metadata?.httpStatusCode;
+    console.error("[r2] PutObject failed:", err);
+    throw new HttpError(
+      502,
+      status === 403 || code === "AccessDenied"
+        ? "Cloudflare R2 rejected the upload (AccessDenied). The R2 API token needs “Admin Read & Write” permission — an “Object Read & Write” token can’t write via the S3 API."
+        : `Cloudflare R2 rejected the upload (${code}${status ? ` ${status}` : ""}).`,
+      "R2_UPLOAD_FAILED",
+    );
+  }
 
   return { url: `${config.publicBaseUrl}/${key}`, thumbUrl: `${config.publicBaseUrl}/${thumbKey}` };
 }
