@@ -122,7 +122,7 @@ export async function uploadImage(
   input: ProductImageUploadInput,
 ): Promise<UploadedImage> {
   const raw = Buffer.from(input.dataBase64, "base64");
-  return uploadProductImage(tenantId, input.productId, raw);
+  return uploadProductImage(tenantId, input.productId, raw, input.productName);
 }
 
 export async function deleteImage(

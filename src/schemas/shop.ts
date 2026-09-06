@@ -82,6 +82,9 @@ export const storeConfigUpdateSchema = z
 export const productImageUploadSchema = z.object({
   productId: z.string().trim().min(1).max(64),
   filename: z.string().trim().min(1).max(255),
+  // Used only to build a human-readable, SEO-friendly object key
+  // (`<slug>-<shortid>.webp`). Optional so an older desktop still works.
+  productName: z.string().trim().min(1).max(200).optional(),
   // base64 of a ≤5 MB file inflates to ~6.9 MB of text; 9 MB ceiling leaves headroom for the
   // JSON envelope under the route's dedicated 12 MB body limit.
   dataBase64: z.string().min(1).max(9_000_000),

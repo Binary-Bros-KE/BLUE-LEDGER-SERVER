@@ -21,6 +21,20 @@ import { HttpError } from "./http-error.js";
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
 const CACHE_FOREVER = "public, max-age=31536000, immutable";
 
+/** A lowercase, hyphenated, ASCII-ish slug for the object key — descriptive filenames are a small
+ * image-SEO signal and make the bucket browsable. Falls back to "product" for a name that slugs
+ * to nothing (e.g. all punctuation / non-Latin). */
+function slugify(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/g, "");
+  return slug || "product";
+}
+
 type R2Config = {
   endpoint: string;
   accessKeyId: string;
@@ -89,11 +103,13 @@ function client(config: R2Config): S3Client {
 
 export type UploadedImage = { url: string; thumbUrl: string };
 
-/** Validate → re-encode to WebP (full + thumb) → PutObject both. Returns the two public URLs. */
+/** Validate → re-encode to WebP (full + thumb) → PutObject both. Returns the two public URLs.
+ * `productName` (optional) only shapes the object key into `<slug>-<shortid>.webp`. */
 export async function uploadProductImage(
   tenantId: string,
   productId: string,
   raw: Buffer,
+  productName?: string,
 ): Promise<UploadedImage> {
   const config = requireConfig();
 
@@ -116,10 +132,12 @@ export async function uploadProductImage(
   }
 
   const s3 = client(config);
-  const id = randomUUID();
   const prefix = `tenants/${tenantId}/products/${productId}`;
-  const key = `${prefix}/${id}.webp`;
-  const thumbKey = `${prefix}/${id}_thumb.webp`;
+  // <slug>-<8 hex> — the short suffix keeps re-uploads / multiple photos of one product unique
+  // without a full uuid's worth of noise in the URL.
+  const base = `${slugify(productName ?? "product")}-${randomUUID().slice(0, 8)}`;
+  const key = `${prefix}/${base}.webp`;
+  const thumbKey = `${prefix}/${base}_thumb.webp`;
 
   try {
     await Promise.all([
