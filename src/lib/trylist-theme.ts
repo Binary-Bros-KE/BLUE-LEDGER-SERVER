@@ -24,6 +24,29 @@ export type TrylistProductSection = {
   ctaLabel?: string;
 };
 
+/** Hero right-rail tile 1 (red). "Deal of the week" is a static label, not part of this config —
+ * only the fields below are editable. priceCents/offerPriceCents drive an auto-calculated discount
+ * badge storefront-side; the percentage itself is never stored (see NEXT/storefront DealTile.tsx). */
+export type TrylistDealTile = {
+  title?: string;
+  priceCents?: number;
+  offerPriceCents?: number;
+  ctaLabel?: string;
+  ctaHref?: string;
+  imageUrl?: string;
+};
+
+/** Hero right-rail tile 2 (cream). A single featured category highlight — categoryLabel is free
+ * text (like every other theme copy field), not a live category id/filter. */
+export type TrylistTradeTile = {
+  categoryLabel?: string;
+  title?: string;
+  description?: string;
+  ctaLabel?: string;
+  ctaHref?: string;
+  imageUrl?: string;
+};
+
 export type TrylistTheme = {
   name?: "trylist";
   hero?: {
@@ -41,6 +64,8 @@ export type TrylistTheme = {
   /** 0–6 curated category rows on the home page (Best Sellers, New Arrivals, …). Empty = fall
    * back to the single default product grid. */
   productSections?: TrylistProductSection[];
+  dealTile?: TrylistDealTile;
+  tradeTile?: TrylistTradeTile;
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

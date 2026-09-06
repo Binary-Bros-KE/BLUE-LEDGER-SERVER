@@ -124,6 +124,35 @@ const themeProductSectionSchema = z
   })
   .strict();
 
+/** Hero right-rail tile 1 (red, "Deal of the week" — that label itself is static, never editable).
+ * priceCents/offerPriceCents drive an auto-calculated discount badge storefront-side (see
+ * NEXT/storefront DealTile.tsx) — deliberately NOT storing a pre-computed percentage here, same
+ * "derive, don't store" reasoning as every price computation elsewhere in this codebase. */
+const themeDealTileSchema = z
+  .object({
+    title: z.string().trim().max(120).nullish(),
+    // ≤ 1,000,000.00 in cents — same sane ceiling as deliveryMethodCreateSchema.priceCents.
+    priceCents: z.number().int().min(0).max(100_000_000).nullish(),
+    offerPriceCents: z.number().int().min(0).max(100_000_000).nullish(),
+    ctaLabel: z.string().trim().max(60).nullish(),
+    ctaHref: z.string().trim().max(500).nullish(),
+    imageUrl: z.string().trim().max(2048).nullish(),
+  })
+  .strict();
+
+/** Hero right-rail tile 2 (cream/grey) — a single featured category highlight, not a live
+ * category filter (categoryLabel is free text, same as every other theme copy field). */
+const themeTradeTileSchema = z
+  .object({
+    categoryLabel: z.string().trim().max(60).nullish(),
+    title: z.string().trim().max(120).nullish(),
+    description: z.string().trim().max(400).nullish(),
+    ctaLabel: z.string().trim().max(60).nullish(),
+    ctaHref: z.string().trim().max(500).nullish(),
+    imageUrl: z.string().trim().max(2048).nullish(),
+  })
+  .strict();
+
 /** Partial Trylist theme — deep-merged into web_stores.themeJson (see lib/trylist-theme.ts).
  * Hero/story/category *images* are set via /shop-admin/theme/upload + this endpoint (the desktop
  * uploads, gets a URL, then sends it here). `null` on any field clears it. */
@@ -147,9 +176,11 @@ export const themeUpdateSchema = z
     story: z.array(themeStoryRowSchema).max(3).optional(),
     categoryImages: z.record(z.string().min(1).max(64), z.string().trim().max(2048).nullable()).optional(),
     productSections: z.array(themeProductSectionSchema).max(6).optional(),
+    dealTile: themeDealTileSchema.optional(),
+    tradeTile: themeTradeTileSchema.optional(),
   })
   .refine(
-    (v) => ["name", "hero", "story", "categoryImages", "productSections"].some((k) => k in v),
+    (v) => ["name", "hero", "story", "categoryImages", "productSections", "dealTile", "tradeTile"].some((k) => k in v),
     "Nothing to update",
   );
 
