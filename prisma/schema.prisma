@@ -1541,6 +1541,10 @@ model Purchase {
   /// Freight/delivery cost for the whole order — added on top of grandTotalCents, never per-line.
   shippingCostCents     Int     @default(0)
   grandTotalCents       Int
+  /// Client request: how much of grandTotalCents has actually been received, maintained
+  /// incrementally by DESKTOP's receivePurchaseGoods — never includes shippingCostCents. The
+  /// supplier balance and payment recording are based on THIS, not grandTotalCents.
+  receivedValueCents    Int     @default(0)
   paymentMethodId       String?
   paymentReference      String?
   paymentStatus         String
