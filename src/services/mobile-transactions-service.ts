@@ -2,7 +2,7 @@ import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 
 export type MobileTransactionDirection = "in" | "out";
-export type MobileTransactionSourceType = "sale" | "purchase" | "expense" | "salary";
+export type MobileTransactionSourceType = "sale" | "sale_return" | "purchase" | "expense" | "salary";
 export type MobileTransactionPartyLabel = "Customer" | "Supplier" | "Employee" | "For";
 
 export type MobileTransactionRow = {
@@ -39,6 +39,12 @@ type RawPurchasePayment = {
   paidByName: string;
   paidAt: string;
   amountCents: number;
+};
+
+type RawSaleReturnItem = {
+  quantity: number;
+  /** unit_price x returned_quantity — a partial return only ever carries the units sent back. */
+  lineTotalCents: number;
 };
 
 function asArray<T>(value: unknown): T[] {
@@ -148,6 +154,60 @@ export async function listTransactions(
           currency,
         });
       }
+    }
+
+    // Money OUT — approved sale returns, one row each, dated by approval, for the value of the goods
+    // actually sent back (each return item's lineTotalCents is unit_price x returned_quantity, so a
+    // partial return only counts those units). Mirrors DESKTOP's getPaymentTransactions; the Sales
+    // Report already nets these out of revenue, this makes the ledger reconcile too. Actor-scoped by
+    // the ORIGINAL sale's employee, like the sale rows above.
+    const approvedReturns = await tx.saleReturn.findMany({
+      where: { tenantId, status: "approved" },
+      orderBy: { approvedAt: "desc" },
+      take: 300,
+      select: { id: true, saleId: true, approvedAt: true, items: true },
+    });
+    const returnSaleIds = [...new Set(approvedReturns.map((r) => r.saleId))];
+    const returnSales =
+      returnSaleIds.length > 0
+        ? await tx.sale.findMany({
+            where: { tenantId, id: { in: returnSaleIds } },
+            select: {
+              id: true,
+              locationId: true,
+              employeeId: true,
+              customerId: true,
+              paymentMethodId: true,
+              receiptNumber: true,
+              invoiceNumber: true,
+              walkInName: true,
+            },
+          })
+        : [];
+    const returnSaleById = new Map(returnSales.map((s) => [s.id, s]));
+    for (const ret of approvedReturns) {
+      const sale = returnSaleById.get(ret.saleId);
+      if (!sale) continue;
+      if (locationId && sale.locationId !== locationId) continue;
+      if (!isSuperAdmin && sale.employeeId !== viewerEmployeeId) continue;
+      const amountCents = asArray<RawSaleReturnItem>(ret.items).reduce((sum, item) => sum + item.lineTotalCents, 0);
+      if (amountCents <= 0) continue;
+      const realCustomerName = sale.customerId ? (customerNameById.get(sale.customerId) ?? null) : null;
+      rows.push({
+        id: `return:${ret.id}`,
+        transactionCode: sale.invoiceNumber ?? sale.receiptNumber ?? ret.id,
+        occurredAt: (ret.approvedAt ?? new Date()).toISOString(),
+        locationName: locationNameById.get(sale.locationId) ?? "—",
+        paymentMethodName: sale.paymentMethodId ? (paymentMethodNameById.get(sale.paymentMethodId) ?? null) : null,
+        processedByName: employeeNameById.get(sale.employeeId) ?? "—",
+        partyName: realCustomerName ?? (sale.walkInName ? `Walk-in - ${sale.walkInName}` : "Walk-in customer"),
+        partyLabel: "Customer",
+        sourceType: "sale_return",
+        direction: "out",
+        amountCents,
+        status: "complete",
+        currency,
+      });
     }
 
     // Money OUT — purchase payments.
