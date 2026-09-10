@@ -164,6 +164,45 @@ const REQUIRED_REF_FIELDS: Partial<Record<SyncEntityName, Array<{ field: string;
   working_hours: [{ field: "locationId", delegate: (tx) => tx.location }],
 };
 
+/** quotations/sales store their line items and service charges as jsonb ARRAYS, and those elements
+ * accrete new fields over releases (a per-line `sectionLabel`, a service charge `taxType`, …). A
+ * client that predates a field pushes each element WITHOUT that key — never as an explicit null; an
+ * up-to-date client always includes the key (string or null). So "key absent from an incoming
+ * element" reliably means "this device can't represent this field", and blindly replacing the whole
+ * array on upsert lets that older, shorter payload silently wipe a field every current device relies
+ * on (confirmed live: a v1.2.4 device round-tripping a quotation stripped its section grouping off
+ * the cloud, which then propagated back to every up-to-date device).
+ *
+ * This merges each incoming element over the stored element with the same id: incoming keys win,
+ * keys present ONLY in the stored element are carried forward. A real deletion is still respected
+ * (an id dropped from the incoming array is dropped here too); a genuinely new element passes
+ * through untouched. Only applied to quotations/sales. For an up-to-date client every element already
+ * carries every key, so `{...prior, ...incoming}` is exactly `incoming` — no behavior change. */
+function mergeItemArraysPreservingAbsentKeys(
+  existing: Record<string, unknown> | null,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!existing) return data;
+  const merged = { ...data };
+  for (const field of ["items", "serviceCharges"] as const) {
+    const incoming = merged[field];
+    const stored = existing[field];
+    if (!Array.isArray(incoming) || !Array.isArray(stored)) continue;
+    const storedById = new Map<string, Record<string, unknown>>();
+    for (const el of stored as Array<Record<string, unknown>>) {
+      if (el && typeof el === "object" && typeof el.id === "string") storedById.set(el.id, el);
+    }
+    merged[field] = (incoming as Array<Record<string, unknown>>).map((el) => {
+      if (!el || typeof el !== "object" || typeof el.id !== "string") return el;
+      const prior = storedById.get(el.id);
+      return prior ? { ...prior, ...el } : el;
+    });
+  }
+  return merged;
+}
+
+const MERGE_ITEM_ARRAY_ENTITIES = new Set<SyncEntityName>(["quotations", "sales"]);
+
 export type PushRowResult =
   | { id: string; status: "ok" }
   | { id: string; status: "error"; error: string }
@@ -305,11 +344,22 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
             }
           }
 
+          // For quotations/sales, merge the jsonb item/serviceCharge arrays over what's stored so a
+          // client that predates a per-element field (sectionLabel, service-charge taxType, …) can't
+          // wipe it by pushing a shorter payload — see mergeItemArraysPreservingAbsentKeys. Needs
+          // the current row: reuse existingById when the conflict/natural-key path already fetched
+          // it, otherwise one findUnique here (quotation/sale push batches are small).
+          let updateData = data;
+          if (MERGE_ITEM_ARRAY_ENTITIES.has(parsed.entity)) {
+            const current = existingById ?? (await delegate.findUnique({ where: { id: targetId } }));
+            updateData = mergeItemArraysPreservingAbsentKeys(current, data);
+          }
+
           // where/create both use targetId: for a normal row this is just `id` (unchanged
           // behavior); for an aliased row targetId is the canonical row's id, which is guaranteed
           // to already exist (found via findFirst above), so this is always the update branch —
           // the create branch only exists to satisfy upsert's shape.
-          await delegate.upsert({ where: { id: targetId }, create: { id: targetId, ...data }, update: data });
+          await delegate.upsert({ where: { id: targetId }, create: { id: targetId, ...updateData }, update: updateData });
           results.push(
             aliasedCanonicalId ? { id, status: "aliased", canonicalId: aliasedCanonicalId } : { id, status: "ok" },
           );
