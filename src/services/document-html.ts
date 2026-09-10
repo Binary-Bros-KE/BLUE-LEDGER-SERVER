@@ -538,7 +538,7 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
       <tbody>
         <tr>
           <td>${formatDate(doc.dateLabel)}</td>
-          <td>${formatDate(doc.validUntil)}</td>
+          <td>${doc.validUntil ? formatDate(doc.validUntil) : "No expiry"}</td>
           ${doc.includeBusinessInfo ? `<td>${escapeHtml(doc.employeeName)}</td>` : ""}
         </tr>
       </tbody>
@@ -581,7 +581,11 @@ function buildQuotationDocumentHtml(doc: SharedDocumentResult): string {
     ${doc.notesSections.map((section) => `<div class="notes"><strong>${escapeHtml(section.title)}</strong><p>${escapeHtml(section.body)}</p></div>`).join("")}
 
     <div class="terms">
-      This quotation is valid until ${formatDate(doc.validUntil)}. Prices, discounts, and availability
+      ${
+        doc.validUntil
+          ? `This quotation is valid until ${formatDate(doc.validUntil)}.`
+          : `This quotation does not have an expiry date.`
+      } Prices, discounts, and availability
       are subject to confirmation at the time of order. Acceptance of this quotation does not reserve stock.
     </div>
 

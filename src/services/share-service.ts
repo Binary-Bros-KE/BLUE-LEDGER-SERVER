@@ -329,9 +329,10 @@ export function computePaymentStatus(params: {
 /** Ports DESKTOP's computeQuotationStatus (shared/lib/quotation.ts) — rejected/converted are
  * terminal, otherwise a date past validUntil means expired regardless of the stored status.
  * Exported so mobile-quotations-service.ts's list doesn't need a second copy of this logic. */
-export function computeQuotationStatus(params: { storedStatus: string; validUntil: string }): string {
+export function computeQuotationStatus(params: { storedStatus: string; validUntil: string | null }): string {
   if (params.storedStatus === "rejected" || params.storedStatus === "converted") return params.storedStatus;
-  if (new Date(params.validUntil).getTime() < Date.now()) return "expired";
+  // No expiry date set (client request) — the quotation never goes "expired" on its own.
+  if (params.validUntil && new Date(params.validUntil).getTime() < Date.now()) return "expired";
   return params.storedStatus;
 }
 

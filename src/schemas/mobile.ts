@@ -219,7 +219,13 @@ export const mobileQuotationSchema = z.object({
   // Null/omitted means a walk-in quotation — see Quotation.customerId's own doc comment for why
   // that's intentional here, unlike an invoice.
   customerId: z.string().trim().min(1).nullable().optional(),
-  validUntil: z.string().trim().min(1, "Valid-until date is required"),
+  // Optional now: a blank/omitted expiry means the quotation never expires (client request).
+  validUntil: z
+    .string()
+    .trim()
+    .nullable()
+    .optional()
+    .transform((value) => (value && value.length > 0 ? value : null)),
   notes: z.string().trim().optional(),
   includeTaxBreakdown: z.coerce.boolean().optional().default(true),
   includeBusinessInfo: z.coerce.boolean().optional().default(true),

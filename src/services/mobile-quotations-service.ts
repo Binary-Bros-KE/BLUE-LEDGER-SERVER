@@ -49,7 +49,8 @@ export type MobileQuotationListItem = {
   locationName: string;
   locationId: string;
   grandTotalCents: number;
-  validUntil: string;
+  /** Null means the quotation never expires — see DESKTOP's computeQuotationStatus. */
+  validUntil: string | null;
   status: string;
   createdAt: string;
   currency: string;
@@ -190,7 +191,8 @@ async function requireEditableDraft(tx: Prisma.TransactionClient, tenantId: stri
 
 export type MobileQuotationEditData = {
   customerId: string | null;
-  validUntil: string;
+  /** Null means the quotation never expires (client set no expiry date). */
+  validUntil: string | null;
   notes: string | null;
   includeTaxBreakdown: boolean;
   includeBusinessInfo: boolean;

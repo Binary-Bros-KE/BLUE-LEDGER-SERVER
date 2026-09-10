@@ -1494,7 +1494,9 @@ model Quotation {
   discountAmountCents Int
   taxAmountCents      Int
   grandTotalCents     Int
-  validUntil          String
+  /// Null means the quotation never expires — the client set no expiry date. Only an explicit past
+  /// date makes a live quotation "expired". See DESKTOP's computeQuotationStatus.
+  validUntil          String?
   notes               String?
   /// Same additional titled note blocks as Sale.notesSections, the identical concept.
   notesSections       Json    @default("[]")
