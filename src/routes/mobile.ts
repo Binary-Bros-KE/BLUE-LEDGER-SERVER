@@ -509,7 +509,10 @@ mobileRouter.post(
 
 mobileRouter.get("/transactions", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);
-  const result = await mobileTransactionsService.listTransactions(req.mobileSession!.tenantId, parsed.locationId ?? null);
+  const result = await mobileTransactionsService.listTransactions(req.mobileSession!.tenantId, parsed.locationId ?? null, {
+    employeeId: req.mobileSession!.employeeId,
+    isSuperAdmin: req.mobileSession!.isSuperAdmin ?? false,
+  });
   res.json(result);
 });
 

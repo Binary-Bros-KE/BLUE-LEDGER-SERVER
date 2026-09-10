@@ -25,6 +25,7 @@ type RawSalePayment = {
   id: string;
   paymentMethodName: string;
   reference: string | null;
+  receivedBy?: string;
   receivedByName: string;
   receivedAt: string;
   amountCents: number;
@@ -34,6 +35,7 @@ type RawPurchasePayment = {
   id: string;
   paymentMethodName: string;
   reference: string | null;
+  paidBy?: string;
   paidByName: string;
   paidAt: string;
   amountCents: number;
@@ -47,15 +49,25 @@ function asArray<T>(value: unknown): T[] {
  * Every actual money-movement event across the whole business, not just sales — money IN (sales/
  * invoice payments) and money OUT (purchase payments, expenses, salary payouts), each flagged with
  * a `direction`. Ports DESKTOP's own getPaymentTransactions (report-service.ts), widened the same
- * way. No per-category permission gating here (unlike DESKTOP, which gates each OUT category on its
- * own "purchases"/"expenses"/"salaries" view permission for Cashier-safety) — the whole Owner App is
- * already Super-Admin-only, so there's no narrower audience to protect this from.
+ * way.
+ *
+ * Actor-scoped like DESKTOP: a Super Admin sees the whole business; anyone else sees only the rows
+ * they personally handled (their own sale/invoice payments and purchase payments) — so a Cashier
+ * using the app can't see the owner's supplier payments. Client request. Expenses and salary payouts
+ * are dropped entirely for a non-Super-Admin: Postgres doesn't carry who recorded them (a Phase-1
+ * sync gap — see the Expense model comment), so there's no actor to scope them by, and showing them
+ * to everyone is exactly what this change is closing.
  *
  * Scans the 300 most recent qualifying rows PER SOURCE (not 200 final rows, since one invoice/
  * purchase can expand into several payment rows) — same recency-cap philosophy as
  * listSales/listInvoices, not real pagination.
  */
-export async function listTransactions(tenantId: string, locationId: string | null): Promise<MobileTransactionRow[]> {
+export async function listTransactions(
+  tenantId: string,
+  locationId: string | null,
+  viewer: { employeeId: string; isSuperAdmin: boolean }
+): Promise<MobileTransactionRow[]> {
+  const { employeeId: viewerEmployeeId, isSuperAdmin } = viewer;
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
   const currency = tenant.currency;
 
@@ -101,6 +113,7 @@ export async function listTransactions(tenantId: string, locationId: string | nu
 
       if (sale.invoiceNumber !== null) {
         for (const payment of asArray<RawSalePayment>(sale.payments)) {
+          if (!isSuperAdmin && payment.receivedBy !== viewerEmployeeId) continue;
           rows.push({
             id: `${sale.id}:${payment.id}`,
             transactionCode: payment.reference ?? sale.invoiceNumber,
@@ -118,6 +131,7 @@ export async function listTransactions(tenantId: string, locationId: string | nu
           });
         }
       } else {
+        if (!isSuperAdmin && sale.employeeId !== viewerEmployeeId) continue;
         rows.push({
           id: sale.id,
           transactionCode: sale.paymentReference ?? sale.receiptNumber ?? sale.id,
@@ -150,6 +164,7 @@ export async function listTransactions(tenantId: string, locationId: string | nu
       const locationName = locationNameById.get(purchase.locationId) ?? "—";
       const supplierName = supplierNameById.get(purchase.supplierId) ?? "—";
       for (const payment of asArray<RawPurchasePayment>(purchase.payments)) {
+        if (!isSuperAdmin && payment.paidBy !== viewerEmployeeId) continue;
         rows.push({
           id: `${purchase.id}:${payment.id}`,
           transactionCode: payment.reference ?? purchase.purchaseNumber,
@@ -168,6 +183,10 @@ export async function listTransactions(tenantId: string, locationId: string | nu
       }
     }
 
+    // Money OUT — expenses and salary payouts. Neither carries a synced "who recorded this"
+    // employee id on Postgres, so there's no actor to scope them by — a non-Super-Admin just
+    // doesn't get them at all (client request: cashiers shouldn't see the owner's outgoings here).
+    if (isSuperAdmin) {
     // Money OUT — expenses (single flat payment each, unlike Sale/Purchase).
     const expenses = await tx.expense.findMany({
       where: {
@@ -230,6 +249,7 @@ export async function listTransactions(tenantId: string, locationId: string | nu
         currency,
       });
     }
+    } // end if (isSuperAdmin) — expenses + salaries
 
     return rows.sort((a, b) => new Date(b.occurredAt).getTime() - new Date(a.occurredAt).getTime()).slice(0, 200);
   });
