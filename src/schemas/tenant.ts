@@ -123,6 +123,10 @@ export const tenantUpdateSchema = z.object({
   // Per-tenant exception to the Plan's own maxDevices — null explicitly clears the override (falls
   // back to the plan's value again); omitting the field entirely leaves whatever's already stored.
   maxDevicesOverride: z.coerce.number().int().min(1).max(1000).nullable().optional(),
+
+  // Admin-dashboard-only switch (deliberately NOT in activationProfileUpdateSchema — a device can
+  // never push this): when true, invoice editing is disabled on every device and the mobile app.
+  invoiceEditsDisabled: z.boolean().optional(),
 });
 
 export type TenantUpdateInput = z.infer<typeof tenantUpdateSchema>;

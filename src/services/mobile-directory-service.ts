@@ -33,6 +33,9 @@ export type MobileSessionInfo = {
    * uses authoritatively at submit time. */
   vatRatePercent: number;
   pricesTaxInclusive: boolean;
+  /** Tenant's Business Profile "Disable invoice edits" toggle — APP hides its Edit button on it;
+   * mobile-invoices-service.ts's updateInvoice enforces it server-side regardless. */
+  invoiceEditsDisabled: boolean;
   /** Server-authoritative — see Role.isSuperAdmin's own doc comment. Lets APP gate its Working Hours
    * tab (and any other Super-Admin-exclusive UI) without a name-based guess. */
   isSuperAdmin: boolean;
@@ -45,7 +48,7 @@ export type MobileSessionInfo = {
 export async function getMe(tenantId: string, employeeId: string): Promise<MobileSessionInfo> {
   const tenant = await prisma.tenant.findUniqueOrThrow({
     where: { id: tenantId },
-    select: { currency: true, vatRatePercent: true, pricesTaxInclusive: true },
+    select: { currency: true, vatRatePercent: true, pricesTaxInclusive: true, invoiceEditsDisabled: true },
   });
   return withTenantContext(tenantId, async (tx) => {
     const employee = await tx.employee.findUniqueOrThrow({ where: { id: employeeId } });
@@ -61,6 +64,7 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       defaultIncludeBusinessInfo: branch?.defaultIncludeBusinessInfo ?? null,
       vatRatePercent: tenant.vatRatePercent,
       pricesTaxInclusive: tenant.pricesTaxInclusive,
+      invoiceEditsDisabled: tenant.invoiceEditsDisabled,
       isSuperAdmin: role?.isSuperAdmin ?? false,
     };
   });

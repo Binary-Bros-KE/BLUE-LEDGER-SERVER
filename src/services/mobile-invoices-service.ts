@@ -340,9 +340,10 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
       if (row.amountPaidCents > 0) throw new HttpError(400, "This invoice has payments recorded against it and can no longer be edited");
 
       const [tenant, customer] = await Promise.all([
-        tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true, pricesTaxInclusive: true } }),
+        tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true, pricesTaxInclusive: true, invoiceEditsDisabled: true } }),
         tx.customer.findUnique({ where: { id: parsed.customerId } }),
       ]);
+      if (tenant.invoiceEditsDisabled) throw new HttpError(403, "Invoice editing is disabled for this business");
       if (!customer || customer.tenantId !== tenantId) throw new NotFoundError("Customer not found");
 
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };

@@ -566,6 +566,10 @@ model Tenant {
   /// calculation is actually implemented today — this flag exists so the schema doesn't need
   /// another migration once an exclusive-pricing market is actually onboarded.
   pricesTaxInclusive Boolean @default(true)
+  /// Admin-dashboard-controlled ONLY (never pushed by a device): when true,
+  /// existing invoices can no longer be edited from any device or the mobile app. Default false so
+  /// every existing tenant keeps today's behaviour.
+  invoiceEditsDisabled Boolean @default(false)
 
   /// When a device last successfully PUSHED a business-profile edit here (POST /activation/profile)
   /// — deliberately NOT the same as this row's own `updatedAt`, which also bumps for a dozen
