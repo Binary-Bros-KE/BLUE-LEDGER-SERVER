@@ -1328,6 +1328,11 @@ model Expense {
   reference           String?
   description         String?
   /// attachmentPath deliberately NOT synced — a local file path, no shared cloud storage yet.
+  /// Generic, nullable system-link back to whatever created this expense automatically (e.g. a
+  /// purchase's shipping cost) — see DESKTOP's createShippingCostExpenseIfNeeded. Never set by the
+  /// user-facing create/edit form.
+  sourceType          String?
+  sourceId            String?
   status              String
   isRecurring         Boolean
   recurrenceFrequency String?
@@ -1545,12 +1550,23 @@ model Purchase {
   discountAmountCents   Int
   taxAmountCents        Int
   /// Freight/delivery cost for the whole order — added on top of grandTotalCents, never per-line.
+  /// UI label is "Shipping Fee" as of the fee/cost split — owed to the supplier. Field itself is
+  /// deliberately never renamed (synced; see shippingExpenseCents below for the "Shipping Cost"
+  /// concept and DESKTOP's Purchase.shippingCostCents doc comment for the full reasoning).
   shippingCostCents     Int     @default(0)
+  /// The business's own out-of-pocket shipping cost ("Shipping Cost" in the UI) — never added to
+  /// grandTotalCents, never owed to the supplier; booked as an Expense on DESKTOP instead.
+  shippingExpenseCents  Int     @default(0)
   grandTotalCents       Int
   /// Client request: how much of grandTotalCents has actually been received, maintained
   /// incrementally by DESKTOP's receivePurchaseGoods — never includes shippingCostCents. The
   /// supplier balance and payment recording are based on THIS, not grandTotalCents.
   receivedValueCents    Int     @default(0)
+  /// Optional shipment tracking (mainly for overseas/China suppliers) — all null until set.
+  shipmentCourierName    String?
+  shipmentTrackingNumber String?
+  shipmentDepartedAt     String?
+  shipmentEta            String?
   paymentMethodId       String?
   paymentReference      String?
   paymentStatus         String
