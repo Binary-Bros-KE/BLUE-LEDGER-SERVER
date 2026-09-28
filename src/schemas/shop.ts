@@ -215,6 +215,27 @@ const themeContactSchema = z
   })
   .strict();
 
+/** Icons a trust-bar item may use — the storefront maps each key to its own icon set. */
+export const TRUST_ICONS = ["truck", "shield", "phone", "returns", "card", "clock", "support", "tag", "zap", "star"] as const;
+
+/** "Top brands" strip entry — a name (always shown if there's no logo), optional logo + link. */
+const themeBrandLogoSchema = z
+  .object({
+    name: z.string().trim().min(1).max(40),
+    logoUrl: z.string().trim().max(2048).nullish(),
+    href: z.string().trim().max(500).nullish(),
+  })
+  .strict();
+
+/** One trust-bar cell (e.g. truck · "Free Delivery" · "On selected items"). */
+const themeTrustItemSchema = z
+  .object({
+    icon: z.enum(TRUST_ICONS),
+    title: z.string().trim().min(1).max(40),
+    subtitle: z.string().trim().max(60).nullish(),
+  })
+  .strict();
+
 export const themeUpdateSchema = z
   .object({
     name: z.literal("trylist").optional(),
@@ -238,10 +259,13 @@ export const themeUpdateSchema = z
     productSections: z.array(themeProductSectionSchema).max(6).optional(),
     dealTile: themeDealTileSchema.optional(),
     tradeTile: themeTradeTileSchema.optional(),
+    // Lists replace wholesale (send the full list; [] = back to the template's defaults).
+    brands: z.array(themeBrandLogoSchema).max(24).optional(),
+    trustBar: z.array(themeTrustItemSchema).max(4).optional(),
   })
   .refine(
     (v) =>
-      ["name", "brand", "topBar", "contact", "hero", "story", "categoryImages", "headerImageUrl", "productSections", "dealTile", "tradeTile"].some(
+      ["name", "brand", "topBar", "contact", "hero", "story", "categoryImages", "headerImageUrl", "productSections", "dealTile", "tradeTile", "brands", "trustBar"].some(
         (k) => k in v,
       ),
     "Nothing to update",

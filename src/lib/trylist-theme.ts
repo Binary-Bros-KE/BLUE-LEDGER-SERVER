@@ -72,6 +72,12 @@ export type TrylistContact = {
   facebook?: string;
 };
 
+/** "Top brands" strip entry (Adia template). */
+export type TrylistBrandLogo = { name: string; logoUrl?: string; href?: string };
+
+/** One trust-bar cell. `icon` is a key from schemas/shop.ts TRUST_ICONS. */
+export type TrylistTrustItem = { icon: string; title: string; subtitle?: string };
+
 export type TrylistTheme = {
   name?: "trylist";
   brand?: TrylistBrand;
@@ -97,6 +103,10 @@ export type TrylistTheme = {
   productSections?: TrylistProductSection[];
   dealTile?: TrylistDealTile;
   tradeTile?: TrylistTradeTile;
+  /** Brands the shop carries — templates with a brand strip render these. */
+  brands?: TrylistBrandLogo[];
+  /** Up to 4 trust-bar cells; empty/absent = the template's own default wording. */
+  trustBar?: TrylistTrustItem[];
 };
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
