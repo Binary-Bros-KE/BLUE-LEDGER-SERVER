@@ -8,6 +8,7 @@ import {
   uploadThemeImage,
   type UploadedImage,
 } from "../lib/r2.js";
+import { readTemplateId } from "../lib/storefront-templates.js";
 import { mergeTheme } from "../lib/trylist-theme.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -38,6 +39,9 @@ export type StoreOwnerView = {
     status: string;
     currency: string;
     fulfilmentLocationId: string | null;
+    /** Read-only for the tenant — which template their store renders with (admin-set). Lets the
+     * POS show only the content fields that template actually uses. */
+    templateId: string;
     themeJson: Prisma.JsonValue;
     deliveryJson: Prisma.JsonValue;
     paymentOptionsJson: Prisma.JsonValue;
@@ -93,6 +97,7 @@ async function loadView(tenantId: string): Promise<StoreOwnerView> {
       status: store.status,
       currency: store.currency,
       fulfilmentLocationId: store.fulfilmentLocationId,
+      templateId: readTemplateId(store.templateId),
       themeJson: store.themeJson,
       deliveryJson: store.deliveryJson,
       paymentOptionsJson: store.paymentOptionsJson,

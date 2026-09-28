@@ -2,6 +2,7 @@ import { promises as dns } from "node:dns";
 import { Prisma, type WebStore } from "@prisma/client";
 import { env } from "../env.js";
 import { HttpError } from "../lib/http-error.js";
+import { readThemeColors, type ThemeColors } from "../lib/storefront-templates.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import type { ShopDomainInput, ShopProvisionInput, ShopUpdateInput } from "../schemas/shop.js";
@@ -23,6 +24,11 @@ export type ShopOverview = {
   activeProductCount: number;
   categoryCount: number;
 };
+
+/** Drops null/absent roles so the stored JSON only ever holds real overrides ({} = all defaults). */
+function toStoredColors(input: Partial<Record<keyof ThemeColors, string | null | undefined>>): ThemeColors {
+  return readThemeColors(Object.fromEntries(Object.entries(input).filter(([, v]) => typeof v === "string")));
+}
 
 async function loadTenant(tenantId: string) {
   const tenant = await prisma.tenant.findUnique({
@@ -108,6 +114,8 @@ export async function provisionStore(tenantId: string, input: ShopProvisionInput
         status: "DRAFT",
         fulfilmentLocationId: input.fulfilmentLocationId ?? null,
         currency: input.currency ?? tenant.currency,
+        ...(input.templateId ? { templateId: input.templateId } : {}),
+        ...(input.themeColors ? { themeColorsJson: toStoredColors(input.themeColors) } : {}),
       },
     }),
   ]);
@@ -128,6 +136,8 @@ export async function updateStore(tenantId: string, input: ShopUpdateInput): Pro
   if (input.currency !== undefined) data.currency = input.currency;
   if (input.fulfilmentLocationId !== undefined) data.fulfilmentLocationId = input.fulfilmentLocationId ?? null;
   if (input.status !== undefined) data.status = input.status;
+  if (input.templateId !== undefined) data.templateId = input.templateId;
+  if (input.themeColors !== undefined) data.themeColorsJson = toStoredColors(input.themeColors);
 
   await prisma.webStore.update({ where: { tenantId }, data });
   return buildOverview(tenantId);

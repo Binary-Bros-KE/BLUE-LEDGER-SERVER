@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { HttpError } from "../lib/http-error.js";
+import { readTemplateId, readThemeColors } from "../lib/storefront-templates.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import type { ShopContext } from "../middleware/shop-tenant.js";
@@ -150,6 +151,9 @@ export async function getStorePayload(ctx: ShopContext) {
     subdomain: ctx.store.subdomain,
     customDomain: ctx.store.customDomain,
     domainStatus: ctx.store.domainStatus,
+    // Look & feel (admin-set) — the storefront picks its template module + CSS colour tokens off these.
+    template: readTemplateId(ctx.store.templateId),
+    colors: readThemeColors(ctx.store.themeColorsJson),
     theme: ctx.store.themeJson,
     delivery: ctx.store.deliveryJson,
     paymentOptions: ctx.store.paymentOptionsJson,

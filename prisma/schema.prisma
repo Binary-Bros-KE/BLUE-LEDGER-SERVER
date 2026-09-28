@@ -328,7 +328,18 @@ model WebStore {
   /// ISO currency code, seeded from Tenant.currency at provision time.
   currency String @default("KES")
 
-  /// Storefront look: { logoUrl, bannerUrl, accentColor, heroHeadline, aboutText, socials{...} }.
+  /// Which storefront template renders this shop ("classic", ...). Plain text, not an enum, so a
+  /// new template ships without a migration — validated against lib/storefront-templates.ts.
+  /// ADMIN-ONLY: set from the dashboard, never from the tenant's POS (/shop-admin can't write it).
+  templateId      String @default("classic")
+  /// Brand colour overrides for the template: { primary?, secondary?, accent? } as "#rrggbb".
+  /// A missing role = the template's own default. Derived shades (hover, tints, readable text
+  /// variants) are computed storefront-side, never stored. ADMIN-ONLY, same as templateId.
+  themeColorsJson Json   @default("{}")
+
+  /// Storefront CONTENT (client-editable from the POS "Online Store" tab): hero copy/images, brand
+  /// logo, contact channels, story rows, category images... — see lib/trylist-theme.ts. Look &
+  /// feel (template + colours) is NOT here; it's the two admin-only columns above.
   themeJson          Json @default("{}")
   /// { mode: "zones" | "pickup_only" | "flat", zones: [{name, feeCents, areas[]}], flatFeeCents,
   ///   minOrderCents }.

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { COLOR_ROLES, STOREFRONT_TEMPLATE_IDS } from "../lib/storefront-templates.js";
 
 /** GET /shop/catalog query. Cursor-less offset paging is fine here — a public catalog is small
  * (hundreds to low thousands of published products) and the storefront renders category pages, not
@@ -34,11 +35,31 @@ const hostnameSchema = z
 
 const currencySchema = z.string().trim().toUpperCase().min(2).max(5);
 
+const templateIdSchema = z.enum(STOREFRONT_TEMPLATE_IDS);
+
+/** "#rrggbb" — lower-cased so the stored value is canonical. */
+const hexColorSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^#[0-9a-f]{6}$/, "Use a 6-digit hex colour like #d71920");
+
+/** Brand-colour overrides. A role that's absent or null falls back to the template default — the
+ * object REPLACES the stored one wholesale (it's tiny, and "reset to default" is just omitting it). */
+const themeColorsSchema = z
+  .object(Object.fromEntries(COLOR_ROLES.map((r) => [r, hexColorSchema.nullish()])) as Record<
+    (typeof COLOR_ROLES)[number],
+    z.ZodOptional<z.ZodNullable<typeof hexColorSchema>>
+  >)
+  .strict();
+
 export const shopProvisionSchema = z.object({
   subdomain: subdomainSchema,
   currency: currencySchema.optional(),
   fulfilmentLocationId: z.string().trim().min(1).nullish(),
   customDomain: hostnameSchema.optional(),
+  templateId: templateIdSchema.optional(),
+  themeColors: themeColorsSchema.optional(),
 });
 
 export const shopUpdateSchema = z
@@ -47,6 +68,9 @@ export const shopUpdateSchema = z
     currency: currencySchema.optional(),
     fulfilmentLocationId: z.string().trim().min(1).nullish(),
     status: z.enum(["DRAFT", "LIVE", "SUSPENDED"]).optional(),
+    // Look & feel — admin-only (this schema is only reachable from the SUPER_ADMIN dashboard route).
+    templateId: templateIdSchema.optional(),
+    themeColors: themeColorsSchema.optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
