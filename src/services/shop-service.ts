@@ -192,15 +192,42 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
     }
     const where: Prisma.ProductWhereInput = { AND: and };
 
-    const [total, rows] = await Promise.all([
-      tx.product.count({ where }),
-      tx.product.findMany({
+    // The price a shopper sees is `onlinePriceCents ?? sellingPriceCents` — a coalesce Prisma can't
+    // sort or range-filter on. So: one light pass over the matching set (id + the fields that order
+    // it; the public catalog is small), sort/filter here, then load full rows for just this page.
+    // Rows come back name-ordered by the DB, so "featured" keeps exactly the order it always had.
+    const lite = (
+      await tx.product.findMany({
         where,
         orderBy: { name: "asc" },
-        skip: (query.page - 1) * query.pageSize,
-        take: query.pageSize,
-      }),
-    ]);
+        select: { id: true, onlinePriceCents: true, sellingPriceCents: true, localCreatedAt: true },
+      })
+    ).map((r) => ({ id: r.id, price: r.onlinePriceCents ?? r.sellingPriceCents, created: r.localCreatedAt.getTime() }));
+
+    // Bounds BEFORE the price filter, so a price slider's range doesn't collapse onto the selection.
+    const priceRange = lite.length
+      ? { minCents: Math.min(...lite.map((r) => r.price)), maxCents: Math.max(...lite.map((r) => r.price)) }
+      : null;
+
+    let matched = lite.filter(
+      (r) =>
+        (query.minPriceCents === undefined || r.price >= query.minPriceCents) &&
+        (query.maxPriceCents === undefined || r.price <= query.maxPriceCents),
+    );
+    // Array.prototype.sort is stable → ties keep the name order.
+    if (query.sort === "price-asc") matched = [...matched].sort((a, b) => a.price - b.price);
+    else if (query.sort === "price-desc") matched = [...matched].sort((a, b) => b.price - a.price);
+    else if (query.sort === "newest") matched = [...matched].sort((a, b) => b.created - a.created);
+
+    const total = matched.length;
+    const pageIds = matched.slice((query.page - 1) * query.pageSize, query.page * query.pageSize).map((r) => r.id);
+    const byId = new Map(
+      (pageIds.length ? await tx.product.findMany({ where: { id: { in: pageIds } } }) : []).map((r) => [r.id, r]),
+    );
+    const rows = pageIds.flatMap((id) => {
+      const row = byId.get(id);
+      return row ? [row] : [];
+    });
 
     const [stockByProduct, names] = await Promise.all([
       readStock(tx, ctx.store.fulfilmentLocationId, rows.map((r) => r.id)),
@@ -211,6 +238,7 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
       page: query.page,
       pageSize: query.pageSize,
       total,
+      priceRange,
       products: rows.map((r) =>
         toCatalogItem(r, stockByProduct.get(r.id) ?? null, r.categoryId ? (names.get(r.categoryId) ?? null) : null),
       ),
