@@ -276,6 +276,47 @@ export const deliveryReorderSchema = z.object({
   orderedIds: z.array(z.string().trim().min(1).max(64)).min(1).max(300),
 });
 
+// --- Online orders (storefront checkout → POS inbox) ---------------------------------------------
+
+export const ONLINE_ORDER_STATUSES = ["NEW", "CONFIRMED", "COMPLETED", "CANCELLED"] as const;
+
+/** POST /shop/orders — only ids + quantities are trusted from the shopper; every price, name and
+ * the delivery fee are re-read server-side. */
+export const shopOrderCreateSchema = z.object({
+  customerName: z.string().trim().min(2, "Enter your name").max(120),
+  customerPhone: z
+    .string()
+    .trim()
+    .max(30)
+    .refine((v) => v.replace(/\D/g, "").length >= 9, "Enter a valid phone number"),
+  customerEmail: z.string().trim().email("Enter a valid email").max(200).nullish().or(z.literal("")),
+  deliveryAddress: z.string().trim().max(500).nullish(),
+  notes: z.string().trim().max(1000).nullish(),
+  deliveryMethodId: z.string().trim().max(64).nullish(),
+  paymentMethod: z.enum(["pay_on_delivery"]).default("pay_on_delivery"),
+  items: z
+    .array(z.object({ productId: z.string().trim().min(1).max(64), qty: z.number().int().min(1).max(999) }))
+    .min(1, "Your cart is empty")
+    .max(100),
+});
+
+export const orderListSchema = z.object({
+  status: z.enum([...ONLINE_ORDER_STATUSES, "ALL"]).default("ALL"),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(30),
+});
+
+export const orderStatusSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  status: z.enum(ONLINE_ORDER_STATUSES),
+});
+
+export const orderSeenSchema = z.object({ ids: z.array(z.string().trim().min(1).max(64)).max(200).optional() });
+
+export type ShopOrderCreateInput = z.infer<typeof shopOrderCreateSchema>;
+export type OrderListInput = z.infer<typeof orderListSchema>;
+export type OrderStatusInput = z.infer<typeof orderStatusSchema>;
+
 export type StoreConfigUpdateInput = z.infer<typeof storeConfigUpdateSchema>;
 export type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;
 export type ProductImageDeleteInput = z.infer<typeof productImageDeleteSchema>;

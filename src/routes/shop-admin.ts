@@ -11,7 +11,11 @@ import {
   storeConfigUpdateSchema,
   themeImageUploadSchema,
   themeUpdateSchema,
+  orderListSchema,
+  orderSeenSchema,
+  orderStatusSchema,
 } from "../schemas/shop.js";
+import * as orderService from "../services/shop-order-service.js";
 import * as shopOwnerService from "../services/shop-owner-service.js";
 
 /**
@@ -37,6 +41,25 @@ const limiter = rateLimit({
 
 shopAdminRouter.use(limiter);
 shopAdminRouter.use(requireDevice);
+
+// --- Online orders inbox (POS "Online Orders") ---
+shopAdminRouter.post("/orders", async (req, res) => {
+  res.json(await orderService.listOrders(req.syncContext!.tenantId, orderListSchema.parse(req.body)));
+});
+
+shopAdminRouter.post("/orders/summary", async (req, res) => {
+  res.json(await orderService.orderSummary(req.syncContext!.tenantId));
+});
+
+shopAdminRouter.post("/orders/status", async (req, res) => {
+  const input = orderStatusSchema.parse(req.body);
+  res.json(await orderService.setOrderStatus(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
+});
+
+shopAdminRouter.post("/orders/seen", async (req, res) => {
+  const input = orderSeenSchema.parse(req.body);
+  res.json(await orderService.markOrdersSeen(req.syncContext!.tenantId, input.ids));
+});
 
 shopAdminRouter.post("/store", async (req, res) => {
   res.json(await shopOwnerService.getStoreForDevice(req.syncContext!.tenantId));

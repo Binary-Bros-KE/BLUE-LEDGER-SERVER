@@ -374,6 +374,55 @@ model WebDeliveryMethod {
   @@map("web_delivery_methods")
 }
 
+/// An order placed on the storefront — the POS "Online Orders" inbox. Cloud-only and RLS'd (like
+/// WebDeliveryMethod): the storefront writes it via POST /shop/orders; the POS reads it and moves its
+/// status via device-authed /shop-admin/orders/* while online. Deliberately NOT a synced entity and
+/// NOT a Sale: it deducts no stock and counts as no revenue until the shop acts on it. Prices/totals
+/// are computed server-side at order time and frozen here (the shopper saw these numbers).
+model OnlineOrder {
+  id       String @id @default(uuid())
+  tenantId String
+  /// Per-tenant running number — shown as WEB-0001. Unique per tenant (retry on collision).
+  orderSeq Int
+
+  /// NEW → CONFIRMED → COMPLETED, or CANCELLED. Free-form text (validated in the schema layer).
+  status String @default("NEW")
+
+  customerName    String
+  customerPhone   String
+  customerEmail   String?
+  deliveryAddress String?
+  notes           String?
+
+  deliveryMethodId   String?
+  deliveryMethodName String?
+  deliveryFeeCents   Int     @default(0)
+  /// What the shopper chose, e.g. "pay_on_delivery". No online payment is taken yet.
+  paymentMethod      String  @default("pay_on_delivery")
+
+  /// [{ productId, name, unitPriceCents, qty, lineTotalCents }] — frozen at order time.
+  itemsJson     Json
+  subtotalCents Int
+  totalCents    Int
+  currency      String
+
+  /// The fulfilment location the store was configured with when the order came in.
+  fulfilmentLocationId String?
+
+  /// null until a POS device has listed it — drives the "new orders" badge.
+  seenAt          DateTime?
+  statusChangedAt DateTime?
+  /// Device that last changed the status.
+  handledByDeviceId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([tenantId, orderSeq])
+  @@index([tenantId, status, createdAt])
+  @@map("online_orders")
+}
+
 /// One per Tenant — the fundamental entitlement to run the software at all. Separate from
 /// Subscription (the commercial arrangement) so a license can be manually suspended/reactivated
 /// (with a reason) independent of billing state.

@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { env } from "../env.js";
 import { resolveLiveStore } from "../middleware/shop-tenant.js";
-import { catalogQuerySchema } from "../schemas/shop.js";
+import { catalogQuerySchema, shopOrderCreateSchema } from "../schemas/shop.js";
+import { createOrder } from "../services/shop-order-service.js";
 import * as shopService from "../services/shop-service.js";
 
 /**
@@ -44,6 +45,24 @@ const publicLimiter = rateLimit({
 
 shopRouter.use(publicLimiter);
 shopRouter.use(resolveLiveStore);
+
+// Placing orders IS worth limiting: each one lands in a real shop's POS inbox, so a bot must not be
+// able to flood it. Keyed per SHOPPER: behind the storefront every request shares its IP, so the
+// storefront forwards the shopper's own IP — trusted only together with a valid storefront key.
+const orderLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) =>
+    ipKeyGenerator((isStorefront(req) && req.get("x-shopper-ip")?.trim()) || req.ip || "unknown"),
+  message: { error: "Too many orders from this connection — please wait a few minutes and try again." },
+});
+
+shopRouter.post("/orders", orderLimiter, async (req, res) => {
+  const input = shopOrderCreateSchema.parse(req.body);
+  res.status(201).json(await createOrder(req.shopContext!, input));
+});
 
 shopRouter.get("/store", async (req, res) => {
   res.json(await shopService.getStorePayload(req.shopContext!));
