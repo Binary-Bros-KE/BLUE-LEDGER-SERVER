@@ -8,7 +8,7 @@
  * store could be switched onto a template that renders as the fallback. Mirrored by hand in
  * NEXT/storefront src/templates/registry.ts and NEXT/admin src/lib/storefront-templates.ts.
  */
-export const STOREFRONT_TEMPLATE_IDS = ["classic"] as const;
+export const STOREFRONT_TEMPLATE_IDS = ["classic", "adia"] as const;
 
 export type StorefrontTemplateId = (typeof STOREFRONT_TEMPLATE_IDS)[number];
 
