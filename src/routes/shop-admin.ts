@@ -11,6 +11,8 @@ import {
   storeConfigUpdateSchema,
   themeImageUploadSchema,
   themeUpdateSchema,
+  orderGetSchema,
+  orderLinkSaleSchema,
   orderListSchema,
   orderSeenSchema,
   orderStatusSchema,
@@ -45,6 +47,15 @@ shopAdminRouter.use(requireDevice);
 // --- Online orders inbox (POS "Online Orders") ---
 shopAdminRouter.post("/orders", async (req, res) => {
   res.json(await orderService.listOrders(req.syncContext!.tenantId, orderListSchema.parse(req.body)));
+});
+
+shopAdminRouter.post("/orders/get", async (req, res) => {
+  res.json(await orderService.getOrder(req.syncContext!.tenantId, orderGetSchema.parse(req.body).id));
+});
+
+shopAdminRouter.post("/orders/link-sale", async (req, res) => {
+  const input = orderLinkSaleSchema.parse(req.body);
+  res.json(await orderService.linkOrderSale(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
 });
 
 shopAdminRouter.post("/orders/summary", async (req, res) => {

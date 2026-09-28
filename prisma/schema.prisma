@@ -415,6 +415,11 @@ model OnlineOrder {
   /// Device that last changed the status.
   handledByDeviceId String?
 
+  /// Set when a POS rang the order up as a sale ("Ring up sale") — the local sale id + its receipt
+  /// number. Once set it never changes: one web order becomes at most one sale.
+  linkedSaleId        String?
+  linkedReceiptNumber String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

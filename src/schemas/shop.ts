@@ -335,11 +335,21 @@ export const orderStatusSchema = z.object({
   status: z.enum(ONLINE_ORDER_STATUSES),
 });
 
+export const orderGetSchema = z.object({ id: z.string().trim().min(1).max(64) });
+
+/** POST /shop-admin/orders/link-sale — the POS rang this order up as a (local) sale. */
+export const orderLinkSaleSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  saleId: z.string().trim().min(1).max(80),
+  receiptNumber: z.string().trim().min(1).max(40).nullish(),
+});
+
 export const orderSeenSchema = z.object({ ids: z.array(z.string().trim().min(1).max(64)).max(200).optional() });
 
 export type ShopOrderCreateInput = z.infer<typeof shopOrderCreateSchema>;
 export type OrderListInput = z.infer<typeof orderListSchema>;
 export type OrderStatusInput = z.infer<typeof orderStatusSchema>;
+export type OrderLinkSaleInput = z.infer<typeof orderLinkSaleSchema>;
 
 export type StoreConfigUpdateInput = z.infer<typeof storeConfigUpdateSchema>;
 export type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;

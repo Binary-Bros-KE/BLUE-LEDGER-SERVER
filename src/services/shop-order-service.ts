@@ -2,7 +2,7 @@ import { Prisma } from "@prisma/client";
 import { HttpError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import type { ShopContext } from "../middleware/shop-tenant.js";
-import type { OrderListInput, OrderStatusInput, ShopOrderCreateInput } from "../schemas/shop.js";
+import type { OrderLinkSaleInput, OrderListInput, OrderStatusInput, ShopOrderCreateInput } from "../schemas/shop.js";
 
 /**
  * Storefront orders → the POS "Online Orders" inbox (model OnlineOrder).
@@ -36,9 +36,14 @@ export type OnlineOrderView = {
   subtotalCents: number;
   totalCents: number;
   currency: string;
+  /** the store's fulfilment branch when the order came in — the POS rings it up there by default */
+  fulfilmentLocationId: string | null;
   seen: boolean;
   createdAt: string;
   statusChangedAt: string | null;
+  /** set once a POS rang the order up as a sale */
+  linkedSaleId: string | null;
+  linkedReceiptNumber: string | null;
 };
 
 export function formatOrderNumber(seq: number): string {
@@ -64,9 +69,12 @@ function toView(r: OrderRow): OnlineOrderView {
     subtotalCents: r.subtotalCents,
     totalCents: r.totalCents,
     currency: r.currency,
+    fulfilmentLocationId: r.fulfilmentLocationId,
     seen: r.seenAt !== null,
     createdAt: r.createdAt.toISOString(),
     statusChangedAt: r.statusChangedAt?.toISOString() ?? null,
+    linkedSaleId: r.linkedSaleId,
+    linkedReceiptNumber: r.linkedReceiptNumber,
   };
 }
 
@@ -191,6 +199,45 @@ export async function setOrderStatus(tenantId: string, deviceId: string, input: 
         statusChangedAt: new Date(),
         handledByDeviceId: deviceId,
         seenAt: existing.seenAt ?? new Date(),
+      },
+    });
+    return toView(row);
+  });
+}
+
+export async function getOrder(tenantId: string, id: string) {
+  return withTenantContext(tenantId, async (tx) => {
+    const row = await tx.onlineOrder.findUnique({ where: { id } });
+    if (!row) throw new HttpError(404, "Order not found");
+    return toView(row);
+  });
+}
+
+/**
+ * Records that a POS rang this order up as a sale, and completes it. Idempotent for the SAME sale
+ * (a retry after a dropped response is fine); refuses a second, different sale — one web order
+ * becomes at most one sale, even with two tills racing.
+ */
+export async function linkOrderSale(tenantId: string, deviceId: string, input: OrderLinkSaleInput) {
+  return withTenantContext(tenantId, async (tx) => {
+    const existing = await tx.onlineOrder.findUnique({ where: { id: input.id } });
+    if (!existing) throw new HttpError(404, "Order not found");
+    if (existing.linkedSaleId && existing.linkedSaleId !== input.saleId) {
+      throw new HttpError(
+        409,
+        `This order was already rung up as receipt ${existing.linkedReceiptNumber ?? existing.linkedSaleId}.`,
+      );
+    }
+    const now = new Date();
+    const row = await tx.onlineOrder.update({
+      where: { id: input.id },
+      data: {
+        linkedSaleId: input.saleId,
+        linkedReceiptNumber: input.receiptNumber ?? null,
+        status: "COMPLETED",
+        statusChangedAt: now,
+        handledByDeviceId: deviceId,
+        seenAt: existing.seenAt ?? now,
       },
     });
     return toView(row);
