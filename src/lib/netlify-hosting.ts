@@ -49,6 +49,18 @@ async function netlify(path: string, init?: RequestInit): Promise<Response> {
   });
 }
 
+/** The project's Let's Encrypt certificate: which hostnames it covers and any renewal error. */
+async function readCertificate(site: string): Promise<{ domains: string[]; error: string | null } | null> {
+  try {
+    const res = await netlify(`/sites/${site}/ssl`);
+    if (!res.ok) return null;
+    const c = (await res.json()) as { domains?: string[]; renewal_error_message?: string | null };
+    return { domains: (c.domains ?? []).map((d) => d.toLowerCase()), error: c.renewal_error_message?.trim() || null };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Adds `add` and removes `remove` from the project's domain aliases (idempotent). Only ever touches
  * the hostnames passed in — the project's primary domain and any other aliases are left alone.
@@ -91,20 +103,29 @@ export async function syncStoreHostnames(opts: {
       }
     }
 
-    // Ask Netlify to (re)issue the certificate now rather than on its own schedule. Best effort: it
-    // can refuse while DNS is still propagating, and Netlify retries by itself anyway.
-    if (add.length > 0) await netlify(`/sites/${site}/ssl`, { method: "POST" }).catch(() => null);
-
     const parts = [
       added.length ? `added ${added.join(", ")}` : "",
       removed.length ? `removed ${removed.join(", ")}` : "",
     ].filter(Boolean);
-    return {
-      ok: true,
-      detail: changed
-        ? `Netlify updated (${parts.join("; ")}). HTTPS is usually ready within a few minutes.`
-        : "Netlify already had these domains.",
-    };
+    const aliasNote = changed ? `Netlify updated (${parts.join("; ")}).` : "Netlify already had these domains.";
+
+    // Netlify issues ONE certificate for every domain on the project and (re)provisions it by itself
+    // after an alias change — there's no API call to force it. What we CAN do is report its state:
+    // a single broken domain (e.g. a www with no DNS record) stalls the whole certificate, and
+    // Netlify says so in renewal_error_message. Surfacing that turns "cert error in the browser"
+    // into an actionable message in the dashboard.
+    const cert = await readCertificate(site);
+    const missing = add.filter((h) => cert && !cert.domains.includes(h));
+    if (cert?.error) {
+      return { ok: false, detail: `${aliasNote} HTTPS is blocked on Netlify: ${cert.error}` };
+    }
+    if (missing.length > 0) {
+      return {
+        ok: true,
+        detail: `${aliasNote} HTTPS certificate not issued yet for ${missing.join(", ")} — Netlify usually adds it within minutes; press Sync again to re-check.`,
+      };
+    }
+    return { ok: true, detail: `${aliasNote} HTTPS certificate covers ${add.length ? add.join(", ") : "the domains"}.` };
   } catch (err) {
     return { ok: false, detail: `Netlify unreachable: ${err instanceof Error ? err.message : String(err)}` };
   }
