@@ -1,5 +1,8 @@
 import { Router } from "express";
+import { createHash, timingSafeEqual } from "node:crypto";
+import type { Request } from "express";
 import rateLimit from "express-rate-limit";
+import { env } from "../env.js";
 import { resolveLiveStore } from "../middleware/shop-tenant.js";
 import { catalogQuerySchema } from "../schemas/shop.js";
 import * as shopService from "../services/shop-service.js";
@@ -15,11 +18,25 @@ import * as shopService from "../services/shop-service.js";
  */
 export const shopRouter = Router();
 
-// A public, unauthenticated surface on the open internet — a generous ceiling that a normal
-// browsing session never touches, but caps scrapers / abuse. Keyed by IP (see app.ts trust proxy).
+/** True when the request carries the storefront's shared key. Hashing both sides first gives equal
+ * lengths for timingSafeEqual, so the comparison leaks nothing about the key. */
+function isStorefront(req: Request): boolean {
+  const sent = req.get("x-storefront-key");
+  if (!env.STOREFRONT_API_KEY || !sent) return false;
+  const a = createHash("sha256").update(sent).digest();
+  const b = createHash("sha256").update(env.STOREFRONT_API_KEY).digest();
+  return timingSafeEqual(a, b);
+}
+
+// Why limit at all: /shop is public and unauthenticated, and this same server runs POS sync and the
+// mobile app for every tenant — a scraper hammering the catalogue must not be able to slow those.
+// But real shoppers never call /shop themselves: the storefront calls it for them, from its own
+// servers, so a per-IP limit would put ALL shoppers of ALL shops in one bucket. The storefront
+// therefore identifies itself (X-Storefront-Key) and is never limited; only direct callers are.
 const publicLimiter = rateLimit({
   windowMs: 60 * 1000,
   limit: 120,
+  skip: isStorefront,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests — slow down and try again shortly." },

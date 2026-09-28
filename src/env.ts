@@ -51,6 +51,17 @@ const envSchema = z.object({
   // admin's "connect your domain" instructions, and what verifyDomain checks the CNAME resolves to.
   // Empty = skip the target check (any successful DNS resolution passes) — fine for early testing.
   STOREFRONT_PUBLIC_HOST: z.string().default(""),
+  // Shared secret the NEXT/storefront deployment sends as `X-Storefront-Key` on every /shop call.
+  // All shopper traffic reaches /shop from the storefront's own servers, so a per-IP limit there
+  // would throttle every shop's shoppers together — requests carrying this key skip the /shop rate
+  // limit; only direct callers (scripts/scrapers) are limited. Empty = no exemption (everyone limited).
+  STOREFRONT_API_KEY: z.string().default(""),
+  // Netlify API access for lib/netlify-hosting.ts — adds each shop's hostnames as domain aliases on
+  // the storefront project so HTTPS works without a manual Netlify step. Token: Netlify → User
+  // settings → Applications → Personal access tokens. Site id: the project's API ID, or its
+  // "<name>.netlify.app" domain. Both empty = automation off (the dashboard says so).
+  NETLIFY_API_TOKEN: z.string().default(""),
+  NETLIFY_SITE_ID: z.string().default(""),
   // Cloudflare R2 for product images (§8). All optional until the P3 upload route ships — the
   // server must still boot for P0/P1 without an object store configured at all.
   R2_ACCOUNT_ID: z.string().optional(),

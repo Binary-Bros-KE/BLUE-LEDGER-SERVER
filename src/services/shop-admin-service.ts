@@ -2,6 +2,12 @@ import { promises as dns } from "node:dns";
 import { Prisma, type WebStore } from "@prisma/client";
 import { env } from "../env.js";
 import { HttpError } from "../lib/http-error.js";
+import {
+  isHostingAutomationConfigured,
+  previewHostname,
+  syncStoreHostnames,
+  type HostingResult,
+} from "../lib/netlify-hosting.js";
 import { readThemeColors, type ThemeColors } from "../lib/storefront-templates.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -23,6 +29,10 @@ export type ShopOverview = {
   publishedCount: number;
   activeProductCount: number;
   categoryCount: number;
+  /** Whether shop hostnames are added to the Netlify project automatically (lib/netlify-hosting.ts). */
+  hostingAutomation: boolean;
+  /** Set on responses to actions that touched hostnames — what happened on Netlify. */
+  hosting?: HostingResult;
 };
 
 /** Drops null/absent roles so the stored JSON only ever holds real overrides ({} = all defaults). */
@@ -72,6 +82,7 @@ async function buildOverview(tenantId: string): Promise<ShopOverview> {
     storefrontBaseDomain: env.STOREFRONT_BASE_DOMAIN,
     storefrontPublicHost: env.STOREFRONT_PUBLIC_HOST || null,
     ...stats,
+    hostingAutomation: isHostingAutomationConfigured(),
   };
 }
 
@@ -120,7 +131,19 @@ export async function provisionStore(tenantId: string, input: ShopProvisionInput
     }),
   ]);
 
-  return buildOverview(tenantId);
+  const hosting = await syncStoreHostnames({ add: [previewHostname(input.subdomain), input.customDomain] });
+  return { ...(await buildOverview(tenantId)), hosting };
+}
+
+/** Re-adds this store's hostnames on Netlify (idempotent) — the "fix HTTPS" button, and how stores
+ * created before the automation existed get covered. */
+export async function syncHosting(tenantId: string): Promise<ShopOverview> {
+  const tenant = await loadTenant(tenantId);
+  if (!tenant.webStore) throw new HttpError(404, "This tenant has no online store yet");
+  const hosting = await syncStoreHostnames({
+    add: [previewHostname(tenant.webStore.subdomain), tenant.webStore.customDomain],
+  });
+  return { ...(await buildOverview(tenantId)), hosting };
 }
 
 export async function updateStore(tenantId: string, input: ShopUpdateInput): Promise<ShopOverview> {
@@ -140,6 +163,12 @@ export async function updateStore(tenantId: string, input: ShopUpdateInput): Pro
   if (input.themeColors !== undefined) data.themeColorsJson = toStoredColors(input.themeColors);
 
   await prisma.webStore.update({ where: { tenantId }, data });
+
+  const oldSub = tenant.webStore.subdomain;
+  if (input.subdomain !== undefined && input.subdomain !== oldSub) {
+    const hosting = await syncStoreHostnames({ add: [previewHostname(input.subdomain)], remove: [previewHostname(oldSub)] });
+    return { ...(await buildOverview(tenantId)), hosting };
+  }
   return buildOverview(tenantId);
 }
 
@@ -147,12 +176,15 @@ export async function setDomain(tenantId: string, input: ShopDomainInput): Promi
   const tenant = await loadTenant(tenantId);
   if (!tenant.webStore) throw new HttpError(404, "This tenant has no online store yet");
 
+  const previous = tenant.webStore.customDomain;
+
   if (input.customDomain === null) {
     await prisma.webStore.update({
       where: { tenantId },
       data: { customDomain: null, domainStatus: "NONE" },
     });
-    return buildOverview(tenantId);
+    const hosting = await syncStoreHostnames({ remove: [previous] });
+    return { ...(await buildOverview(tenantId)), hosting };
   }
 
   await assertDomainFree(input.customDomain, tenantId);
@@ -160,7 +192,11 @@ export async function setDomain(tenantId: string, input: ShopDomainInput): Promi
     where: { tenantId },
     data: { customDomain: input.customDomain, domainStatus: "PENDING_DNS" },
   });
-  return buildOverview(tenantId);
+  const hosting = await syncStoreHostnames({
+    add: [input.customDomain],
+    remove: previous && previous !== input.customDomain ? [previous] : [],
+  });
+  return { ...(await buildOverview(tenantId)), hosting };
 }
 
 export async function verifyDomain(tenantId: string): Promise<ShopOverview & { detail: string }> {

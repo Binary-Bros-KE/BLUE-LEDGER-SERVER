@@ -132,6 +132,10 @@ tenantsRouter.post("/:id/shop/domain", requireSuperAdmin, async (req, res) => {
   res.json(await shopAdminService.setDomain(req.params.id as string, parsed));
 });
 
+tenantsRouter.post("/:id/shop/hosting/sync", requireSuperAdmin, async (req, res) => {
+  res.json(await shopAdminService.syncHosting(req.params.id as string));
+});
+
 tenantsRouter.post("/:id/shop/domain/verify", requireSuperAdmin, async (req, res) => {
   res.json(await shopAdminService.verifyDomain(req.params.id as string));
 });
