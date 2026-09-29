@@ -1134,12 +1134,29 @@ model Product {
   /// Shape: { quickSpecs: string[], blocks: [{ type: "paragraph"|"specs"|"notes", heading?, body?,
   /// items?: string[] }] }. `{}` = none (the page just shows the description).
   onlineContentJson Json    @default("{}")
+  /// Web-only "was" price in cents — shown struck through with a "-x%" badge when it's above the
+  /// price the shopper pays. null = no sale shown.
+  onlineCompareAtPriceCents Int?
+
+  /// Manufacturer / brand (free text, e.g. "Samsung") — POS product field; drives the storefront's
+  /// brand filter and Top Brands strip, and reports.
+  brand String?
+
+  /// VARIANTS (see DESKTOP docs/VARIANTS.md). A product with variants has variantConfigJson set:
+  /// { mode: "separate" | "shared", options: [{ name, values[] }], variants?: [...] (shared only) }.
+  /// "separate": every variant is its own product row (own stock/price/SKU) whose variantGroupId
+  ///   = the main product's id and variantOptionsJson = its values, e.g. {"Size":"55\""}.
+  /// "shared": one product, one stock; the variants live inside variantConfigJson.
+  variantGroupId     String?
+  variantOptionsJson Json    @default("{}")
+  variantConfigJson  Json?
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
   syncedAt       DateTime @default(now())
 
   @@index([tenantId])
+  @@index([tenantId, variantGroupId])
   @@map("products")
 }
 

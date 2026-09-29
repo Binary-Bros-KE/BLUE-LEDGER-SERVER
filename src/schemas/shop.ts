@@ -9,6 +9,8 @@ export const catalogQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(60).default(24),
   categoryId: z.string().trim().min(1).optional(),
   search: z.string().trim().min(1).max(120).optional(),
+  /** exact brand (case-insensitive), e.g. "Samsung" */
+  brand: z.string().trim().min(1).max(60).optional(),
   /** "featured" = the long-standing default (name A→Z). Price sorts use the price shoppers see
    * (online override, else the selling price). */
   sort: z.enum(["featured", "price-asc", "price-desc", "newest"]).default("featured"),

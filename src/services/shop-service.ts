@@ -41,6 +41,9 @@ export type CatalogItem = {
   /** Rich detail-page content (quick specs + ordered paragraph/specs/notes blocks). */
   content: OnlineContent;
   stock: StockBadge;
+  brand: string | null;
+  /** online "was" price — only set when it's genuinely above priceCents (a real saving) */
+  compareAtPriceCents: number | null;
 };
 
 export type ShopCategory = { id: string; name: string; count: number };
@@ -109,6 +112,11 @@ function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string
     images: toImages(row.onlineImageUrls),
     content: toOnlineContent(row.onlineContentJson),
     stock: stockBadge(qty, row),
+    brand: row.brand?.trim() || null,
+    compareAtPriceCents:
+      row.onlineCompareAtPriceCents && row.onlineCompareAtPriceCents > (row.onlinePriceCents ?? row.sellingPriceCents)
+        ? row.onlineCompareAtPriceCents
+        : null,
   };
 }
 
@@ -200,20 +208,38 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
       await tx.product.findMany({
         where,
         orderBy: { name: "asc" },
-        select: { id: true, onlinePriceCents: true, sellingPriceCents: true, localCreatedAt: true },
+        select: { id: true, onlinePriceCents: true, sellingPriceCents: true, localCreatedAt: true, brand: true },
       })
-    ).map((r) => ({ id: r.id, price: r.onlinePriceCents ?? r.sellingPriceCents, created: r.localCreatedAt.getTime() }));
+    ).map((r) => ({
+      id: r.id,
+      price: r.onlinePriceCents ?? r.sellingPriceCents,
+      created: r.localCreatedAt.getTime(),
+      brand: r.brand?.trim() || null,
+    }));
 
     // Bounds BEFORE the price filter, so a price slider's range doesn't collapse onto the selection.
     const priceRange = lite.length
       ? { minCents: Math.min(...lite.map((r) => r.price)), maxCents: Math.max(...lite.map((r) => r.price)) }
       : null;
 
-    let matched = lite.filter(
+    const inPrice = lite.filter(
       (r) =>
         (query.minPriceCents === undefined || r.price >= query.minPriceCents) &&
         (query.maxPriceCents === undefined || r.price <= query.maxPriceCents),
     );
+    // Brand facet: counts over everything else that's selected (category/search/price), but NOT the
+    // brand filter itself — so picking one brand still lists the others to switch to.
+    const brandCounts = new Map<string, { name: string; count: number }>();
+    for (const r of inPrice) {
+      if (!r.brand) continue;
+      const key = r.brand.toLowerCase();
+      const hit = brandCounts.get(key);
+      if (hit) hit.count++;
+      else brandCounts.set(key, { name: r.brand, count: 1 });
+    }
+    const brands = [...brandCounts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+    const wantBrand = query.brand?.toLowerCase();
+    let matched = wantBrand ? inPrice.filter((r) => r.brand?.toLowerCase() === wantBrand) : inPrice;
     // Array.prototype.sort is stable → ties keep the name order.
     if (query.sort === "price-asc") matched = [...matched].sort((a, b) => a.price - b.price);
     else if (query.sort === "price-desc") matched = [...matched].sort((a, b) => b.price - a.price);
@@ -239,6 +265,7 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
       pageSize: query.pageSize,
       total,
       priceRange,
+      brands,
       products: rows.map((r) =>
         toCatalogItem(r, stockByProduct.get(r.id) ?? null, r.categoryId ? (names.get(r.categoryId) ?? null) : null),
       ),

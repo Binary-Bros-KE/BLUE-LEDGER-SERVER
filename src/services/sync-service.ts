@@ -52,6 +52,7 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
 const NULLABLE_JSON_FIELDS: Partial<Record<SyncEntityName, string[]>> = {
   sales: ["delivery"],
   quotations: ["delivery"],
+  products: ["variantConfigJson"],
 };
 
 /** Every Phase-1 model shares one shape: id + entity fields + localCreatedAt/localUpdatedAt +
