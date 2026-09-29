@@ -347,7 +347,7 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
     });
 
     const [stockByProduct, names] = await Promise.all([
-      readStock(tx, ctx.store.fulfilmentLocationId, rows.map((r) => r.id)),
+      readStock(tx, rows.map((r) => r.id)),
       categoryNames(tx, rows.map((r) => r.categoryId ?? "")),
     ]);
 
@@ -374,7 +374,7 @@ export async function getProductDetail(ctx: ShopContext, productId: string) {
       throw new HttpError(404, "Product not found");
     }
     const [stockByProduct, names] = await Promise.all([
-      readStock(tx, ctx.store.fulfilmentLocationId, [row.id]),
+      readStock(tx, [row.id]),
       categoryNames(tx, [row.categoryId ?? ""]),
     ]);
     const item = toCatalogItem(
@@ -413,7 +413,7 @@ export async function getProductDetail(ctx: ShopContext, productId: string) {
           group.find((m) => m.id === row.variantGroupId) ??
           (await tx.product.findFirst({ where: { id: row.variantGroupId }, select: { variantConfigJson: true } }));
         const mainConfig = parseVariantConfig(main?.variantConfigJson ?? null);
-        const stock = await readStock(tx, ctx.store.fulfilmentLocationId, group.map((m) => m.id));
+        const stock = await readStock(tx, group.map((m) => m.id));
         const withValues = group.map((m) => ({ m, values: parseVariantOptions(m.variantOptionsJson) }));
         // options from the main product's config; if it's missing, whatever option names the members carry
         const options: VariantOption[] =
@@ -510,20 +510,21 @@ export async function listCategories(ctx: ShopContext): Promise<ShopCategory[]> 
   });
 }
 
-/** Reads the server-maintained `inventory` table (see migration 20260831210000) for the store's
- * fulfilment location — O(1) per product, never a stock_movements aggregation. Returns an empty
- * map when the store has no fulfilment location set yet (everything then reads as made-to-order). */
-async function readStock(
-  tx: Prisma.TransactionClient,
-  locationId: string | null,
-  productIds: string[],
-): Promise<Map<string, number>> {
+/** The TOTAL stock of each product across every location — Main Store plus every branch — from the
+ * server-maintained `inventory` table (one grouped query, never a stock_movements aggregation). This
+ * is the number the website shows and uses for "in stock / out of stock": a product in the Main Store
+ * or at another branch is available to order, exactly as the POS Main Store tab counts it. Which
+ * branch the stock is deducted from is decided later, when the shop rings the order up as a sale
+ * (the store's fulfilment branch by default). A product with no inventory row anywhere is absent
+ * from the map (it then reads as made-to-order, as before). */
+async function readStock(tx: Prisma.TransactionClient, productIds: string[]): Promise<Map<string, number>> {
   const map = new Map<string, number>();
-  if (!locationId || productIds.length === 0) return map;
-  const rows = await tx.inventory.findMany({
-    where: { locationId, productId: { in: productIds } },
-    select: { productId: true, quantity: true },
+  if (productIds.length === 0) return map;
+  const rows = await tx.inventory.groupBy({
+    by: ["productId"],
+    where: { productId: { in: productIds } },
+    _sum: { quantity: true },
   });
-  for (const row of rows) map.set(row.productId, row.quantity);
+  for (const row of rows) map.set(row.productId, row._sum.quantity ?? 0);
   return map;
 }
