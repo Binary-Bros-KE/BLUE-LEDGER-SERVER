@@ -4,7 +4,8 @@ import type { Request } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { env } from "../env.js";
 import { resolveLiveStore } from "../middleware/shop-tenant.js";
-import { catalogQuerySchema, shopOrderCreateSchema } from "../schemas/shop.js";
+import { catalogQuerySchema, newsletterSignupSchema, shopOrderCreateSchema } from "../schemas/shop.js";
+import { withTenantContext } from "../lib/tenant-context.js";
 import { createOrder } from "../services/shop-order-service.js";
 import * as shopService from "../services/shop-service.js";
 
@@ -62,6 +63,16 @@ const orderLimiter = rateLimit({
 shopRouter.post("/orders", orderLimiter, async (req, res) => {
   const input = shopOrderCreateSchema.parse(req.body);
   res.status(201).json(await createOrder(req.shopContext!, input));
+});
+
+// Same per-shopper limit shape as orders — each sign-up is a row in a real shop's list.
+shopRouter.post("/newsletter", orderLimiter, async (req, res) => {
+  const { email } = newsletterSignupSchema.parse(req.body);
+  const tenantId = req.shopContext!.tenantId;
+  await withTenantContext(tenantId, (tx) =>
+    tx.webNewsletterSubscriber.upsert({ where: { tenantId_email: { tenantId, email } }, create: { tenantId, email }, update: {} }),
+  );
+  res.status(201).json({ ok: true });
 });
 
 shopRouter.get("/store", async (req, res) => {

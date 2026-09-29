@@ -238,6 +238,110 @@ const themeTrustItemSchema = z
   })
   .strict();
 
+// --- Adia-only page content (themeJson.adia) — mirrors NEXT/storefront templates/adia/content.ts.
+// Template-specific on purpose: only the Adia template reads it. Every text is optional (the
+// storefront falls back to Adia's defaults); lists replace wholesale.
+const t = (max: number) => z.string().trim().max(max).nullish();
+const url = t(2048);
+const adiaLinkSchema = z.object({ label: t(40), href: t(500) }).strict().nullish();
+const adiaRowSchema = z
+  .object({ enabled: z.boolean().nullish(), title: t(60), subtitle: t(120), categoryId: t(80), ctaLabel: t(30) })
+  .strict();
+const adiaPromoSchema = z
+  .object({
+    title: z.string().trim().min(1).max(60),
+    subtitle: t(120),
+    badge: t(40),
+    imageUrl: url,
+    cta: adiaLinkSchema,
+    tone: z.enum(["light", "dark", "brand"]).nullish(),
+  })
+  .strict();
+export const adiaThemeSchema = z
+  .object({
+    topStrip: z.object({ enabled: z.boolean().nullish(), label: t(40), highlight: t(60), cta: adiaLinkSchema }).strict().optional(),
+    socials: z
+      .object({ facebook: t(300), instagram: t(300), tiktok: t(300), youtube: t(300), x: t(300), whatsapp: t(300) })
+      .strict()
+      .optional(),
+    heroSlides: z
+      .array(
+        z
+          .object({
+            imageUrl: url,
+            eyebrow: t(40),
+            title: t(80),
+            subtitle: t(80),
+            body: t(200),
+            cta: adiaLinkSchema,
+            badgeLabel: t(20),
+            badgeValue: t(12),
+            note: t(80),
+          })
+          .strict(),
+      )
+      .max(5)
+      .optional(),
+    categories: z
+      .object({
+        enabled: z.boolean().nullish(),
+        title: t(60),
+        subtitle: t(120),
+        ctaLabel: t(30),
+        tiles: z.array(z.object({ categoryId: z.string().trim().min(1).max(80), title: t(40), subtitle: t(60), imageUrl: url }).strict()).max(6).optional(),
+      })
+      .strict()
+      .optional(),
+    bestSellers: adiaRowSchema.optional(),
+    promosA: z.array(adiaPromoSchema).max(3).optional(),
+    hotDeals: adiaRowSchema.extend({ endsAt: t(40) }).strict().optional(),
+    promosB: z.array(adiaPromoSchema).max(3).optional(),
+    latestArrivals: adiaRowSchema.optional(),
+    spaces: z
+      .object({
+        enabled: z.boolean().nullish(),
+        title: t(60),
+        subtitle: t(120),
+        items: z.array(z.object({ title: z.string().trim().min(1).max(40), subtitle: t(80), imageUrl: url, categoryId: t(80) }).strict()).max(4).optional(),
+      })
+      .strict()
+      .optional(),
+    topDeals: adiaRowSchema.optional(),
+    collections: z
+      .object({
+        enabled: z.boolean().nullish(),
+        title: t(60),
+        subtitle: t(120),
+        ctaLabel: t(30),
+        ctaHref: t(500),
+        items: z
+          .array(
+            z
+              .object({
+                title: z.string().trim().min(1).max(60),
+                subtitle: t(100),
+                badge: t(40),
+                priceText: t(30),
+                oldPriceText: t(30),
+                imageUrl: url,
+                cta: adiaLinkSchema,
+              })
+              .strict(),
+          )
+          .max(3)
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    brands: z.object({ enabled: z.boolean().nullish(), title: t(60), subtitle: t(120) }).strict().optional(),
+    newsletter: z
+      .object({ enabled: z.boolean().nullish(), title: t(60), body: t(160), placeholder: t(40), buttonLabel: t(20), whatsappLabel: t(40) })
+      .strict()
+      .optional(),
+    footer: z.object({ tagline: t(80), about: t(300) }).strict().optional(),
+  })
+  .strict();
+
 export const themeUpdateSchema = z
   .object({
     name: z.literal("trylist").optional(),
@@ -264,10 +368,12 @@ export const themeUpdateSchema = z
     // Lists replace wholesale (send the full list; [] = back to the template's defaults).
     brands: z.array(themeBrandLogoSchema).max(24).optional(),
     trustBar: z.array(themeTrustItemSchema).max(4).optional(),
+    /** Adia template's own page content (see adiaThemeSchema). */
+    adia: adiaThemeSchema.optional(),
   })
   .refine(
     (v) =>
-      ["name", "brand", "topBar", "contact", "hero", "story", "categoryImages", "headerImageUrl", "productSections", "dealTile", "tradeTile", "brands", "trustBar"].some(
+      ["name", "brand", "topBar", "contact", "hero", "story", "categoryImages", "headerImageUrl", "productSections", "dealTile", "tradeTile", "brands", "trustBar", "adia"].some(
         (k) => k in v,
       ),
     "Nothing to update",
@@ -335,6 +441,11 @@ export const shopOrderCreateSchema = z.object({
     )
     .min(1, "Your cart is empty")
     .max(100),
+});
+
+/** POST /shop/newsletter — the website's newsletter box. */
+export const newsletterSignupSchema = z.object({
+  email: z.string().trim().toLowerCase().email("Enter a valid email address").max(200),
 });
 
 export const orderListSchema = z.object({

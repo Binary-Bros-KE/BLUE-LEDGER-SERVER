@@ -1,6 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { requireDevice } from "../middleware/device-auth.js";
+import { withTenantContext } from "../lib/tenant-context.js";
 import {
   deliveryMethodCreateSchema,
   deliveryMethodDeleteSchema,
@@ -45,6 +46,15 @@ shopAdminRouter.use(limiter);
 shopAdminRouter.use(requireDevice);
 
 // --- Online orders inbox (POS "Online Orders") ---
+/** Newsletter sign-ups from the website, newest first (POS Online Store tab). */
+shopAdminRouter.post("/newsletter", async (req, res) => {
+  const tenantId = req.syncContext!.tenantId;
+  const rows = await withTenantContext(tenantId, (tx) =>
+    tx.webNewsletterSubscriber.findMany({ orderBy: { createdAt: "desc" }, take: 2000, select: { email: true, createdAt: true } }),
+  );
+  res.json(rows.map((r) => ({ email: r.email, createdAt: r.createdAt.toISOString() })));
+});
+
 shopAdminRouter.post("/orders", async (req, res) => {
   res.json(await orderService.listOrders(req.syncContext!.tenantId, orderListSchema.parse(req.body)));
 });

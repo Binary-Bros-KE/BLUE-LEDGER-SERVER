@@ -377,6 +377,19 @@ model WebDeliveryMethod {
 /// An order placed on the storefront — the POS "Online Orders" inbox. Cloud-only and RLS'd (like
 /// WebDeliveryMethod): the storefront writes it via POST /shop/orders; the POS reads it and moves its
 /// status via device-authed /shop-admin/orders/* while online. Deliberately NOT a synced entity and
+/// Storefront newsletter sign-ups ("Get the Latest Deals"). RLS-isolated per tenant; listed for the
+/// shop in the POS. Duplicate emails for a shop are ignored.
+model WebNewsletterSubscriber {
+  id        String   @id @default(uuid())
+  tenantId  String
+  email     String
+  createdAt DateTime @default(now())
+
+  @@unique([tenantId, email])
+  @@index([tenantId, createdAt])
+  @@map("web_newsletter_subscribers")
+}
+
 /// NOT a Sale: it deducts no stock and counts as no revenue until the shop acts on it. Prices/totals
 /// are computed server-side at order time and frozen here (the shopper saw these numbers).
 model OnlineOrder {
