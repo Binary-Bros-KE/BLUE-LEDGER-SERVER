@@ -321,7 +321,14 @@ export const shopOrderCreateSchema = z.object({
   deliveryMethodId: z.string().trim().max(64).nullish(),
   paymentMethod: z.enum(["pay_on_delivery"]).default("pay_on_delivery"),
   items: z
-    .array(z.object({ productId: z.string().trim().min(1).max(64), qty: z.number().int().min(1).max(999) }))
+    .array(
+      z.object({
+        productId: z.string().trim().min(1).max(64),
+        /** a shared-stock variant's key (lib/variants.ts) — priced + validated server-side */
+        variantKey: z.string().trim().min(1).max(40).nullish(),
+        qty: z.number().int().min(1).max(999),
+      }),
+    )
     .min(1, "Your cart is empty")
     .max(100),
 });

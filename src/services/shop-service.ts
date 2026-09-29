@@ -5,6 +5,14 @@ import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import type { ShopContext } from "../middleware/shop-tenant.js";
 import type { CatalogQuery } from "../schemas/shop.js";
+import {
+  activeSharedVariants,
+  parseVariantConfig,
+  parseVariantOptions,
+  sharedVariantPrice,
+  variantLabel,
+  type VariantOption,
+} from "../lib/variants.js";
 
 // --- Public shapes (what the storefront receives; deliberately a curated subset of the Product
 //     row — no cost prices, no supplier data, no local-sourcing flags). ---
@@ -44,6 +52,34 @@ export type CatalogItem = {
   brand: string | null;
   /** online "was" price — only set when it's genuinely above priceCents (a real saving) */
   compareAtPriceCents: number | null;
+  /** Set when the product has variants (lib/variants.ts): how many, and the price range across
+   * them — cards show "From …" and send the shopper to the product page to choose. */
+  variantSummary: { count: number; minPriceCents: number; maxPriceCents: number } | null;
+  /** Product page only (null in listings): every variant with its own price and stock. */
+  variants: ShopVariants | null;
+};
+
+export type ShopVariant = {
+  /** shared stock: the variant's key · separate stock: the variant product's id */
+  key: string;
+  /** the product to order — the same product for shared stock, the variant's own for separate */
+  productId: string;
+  /** what the cart line is called: the product's name (shared) or the variant product's own name */
+  name: string;
+  label: string;
+  values: Record<string, string>;
+  priceCents: number;
+  compareAtPriceCents: number | null;
+  stock: StockBadge;
+};
+
+export type ShopVariants = {
+  mode: "shared" | "separate";
+  title: string | null;
+  options: VariantOption[];
+  /** separate stock: the variant this page is (its product id) · shared: null (shopper picks) */
+  selectedKey: string | null;
+  variants: ShopVariant[];
 };
 
 export type ShopCategory = { id: string; name: string; count: number };
@@ -117,7 +153,21 @@ function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string
       row.onlineCompareAtPriceCents && row.onlineCompareAtPriceCents > (row.onlinePriceCents ?? row.sellingPriceCents)
         ? row.onlineCompareAtPriceCents
         : null,
+    variantSummary: null,
+    variants: null,
   };
+}
+
+/** Only the option values some variant actually has, in the option's own order — so the website
+ * never offers a value nothing can be bought in. */
+function usedOptions(options: VariantOption[], variants: Array<{ values: Record<string, string> }>): VariantOption[] {
+  return options
+    .map((o) => ({ name: o.name, values: o.values.filter((v) => variants.some((x) => x.values[o.name] === v)) }))
+    .filter((o) => o.values.length > 0);
+}
+
+function summaryOf(prices: number[]): { count: number; minPriceCents: number; maxPriceCents: number } {
+  return { count: prices.length, minPriceCents: Math.min(...prices), maxPriceCents: Math.max(...prices) };
 }
 
 /** id → name for the given category ids, in one query. */
@@ -204,18 +254,59 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
     // sort or range-filter on. So: one light pass over the matching set (id + the fields that order
     // it; the public catalog is small), sort/filter here, then load full rows for just this page.
     // Rows come back name-ordered by the DB, so "featured" keeps exactly the order it always had.
-    const lite = (
+    const liteRows = (
       await tx.product.findMany({
         where,
         orderBy: { name: "asc" },
-        select: { id: true, onlinePriceCents: true, sellingPriceCents: true, localCreatedAt: true, brand: true },
+        select: {
+          id: true,
+          onlinePriceCents: true,
+          sellingPriceCents: true,
+          localCreatedAt: true,
+          brand: true,
+          variantGroupId: true,
+          variantConfigJson: true,
+        },
       })
-    ).map((r) => ({
-      id: r.id,
-      price: r.onlinePriceCents ?? r.sellingPriceCents,
-      created: r.localCreatedAt.getTime(),
-      brand: r.brand?.trim() || null,
-    }));
+    ).map((r) => {
+      // A shared-stock product is priced by its cheapest variant ("From …"); its range is kept.
+      const shopper = r.onlinePriceCents ?? r.sellingPriceCents;
+      const shared = activeSharedVariants(parseVariantConfig(r.variantConfigJson));
+      const prices = shared.length ? shared.map((v) => sharedVariantPrice(v, shopper)) : [shopper];
+      return {
+        id: r.id,
+        groupId: r.variantGroupId,
+        prices,
+        variantCount: shared.length,
+        created: r.localCreatedAt.getTime(),
+        brand: r.brand?.trim() || null,
+      };
+    });
+
+    // Separate-stock variant groups show as ONE card: the group's main product when it's in this
+    // set, else its first member; priced by the cheapest member. (Groups are formed within the
+    // filtered set, so a search for one size still finds the group.)
+    const members = new Map<string, typeof liteRows>();
+    for (const r of liteRows) {
+      if (r.groupId) members.set(r.groupId, [...(members.get(r.groupId) ?? []), r]);
+    }
+    const summaryById = new Map<string, { count: number; minPriceCents: number; maxPriceCents: number }>();
+    const shown = new Set<string>();
+    const lite: Array<{ id: string; price: number; created: number; brand: string | null }> = [];
+    for (const r of liteRows) {
+      const group = r.groupId ? (members.get(r.groupId) ?? []) : [];
+      if (group.length < 2) {
+        if (r.variantCount > 0) summaryById.set(r.id, { ...summaryOf(r.prices), count: r.variantCount });
+        lite.push({ id: r.id, price: Math.min(...r.prices), created: r.created, brand: r.brand });
+        continue;
+      }
+      if (shown.has(r.groupId!)) continue;
+      shown.add(r.groupId!);
+      const rep = group.find((m) => m.id === r.groupId) ?? group[0]!;
+      const prices = group.flatMap((m) => m.prices);
+      summaryById.set(rep.id, { ...summaryOf(prices), count: group.length });
+      lite.push({ id: rep.id, price: Math.min(...prices), created: Math.max(...group.map((m) => m.created)), brand: rep.brand });
+    }
 
     // Bounds BEFORE the price filter, so a price slider's range doesn't collapse onto the selection.
     const priceRange = lite.length
@@ -266,9 +357,10 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
       total,
       priceRange,
       brands,
-      products: rows.map((r) =>
-        toCatalogItem(r, stockByProduct.get(r.id) ?? null, r.categoryId ? (names.get(r.categoryId) ?? null) : null),
-      ),
+      products: rows.map((r) => ({
+        ...toCatalogItem(r, stockByProduct.get(r.id) ?? null, r.categoryId ? (names.get(r.categoryId) ?? null) : null),
+        variantSummary: summaryById.get(r.id) ?? null,
+      })),
     };
   });
 }
@@ -285,11 +377,87 @@ export async function getProductDetail(ctx: ShopContext, productId: string) {
       readStock(tx, ctx.store.fulfilmentLocationId, [row.id]),
       categoryNames(tx, [row.categoryId ?? ""]),
     ]);
-    return toCatalogItem(
+    const item = toCatalogItem(
       row,
       stockByProduct.get(row.id) ?? null,
       row.categoryId ? (names.get(row.categoryId) ?? null) : null,
     );
+
+    // Shared stock: the variants live on this product.
+    const config = parseVariantConfig(row.variantConfigJson);
+    const shared = activeSharedVariants(config);
+    if (config && shared.length > 0) {
+      const variants: ShopVariant[] = shared.map((v) => ({
+        key: v.key,
+        productId: row.id,
+        name: row.name,
+        label: variantLabel(config.options, v.values),
+        values: v.values,
+        priceCents: sharedVariantPrice(v, item.priceCents),
+        compareAtPriceCents: null,
+        stock: item.stock,
+      }));
+      item.variants = { mode: "shared", title: config.title, options: usedOptions(config.options, variants), selectedKey: null, variants };
+      item.variantSummary = summaryOf(variants.map((v) => v.priceCents));
+      return item;
+    }
+
+    // Separate stock: every published product of this product's group, this one selected.
+    if (row.variantGroupId) {
+      const group = await tx.product.findMany({
+        where: { variantGroupId: row.variantGroupId, publishedOnline: true, status: "active" },
+        orderBy: { name: "asc" },
+      });
+      if (group.length >= 2) {
+        const main =
+          group.find((m) => m.id === row.variantGroupId) ??
+          (await tx.product.findFirst({ where: { id: row.variantGroupId }, select: { variantConfigJson: true } }));
+        const mainConfig = parseVariantConfig(main?.variantConfigJson ?? null);
+        const stock = await readStock(tx, ctx.store.fulfilmentLocationId, group.map((m) => m.id));
+        const withValues = group.map((m) => ({ m, values: parseVariantOptions(m.variantOptionsJson) }));
+        // options from the main product's config; if it's missing, whatever option names the members carry
+        const options: VariantOption[] =
+          mainConfig?.options ??
+          [...new Set(withValues.flatMap((x) => Object.keys(x.values)))].map((name) => ({
+            name,
+            values: [...new Set(withValues.map((x) => x.values[name]).filter((v): v is string => Boolean(v)))],
+          }));
+        const rank = (values: Record<string, string>): number[] =>
+          options.map((o) => {
+            const i = o.values.indexOf(values[o.name] ?? "");
+            return i < 0 ? 999 : i;
+          });
+        const variants: ShopVariant[] = withValues
+          .map(({ m, values }) => {
+            const own = toCatalogItem(m, stock.get(m.id) ?? null, null);
+            return {
+              key: m.id,
+              productId: m.id,
+              name: m.name,
+              label: variantLabel(options, values) || m.name,
+              values,
+              priceCents: own.priceCents,
+              compareAtPriceCents: own.compareAtPriceCents,
+              stock: own.stock,
+            };
+          })
+          .sort((a, b) => {
+            const ra = rank(a.values);
+            const rb = rank(b.values);
+            for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i]! - rb[i]!;
+            return 0;
+          });
+        item.variants = {
+          mode: "separate",
+          title: mainConfig?.title ?? null,
+          options: usedOptions(options, variants),
+          selectedKey: row.id,
+          variants,
+        };
+        item.variantSummary = summaryOf(variants.map((v) => v.priceCents));
+      }
+    }
+    return item;
   });
 }
 

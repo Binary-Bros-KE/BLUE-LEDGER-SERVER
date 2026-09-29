@@ -3,6 +3,7 @@ import { HttpError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import type { ShopContext } from "../middleware/shop-tenant.js";
 import type { OrderLinkSaleInput, OrderListInput, OrderStatusInput, ShopOrderCreateInput } from "../schemas/shop.js";
+import { activeSharedVariants, parseVariantConfig, sharedVariantPrice, variantLabel } from "../lib/variants.js";
 
 /**
  * Storefront orders → the POS "Online Orders" inbox (model OnlineOrder).
@@ -14,6 +15,10 @@ import type { OrderLinkSaleInput, OrderListInput, OrderStatusInput, ShopOrderCre
 
 export type OnlineOrderItem = {
   productId: string;
+  /** shared-stock variant (lib/variants.ts) — the POS rings it up as that variant. Absent on older orders. */
+  variantKey?: string | null;
+  variantLabel?: string | null;
+  /** "Travel Mug — Red" for a variant line */
   name: string;
   unitPriceCents: number;
   qty: number;
@@ -84,23 +89,52 @@ export async function createOrder(
   ctx: ShopContext,
   input: ShopOrderCreateInput,
 ): Promise<{ orderNumber: string; totalCents: number; subtotalCents: number; deliveryFeeCents: number; currency: string; items: OnlineOrderItem[] }> {
-  // Merge duplicate lines for the same product (a tampered cart could repeat an id).
-  const qtyById = new Map<string, number>();
-  for (const it of input.items) qtyById.set(it.productId, Math.min(999, (qtyById.get(it.productId) ?? 0) + it.qty));
+  // Merge duplicate lines for the same product + variant (a tampered cart could repeat one).
+  const lines = new Map<string, { productId: string; variantKey: string | null; qty: number }>();
+  for (const it of input.items) {
+    const variantKey = it.variantKey ?? null;
+    const key = `${it.productId}|${variantKey ?? ""}`;
+    const prev = lines.get(key);
+    lines.set(key, { productId: it.productId, variantKey, qty: Math.min(999, (prev?.qty ?? 0) + it.qty) });
+  }
+  const productIds = [...new Set([...lines.values()].map((l) => l.productId))];
 
   return withTenantContext(ctx.tenantId, async (tx) => {
     const products = await tx.product.findMany({
-      where: { id: { in: [...qtyById.keys()] }, publishedOnline: true, status: "active" },
-      select: { id: true, name: true, onlinePriceCents: true, sellingPriceCents: true },
+      where: { id: { in: productIds }, publishedOnline: true, status: "active" },
+      select: { id: true, name: true, onlinePriceCents: true, sellingPriceCents: true, variantConfigJson: true },
     });
-    if (products.length !== qtyById.size) {
+    if (products.length !== productIds.length) {
       throw new HttpError(409, "Some items in your cart are no longer available. Please review your cart and try again.");
     }
+    const byId = new Map(products.map((p) => [p.id, p]));
 
-    const items: OnlineOrderItem[] = products.map((p) => {
-      const qty = qtyById.get(p.id)!;
-      const unit = p.onlinePriceCents ?? p.sellingPriceCents;
-      return { productId: p.id, name: p.name, unitPriceCents: unit, qty, lineTotalCents: unit * qty };
+    const items: OnlineOrderItem[] = [...lines.values()].map((line) => {
+      const p = byId.get(line.productId)!;
+      const shopper = p.onlinePriceCents ?? p.sellingPriceCents;
+      const config = parseVariantConfig(p.variantConfigJson);
+      const shared = activeSharedVariants(config);
+      if (!line.variantKey) {
+        if (shared.length > 0) {
+          throw new HttpError(409, `Please choose an option for "${p.name}" — open it from your cart and pick one.`);
+        }
+        return { productId: p.id, name: p.name, unitPriceCents: shopper, qty: line.qty, lineTotalCents: shopper * line.qty };
+      }
+      const variant = shared.find((v) => v.key === line.variantKey);
+      if (!variant || !config) {
+        throw new HttpError(409, `An option you chose for "${p.name}" is no longer available. Please review your cart.`);
+      }
+      const unit = sharedVariantPrice(variant, shopper);
+      const label = variantLabel(config.options, variant.values);
+      return {
+        productId: p.id,
+        variantKey: variant.key,
+        variantLabel: label,
+        name: `${p.name} — ${label}`,
+        unitPriceCents: unit,
+        qty: line.qty,
+        lineTotalCents: unit * line.qty,
+      };
     });
     const subtotalCents = items.reduce((s, i) => s + i.lineTotalCents, 0);
 
