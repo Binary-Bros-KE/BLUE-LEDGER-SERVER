@@ -397,8 +397,11 @@ model OnlineOrder {
   deliveryMethodId   String?
   deliveryMethodName String?
   deliveryFeeCents   Int     @default(0)
-  /// What the shopper chose, e.g. "pay_on_delivery". No online payment is taken yet.
-  paymentMethod      String  @default("pay_on_delivery")
+  /// "to_be_arranged": no payment is taken online — the shop and customer agree payment after the
+  /// order arrives. (Orders placed before 2026-09-30 say "pay_on_delivery".)
+  paymentMethod      String  @default("to_be_arranged")
+  /// "pickup" (customer collects from the shop — no address, no delivery fee) or "delivery".
+  deliveryType       String  @default("delivery")
 
   /// [{ productId, name, unitPriceCents, qty, lineTotalCents }] — frozen at order time.
   itemsJson     Json

@@ -319,7 +319,11 @@ export const shopOrderCreateSchema = z.object({
   deliveryAddress: z.string().trim().max(500).nullish(),
   notes: z.string().trim().max(1000).nullish(),
   deliveryMethodId: z.string().trim().max(64).nullish(),
-  paymentMethod: z.enum(["pay_on_delivery"]).default("pay_on_delivery"),
+  /** Accepted for older storefront builds; every order is stored as "to_be_arranged" — payment is
+   * agreed between the shop and the customer after the order arrives, never chosen online. */
+  paymentMethod: z.enum(["to_be_arranged", "pay_on_delivery"]).optional(),
+  /** Customer collects from the shop, or wants it delivered (address required then). */
+  deliveryType: z.enum(["pickup", "delivery"]).default("delivery"),
   items: z
     .array(
       z.object({

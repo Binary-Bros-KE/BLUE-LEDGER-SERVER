@@ -37,6 +37,8 @@ export type OnlineOrderView = {
   deliveryMethodName: string | null;
   deliveryFeeCents: number;
   paymentMethod: string;
+  /** "pickup" | "delivery" */
+  deliveryType: string;
   items: OnlineOrderItem[];
   subtotalCents: number;
   totalCents: number;
@@ -70,6 +72,7 @@ function toView(r: OrderRow): OnlineOrderView {
     deliveryMethodName: r.deliveryMethodName,
     deliveryFeeCents: r.deliveryFeeCents,
     paymentMethod: r.paymentMethod,
+    deliveryType: r.deliveryType,
     items: (Array.isArray(r.itemsJson) ? r.itemsJson : []) as OnlineOrderItem[],
     subtotalCents: r.subtotalCents,
     totalCents: r.totalCents,
@@ -88,7 +91,7 @@ function toView(r: OrderRow): OnlineOrderView {
 export async function createOrder(
   ctx: ShopContext,
   input: ShopOrderCreateInput,
-): Promise<{ orderNumber: string; totalCents: number; subtotalCents: number; deliveryFeeCents: number; currency: string; items: OnlineOrderItem[] }> {
+): Promise<{ orderNumber: string; totalCents: number; subtotalCents: number; deliveryFeeCents: number; deliveryType: string; currency: string; items: OnlineOrderItem[] }> {
   // Merge duplicate lines for the same product + variant (a tampered cart could repeat one).
   const lines = new Map<string, { productId: string; variantKey: string | null; qty: number }>();
   for (const it of input.items) {
@@ -141,8 +144,14 @@ export async function createOrder(
     let deliveryMethodId: string | null = null;
     let deliveryMethodName: string | null = null;
     let deliveryFeeCents = 0;
-    const activeMethods = await tx.webDeliveryMethod.count({ where: { active: true } });
-    if (input.deliveryMethodId) {
+    const pickup = input.deliveryType === "pickup";
+    if (!pickup && !input.deliveryAddress?.trim()) {
+      throw new HttpError(400, "Please enter your delivery address, or choose to pick up from the shop.");
+    }
+    const activeMethods = pickup ? 0 : await tx.webDeliveryMethod.count({ where: { active: true } });
+    if (pickup) {
+      // collected from the shop — no delivery option, no fee
+    } else if (input.deliveryMethodId) {
       const m = await tx.webDeliveryMethod.findFirst({ where: { id: input.deliveryMethodId, active: true } });
       if (!m) throw new HttpError(409, "That delivery option is no longer available. Please choose another.");
       deliveryMethodId = m.id;
@@ -157,12 +166,13 @@ export async function createOrder(
       customerName: input.customerName,
       customerPhone: input.customerPhone,
       customerEmail: input.customerEmail || null,
-      deliveryAddress: input.deliveryAddress || null,
+      deliveryAddress: pickup ? null : input.deliveryAddress || null,
       notes: input.notes || null,
       deliveryMethodId,
       deliveryMethodName,
       deliveryFeeCents,
-      paymentMethod: input.paymentMethod,
+      paymentMethod: "to_be_arranged",
+      deliveryType: pickup ? "pickup" : "delivery",
       itemsJson: items as unknown as Prisma.InputJsonValue,
       subtotalCents,
       totalCents: subtotalCents + deliveryFeeCents,
@@ -182,6 +192,7 @@ export async function createOrder(
       totalCents: row.totalCents,
       subtotalCents: row.subtotalCents,
       deliveryFeeCents: row.deliveryFeeCents,
+      deliveryType: row.deliveryType,
       currency: row.currency,
       items,
     };
