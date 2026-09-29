@@ -277,6 +277,11 @@ export type MobileReturnableItem = {
  * mobile-invoices-service.ts's getInvoiceEditData already established. Receipts only (an invoice
  * has its own separate Request Cancellation flow on both DESKTOP and mobile instead) — the caller
  * decides whether to show the button; this function itself works for any completed sale. */
+/** "Travel Mug — Red" for a shared-stock variant line (DESKTOP v99 / mobile items carry variantLabel). */
+function withVariantLabel(name: string, label: string | null | undefined): string {
+  return label ? `${name} — ${label}` : name;
+}
+
 export async function getSaleReturnableItems(tenantId: string, saleId: string): Promise<MobileReturnableItem[]> {
   return withTenantContext(tenantId, async (tx) => {
     const sale = await tx.sale.findUnique({ where: { id: saleId } });
@@ -301,7 +306,7 @@ export async function getSaleReturnableItems(tenantId: string, saleId: string): 
       return {
         saleItemId: item.id,
         productId: item.productId,
-        productName: productNameById.get(item.productId) ?? "Unknown product",
+        productName: withVariantLabel(productNameById.get(item.productId) ?? "Unknown product", (item as { variantLabel?: string | null }).variantLabel),
         quantitySold: item.quantity,
         alreadyReturnedQuantity,
         remainingQuantity: Math.max(0, item.quantity - alreadyReturnedQuantity),

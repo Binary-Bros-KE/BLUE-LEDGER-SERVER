@@ -85,6 +85,11 @@ export const mobileCheckoutItemSchema = z.object({
   isLocallySourced: z.boolean().optional().default(false),
   localCostCents: z.coerce.number().int().min(0).optional(),
   localSupplierId: z.string().trim().min(1).optional(),
+  /** Shared-stock variant (lib/variants.ts) — prepareMobileCart validates + prices it. */
+  variantKey: z.string().trim().min(1).max(40).nullish(),
+  /** DESKTOP invoice/quotation section ("Lighting") — carried through so editing a desktop-made
+   * document on the phone keeps its sections. The app never creates one itself. */
+  sectionLabel: z.string().trim().max(120).nullish(),
 });
 
 /** A named custom fee (e.g. "Labour", "Installation") — unlimited per document. costCents is

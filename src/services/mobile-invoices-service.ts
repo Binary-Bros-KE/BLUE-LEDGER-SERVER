@@ -242,6 +242,11 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
 
 export type MobileEditableItem = {
   productId: string;
+  /** shared-stock variant + its name (lib/variants.ts) — kept when the document is edited */
+  variantKey?: string | null;
+  variantLabel?: string | null;
+  /** DESKTOP section, carried through */
+  sectionLabel?: string | null;
   quantity: number;
   unitPriceCents: number;
   discountAmountCents: number;
@@ -307,6 +312,9 @@ export async function getInvoiceEditData(tenantId: string, id: string): Promise<
         isLocallySourced: item.isLocallySourced,
         localCostCents: item.localCostCents,
         localSupplierId: item.localSupplierId,
+        variantKey: item.variantKey ?? null,
+        variantLabel: item.variantLabel ?? null,
+        sectionLabel: item.sectionLabel ?? null,
       })),
       delivery: delivery
         ? {
@@ -525,6 +533,8 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
         isLocallySourced: boolean;
         localCostCents: number | null;
         localSupplierId: string | null;
+        variantKey?: string | null;
+        sectionLabel?: string | null;
       }>;
       const originalServiceCharges = original.serviceCharges as unknown as MobileServiceChargeInput[];
 
@@ -546,6 +556,8 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
           isLocallySourced: item.isLocallySourced,
           localCostCents: item.localCostCents ?? undefined,
           localSupplierId: item.localSupplierId ?? undefined,
+          variantKey: item.variantKey ?? null,
+          sectionLabel: item.sectionLabel ?? null,
         })),
         initialPayment: null,
         serviceCharges: originalServiceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),

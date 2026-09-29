@@ -1,3 +1,4 @@
+import { activeSharedVariants, parseVariantConfig, parseVariantOptions, variantLabel, type VariantOption } from "../lib/variants.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { isStorefrontLocationType } from "./mobile-sales-service.js";
@@ -47,6 +48,21 @@ export type MobileProductListItem = {
   totalQuantity: number;
   lowStock: boolean;
   outOfStock: boolean;
+  /** Variants (lib/variants.ts) — null when the product has none. The app's picker reads this. */
+  variants: MobileProductVariants | null;
+};
+
+export type MobileProductVariants = {
+  mode: "shared" | "separate";
+  /** separate stock: the group every sibling shares (the main product's id) */
+  groupId: string | null;
+  title: string | null;
+  options: VariantOption[];
+  /** shared stock: the sellable variants (priceCents null = the product's own price) */
+  shared: Array<{ key: string; values: Record<string, string>; label: string; priceCents: number | null }>;
+  /** separate stock: this product's own option values + label ("XL") */
+  values: Record<string, string>;
+  label: string | null;
 };
 
 /**
@@ -75,6 +91,9 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
           minimumPriceCents: true,
           wholesalePriceCents: true,
           wholesaleMinQuantity: true,
+          variantGroupId: true,
+          variantOptionsJson: true,
+          variantConfigJson: true,
         },
         orderBy: { name: "asc" },
       }),
@@ -84,6 +103,38 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
     ]);
 
     const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
+    // separate-stock groups: the options live on the group's main product
+    const configById = new Map(products.map((p) => [p.id, parseVariantConfig(p.variantConfigJson)]));
+    const missingMainIds = [
+      ...new Set(products.map((p) => p.variantGroupId).filter((id): id is string => Boolean(id) && !configById.has(id as string))),
+    ];
+    if (missingMainIds.length > 0) {
+      for (const main of await tx.product.findMany({ where: { id: { in: missingMainIds } }, select: { id: true, variantConfigJson: true } })) {
+        configById.set(main.id, parseVariantConfig(main.variantConfigJson));
+      }
+    }
+    const variantsOf = (product: (typeof products)[number]): MobileProductVariants | null => {
+      const own = configById.get(product.id) ?? null;
+      const shared = activeSharedVariants(own);
+      if (own && shared.length > 0) {
+        return {
+          mode: "shared",
+          groupId: null,
+          title: own.title,
+          options: own.options,
+          shared: shared.map((v) => ({ key: v.key, values: v.values, label: variantLabel(own.options, v.values), priceCents: v.priceCents })),
+          values: {},
+          label: null,
+        };
+      }
+      if (product.variantGroupId) {
+        const main = configById.get(product.variantGroupId) ?? null;
+        const values = parseVariantOptions(product.variantOptionsJson);
+        const options = main?.options ?? Object.keys(values).map((name) => ({ name, values: [values[name]!] }));
+        return { mode: "separate", groupId: product.variantGroupId, title: main?.title ?? null, options, shared: [], values, label: variantLabel(options, values) || null };
+      }
+      return null;
+    };
     // Mirrors DESKTOP's own findMainStoreLocationRow — only "distribution_center" is actually used at
     // runtime there, even though "warehouse" is reserved in the type options too.
     const mainStoreLocationId = locations.find((l) => l.locationType === "distribution_center")?.id ?? null;
@@ -127,6 +178,7 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         totalQuantity,
         lowStock: totalQuantity > 0 && product.reorderLevel > 0 && totalQuantity < product.reorderLevel,
         outOfStock: totalQuantity <= 0,
+        variants: variantsOf(product),
       };
     });
   });

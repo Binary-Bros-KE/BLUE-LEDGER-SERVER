@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "./http-error.js";
 import { computeLineTax, resolveProductTaxConfig, type TenantTaxConfig } from "./tax-breakdown.js";
+import { activeSharedVariants, parseVariantConfig, variantLabel } from "./variants.js";
 
 export type MobileServiceChargeInput = { name: string; feeCents: number; costCents: number };
 
@@ -32,6 +33,8 @@ export type MobileCartItemInput = {
   isLocallySourced?: boolean;
   localCostCents?: number;
   localSupplierId?: string;
+  variantKey?: string | null | undefined;
+  sectionLabel?: string | null | undefined;
 };
 
 export type PreparedMobileCartItem = {
@@ -46,6 +49,12 @@ export type PreparedMobileCartItem = {
   isLocallySourced: boolean;
   localCostCents: number | null;
   localSupplierId: string | null;
+  /** shared-stock variant sold on this line + its name snapshot ("Red / XL") — the same keys
+   * DESKTOP's sale_items/quotation_items carry (migration v99), so a pull lands them there */
+  variantKey: string | null;
+  variantLabel: string | null;
+  /** DESKTOP's per-line section, carried through unchanged */
+  sectionLabel: string | null;
   createdAt: string;
 };
 
@@ -122,6 +131,9 @@ export async function prepareMobileCart(
   const preparedItems: PreparedMobileCartItem[] = [];
   const stockMovementRows: Array<{ id: string; productId: string; quantityChange: number }> = [];
   const now = new Date();
+  // Stock is checked against everything requested of a product so far, not line by line — two
+  // lines of the same product (e.g. two colours of a shared-stock product) draw from ONE balance.
+  const requestedByProduct = new Map<string, number>();
 
   for (const item of items) {
     const product = productById.get(item.productId);
@@ -133,7 +145,19 @@ export async function prepareMobileCart(
     // quantity threshold swaps the natural (no-override) price to the wholesale rate. An explicit
     // cashier override still wins over either.
     const useWholesale = product.wholesalePriceCents !== null && product.wholesaleMinQuantity > 0 && item.quantity >= product.wholesaleMinQuantity;
-    const unitPriceCents = item.unitPriceCents ?? (useWholesale ? (product.wholesalePriceCents as number) : product.sellingPriceCents);
+    // Shared-stock variant: its own price (when set) replaces the selling price as the natural
+    // price, exactly like DESKTOP's prepareCart; an override or wholesale still applies the same way.
+    let variant: { key: string; label: string; priceCents: number | null } | null = null;
+    if (item.variantKey) {
+      const config = parseVariantConfig(product.variantConfigJson);
+      const found = activeSharedVariants(config).find((v) => v.key === item.variantKey);
+      if (!config || !found) {
+        throw new HttpError(400, `The chosen option of "${product.name}" is no longer available — remove the line and add it again`);
+      }
+      variant = { key: found.key, label: variantLabel(config.options, found.values), priceCents: found.priceCents };
+    }
+    const unitPriceCents =
+      item.unitPriceCents ?? (useWholesale ? (product.wholesalePriceCents as number) : (variant?.priceCents ?? product.sellingPriceCents));
     if (product.minimumPriceCents !== null && unitPriceCents < product.minimumPriceCents) {
       throw new HttpError(400, `Price for "${product.name}" can't be below its minimum price of ${(product.minimumPriceCents / 100).toFixed(2)}`);
     }
@@ -148,7 +172,9 @@ export async function prepareMobileCart(
 
     if (options.checkStock && product.trackStock && !item.isLocallySourced) {
       const available = stockByProduct.get(product.id) ?? 0;
-      if (available - item.quantity < 0 && !product.allowNegativeStock) {
+      const requested = (requestedByProduct.get(product.id) ?? 0) + item.quantity;
+      requestedByProduct.set(product.id, requested);
+      if (available - requested < 0 && !product.allowNegativeStock) {
         throw new HttpError(400, `"${product.name}" doesn't have enough stock (${available} available)`);
       }
     }
@@ -173,6 +199,9 @@ export async function prepareMobileCart(
       isLocallySourced: item.isLocallySourced ?? false,
       localCostCents: item.isLocallySourced ? (item.localCostCents ?? null) : null,
       localSupplierId: item.isLocallySourced ? (item.localSupplierId ?? null) : null,
+      variantKey: variant?.key ?? null,
+      variantLabel: variant?.label ?? null,
+      sectionLabel: item.sectionLabel ?? null,
       createdAt: now.toISOString(),
     });
 

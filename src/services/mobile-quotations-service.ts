@@ -227,6 +227,9 @@ export async function getQuotationEditData(tenantId: string, id: string): Promis
         isLocallySourced: item.isLocallySourced,
         localCostCents: item.localCostCents,
         localSupplierId: item.localSupplierId,
+        variantKey: item.variantKey ?? null,
+        variantLabel: item.variantLabel ?? null,
+        sectionLabel: item.sectionLabel ?? null,
       })),
       delivery: delivery
         ? {
@@ -391,7 +394,7 @@ export async function checkQuotationStock(tenantId: string, id: string): Promise
     const row = await tx.quotation.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
 
-    const items = row.items as unknown as Array<{ productId: string; quantity: number; isLocallySourced: boolean }>;
+    const items = row.items as unknown as Array<{ productId: string; quantity: number; isLocallySourced: boolean; variantLabel?: string | null }>;
     const trackedItems = items.filter((item) => !item.isLocallySourced);
     if (trackedItems.length === 0) return [];
 
@@ -411,7 +414,9 @@ export async function checkQuotationStock(tenantId: string, id: string): Promise
       const availableQuantity = stockByProduct.get(item.productId) ?? 0;
       return {
         productId: item.productId,
-        productName: productNameById.get(item.productId) ?? "—",
+        productName: item.variantLabel
+          ? `${productNameById.get(item.productId) ?? "—"} — ${item.variantLabel}`
+          : (productNameById.get(item.productId) ?? "—"),
         requestedQuantity: item.quantity,
         availableQuantity,
         sufficient: availableQuantity >= item.quantity,
@@ -433,6 +438,8 @@ function buildConversionItems(
     isLocallySourced: boolean;
     localCostCents: number | null;
     localSupplierId: string | null;
+    variantKey?: string | null;
+    sectionLabel?: string | null;
   }>,
   quantityOverrides: Array<{ productId: string; quantity: number }>,
 ): MobileCartItemInput[] {
@@ -449,6 +456,8 @@ function buildConversionItems(
       isLocallySourced: item.isLocallySourced,
       localCostCents: item.localCostCents ?? undefined,
       localSupplierId: item.localSupplierId ?? undefined,
+      variantKey: item.variantKey ?? null,
+      sectionLabel: item.sectionLabel ?? null,
     };
   });
 }
