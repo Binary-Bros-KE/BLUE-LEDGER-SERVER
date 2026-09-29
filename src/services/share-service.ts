@@ -99,6 +99,11 @@ async function buildShareable(
 // render the public page) — one source of truth, so the two can never disagree on the numbers.
 // ---------------------------------------------------------------------------------------------
 
+/** "Travel Mug — Red" for a shared-stock variant line; the plain name otherwise. */
+function withVariant(name: string, variantLabel: string | null | undefined): string {
+  return variantLabel ? `${name} — ${variantLabel}` : name;
+}
+
 export type PricedDocumentKind = "receipt" | "invoice" | "quotation";
 
 export type SharedLineItem = {
@@ -278,6 +283,8 @@ type RawItem = {
   taxAmountCents: number;
   lineTotalCents: number;
   sectionLabel?: string | null;
+  /** DESKTOP v99+: a shared-stock variant's name snapshot ("Red / XL") — appended to the product name. */
+  variantLabel?: string | null;
 };
 // Client request: a service charge can now carry its own tax classification (see DESKTOP's
 // shared/schemas/charges.ts ServiceChargeTaxType) — taxType/taxInclusive are optional here because
@@ -498,7 +505,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         hasDeliveryNote: sale.delivery !== null,
         deliveryIsDelivered: (sale.delivery as RawDelivery)?.isDelivered ?? null,
         items: items.map((item) => ({
-          name: productById.get(item.productId)?.name ?? "Unknown product",
+          name: withVariant(productById.get(item.productId)?.name ?? "Unknown product", item.variantLabel),
           sku: productById.get(item.productId)?.sku ?? null,
           quantity: item.quantity,
           unitPriceCents: item.unitPriceCents,
@@ -574,7 +581,7 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       hasDeliveryNote: quotation.delivery !== null,
       deliveryIsDelivered: (quotation.delivery as RawDelivery)?.isDelivered ?? null,
       items: items.map((item) => ({
-        name: productById.get(item.productId)?.name ?? "Unknown product",
+        name: withVariant(productById.get(item.productId)?.name ?? "Unknown product", item.variantLabel),
         sku: productById.get(item.productId)?.sku ?? null,
         quantity: item.quantity,
         unitPriceCents: item.unitPriceCents,
