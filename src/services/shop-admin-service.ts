@@ -13,6 +13,14 @@ import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import type { ShopDomainInput, ShopProvisionInput, ShopUpdateInput } from "../schemas/shop.js";
 
+/** A custom domain and its www twin — both go on Netlify (and its certificate), and both serve the
+ * store (middleware/shop-tenant.ts strips "www."). Preview subdomains never get a www. */
+function customHosts(domain: string | null | undefined): string[] {
+  if (!domain) return [];
+  const bare = domain.toLowerCase().replace(/^www./, "");
+  return [bare, `www.${bare}`];
+}
+
 // The dashboard's "Online Store" panel reads this whole thing, and every mutation returns a fresh
 // copy so the panel can re-render off one response.
 export type ShopOverview = {
@@ -131,7 +139,7 @@ export async function provisionStore(tenantId: string, input: ShopProvisionInput
     }),
   ]);
 
-  const hosting = await syncStoreHostnames({ add: [previewHostname(input.subdomain), input.customDomain] });
+  const hosting = await syncStoreHostnames({ add: [previewHostname(input.subdomain), ...customHosts(input.customDomain)] });
   return { ...(await buildOverview(tenantId)), hosting };
 }
 
@@ -141,7 +149,7 @@ export async function syncHosting(tenantId: string): Promise<ShopOverview> {
   const tenant = await loadTenant(tenantId);
   if (!tenant.webStore) throw new HttpError(404, "This tenant has no online store yet");
   const hosting = await syncStoreHostnames({
-    add: [previewHostname(tenant.webStore.subdomain), tenant.webStore.customDomain],
+    add: [previewHostname(tenant.webStore.subdomain), ...customHosts(tenant.webStore.customDomain)],
   });
   return { ...(await buildOverview(tenantId)), hosting };
 }
@@ -184,7 +192,7 @@ export async function setDomain(tenantId: string, input: ShopDomainInput): Promi
       where: { tenantId },
       data: { customDomain: null, domainStatus: "NONE" },
     });
-    const hosting = await syncStoreHostnames({ remove: [previous] });
+    const hosting = await syncStoreHostnames({ remove: customHosts(previous) });
     return { ...(await buildOverview(tenantId)), hosting };
   }
 
@@ -194,8 +202,8 @@ export async function setDomain(tenantId: string, input: ShopDomainInput): Promi
     data: { customDomain: input.customDomain, domainStatus: "PENDING_DNS" },
   });
   const hosting = await syncStoreHostnames({
-    add: [input.customDomain],
-    remove: previous && previous !== input.customDomain ? [previous] : [],
+    add: customHosts(input.customDomain),
+    remove: previous && previous !== input.customDomain ? customHosts(previous) : [],
   });
   return { ...(await buildOverview(tenantId)), hosting };
 }

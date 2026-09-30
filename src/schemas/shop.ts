@@ -86,7 +86,8 @@ export const shopUpdateSchema = z
 
 export const shopDomainSchema = z.object({
   // null clears the custom domain and drops back to the subdomain-only setup.
-  customDomain: hostnameSchema.nullable(),
+  // stored bare ("www." dropped) — the www twin is added to Netlify and served automatically
+  customDomain: hostnameSchema.transform((h) => h.replace(/^www./, "")).nullable(),
 });
 
 export type ShopProvisionInput = z.infer<typeof shopProvisionSchema>;

@@ -52,7 +52,8 @@ export async function resolveLiveStore(req: Request, _res: Response, next: NextF
   const baseSuffix = `.${env.STOREFRONT_BASE_DOMAIN.toLowerCase()}`;
   const where = domain.endsWith(baseSuffix)
     ? { subdomain: domain.slice(0, -baseSuffix.length) }
-    : { customDomain: domain };
+    : // www.shop.co.ke serves the same store as shop.co.ke (the stored custom domain is the bare one)
+      { customDomain: domain.startsWith("www.") ? domain.slice(4) : domain };
 
   const store = await prisma.webStore.findFirst({
     where,
