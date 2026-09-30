@@ -276,7 +276,23 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
           const existingById =
             baseUpdatedAt || naturalKeyField ? await delegate.findUnique({ where: { id } }) : null;
 
-          if (baseUpdatedAt && existingById && existingById.localUpdatedAt.toISOString() !== new Date(baseUpdatedAt).toISOString()) {
+          // Never a conflict with yourself: if the server's current version was written by this SAME
+          // device (or is this exact version being replayed), no other device's write sits in between.
+          // Caught live 2026-09-30: a 510-product bulk publish took longer than the desktop's push
+          // timeout, the server committed it anyway, the desktop retried with its old baseline and
+          // every one of the 510 came back "conflict" against its own write — which then blocked all
+          // later edits to those products (two Best Sellers never reached the website).
+          const ownVersion =
+            existingById &&
+            (existingById.deviceId === parsed.deviceId ||
+              (typeof row.localUpdatedAt === "string" &&
+                existingById.localUpdatedAt.toISOString() === new Date(row.localUpdatedAt).toISOString()));
+          if (
+            baseUpdatedAt &&
+            existingById &&
+            !ownVersion &&
+            existingById.localUpdatedAt.toISOString() !== new Date(baseUpdatedAt).toISOString()
+          ) {
             results.push({ id, status: "conflict", serverRow: existingById });
             continue;
           }
