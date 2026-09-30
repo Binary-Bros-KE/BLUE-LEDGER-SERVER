@@ -346,6 +346,9 @@ model WebStore {
   deliveryJson       Json @default("{}")
   /// { payOnDelivery: bool, mpesa: bool, bankTransfer: { enabled, instructions } }.
   paymentOptionsJson Json @default("{}")
+  /// Website price markup { markupPercent, roundTo } — see src/lib/web-pricing.ts. {} = none.
+  /// Set by Blue Ledger admins (dashboard) or the tenant (POS Website Manager).
+  pricingJson        Json @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

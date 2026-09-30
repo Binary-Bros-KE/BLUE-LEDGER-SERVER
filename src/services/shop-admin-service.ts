@@ -161,6 +161,7 @@ export async function updateStore(tenantId: string, input: ShopUpdateInput): Pro
   if (input.status !== undefined) data.status = input.status;
   if (input.templateId !== undefined) data.templateId = input.templateId;
   if (input.themeColors !== undefined) data.themeColorsJson = toStoredColors(input.themeColors);
+  if (input.pricing !== undefined) data.pricingJson = input.pricing;
 
   await prisma.webStore.update({ where: { tenantId }, data });
 

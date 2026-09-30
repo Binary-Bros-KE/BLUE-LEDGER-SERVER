@@ -3,7 +3,8 @@ import { HttpError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import type { ShopContext } from "../middleware/shop-tenant.js";
 import type { OrderLinkSaleInput, OrderListInput, OrderStatusInput, ShopOrderCreateInput } from "../schemas/shop.js";
-import { activeSharedVariants, parseVariantConfig, sharedVariantPrice, variantLabel } from "../lib/variants.js";
+import { activeSharedVariants, parseVariantConfig, variantLabel } from "../lib/variants.js";
+import { readWebPricing, shopperPrice, shopperVariantPrice } from "../lib/web-pricing.js";
 
 /**
  * Storefront orders → the POS "Online Orders" inbox (model OnlineOrder).
@@ -101,6 +102,8 @@ export async function createOrder(
     lines.set(key, { productId: it.productId, variantKey, qty: Math.min(999, (prev?.qty ?? 0) + it.qty) });
   }
   const productIds = [...new Set([...lines.values()].map((l) => l.productId))];
+  // Same website pricing the catalog shows (markup included) — the order charges what was displayed.
+  const pricing = readWebPricing(ctx.store.pricingJson);
 
   return withTenantContext(ctx.tenantId, async (tx) => {
     const products = await tx.product.findMany({
@@ -114,7 +117,7 @@ export async function createOrder(
 
     const items: OnlineOrderItem[] = [...lines.values()].map((line) => {
       const p = byId.get(line.productId)!;
-      const shopper = p.onlinePriceCents ?? p.sellingPriceCents;
+      const shopper = shopperPrice(p, pricing);
       const config = parseVariantConfig(p.variantConfigJson);
       const shared = activeSharedVariants(config);
       if (!line.variantKey) {
@@ -127,7 +130,7 @@ export async function createOrder(
       if (!variant || !config) {
         throw new HttpError(409, `An option you chose for "${p.name}" is no longer available. Please review your cart.`);
       }
-      const unit = sharedVariantPrice(variant, shopper);
+      const unit = shopperVariantPrice(variant, shopper, pricing);
       const label = variantLabel(config.options, variant.values);
       return {
         productId: p.id,

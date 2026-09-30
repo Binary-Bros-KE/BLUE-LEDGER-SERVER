@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { webPricingSchema } from "../lib/web-pricing.js";
 import { COLOR_ROLES, STOREFRONT_TEMPLATE_IDS } from "../lib/storefront-templates.js";
 
 /** GET /shop/catalog query. Cursor-less offset paging is fine here — a public catalog is small
@@ -78,6 +79,8 @@ export const shopUpdateSchema = z
     // Look & feel — admin-only (this schema is only reachable from the SUPER_ADMIN dashboard route).
     templateId: templateIdSchema.optional(),
     themeColors: themeColorsSchema.optional(),
+    // Website price markup (lib/web-pricing.ts) — also settable by the tenant from the POS.
+    pricing: webPricingSchema.optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
@@ -107,6 +110,7 @@ export const storeConfigUpdateSchema = z
     themeJson: jsonBlobSchema.optional(),
     deliveryJson: jsonBlobSchema.optional(),
     paymentOptionsJson: jsonBlobSchema.optional(),
+    pricingJson: webPricingSchema.optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 

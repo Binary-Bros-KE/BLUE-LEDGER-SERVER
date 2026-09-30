@@ -1,3 +1,4 @@
+import { readWebPricing, type WebPricing } from "../lib/web-pricing.js";
 import { Prisma } from "@prisma/client";
 import { env } from "../env.js";
 import { HttpError } from "../lib/http-error.js";
@@ -45,6 +46,8 @@ export type StoreOwnerView = {
     themeJson: Prisma.JsonValue;
     deliveryJson: Prisma.JsonValue;
     paymentOptionsJson: Prisma.JsonValue;
+    /** website price markup { markupPercent, roundTo } — lib/web-pricing.ts */
+    pricing: WebPricing;
   } | null;
   /** Always-works subdomain URL (preview + fallback). */
   previewUrl: string | null;
@@ -101,6 +104,7 @@ async function loadView(tenantId: string): Promise<StoreOwnerView> {
       themeJson: store.themeJson,
       deliveryJson: store.deliveryJson,
       paymentOptionsJson: store.paymentOptionsJson,
+      pricing: readWebPricing(store.pricingJson),
     },
     previewUrl,
     liveUrl,
@@ -128,6 +132,7 @@ export async function updateStoreConfig(
   if (input.paymentOptionsJson !== undefined) {
     data.paymentOptionsJson = input.paymentOptionsJson as Prisma.InputJsonValue;
   }
+  if (input.pricingJson !== undefined) data.pricingJson = input.pricingJson;
 
   await prisma.webStore.update({ where: { tenantId }, data });
   return loadView(tenantId);

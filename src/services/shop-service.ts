@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { HttpError } from "../lib/http-error.js";
 import { readTemplateId, readThemeColors } from "../lib/storefront-templates.js";
+import { markUp, readWebPricing, shopperPrice, shopperVariantPrice, type WebPricing } from "../lib/web-pricing.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import type { ShopContext } from "../middleware/shop-tenant.js";
@@ -9,7 +10,6 @@ import {
   activeSharedVariants,
   parseVariantConfig,
   parseVariantOptions,
-  sharedVariantPrice,
   variantLabel,
   type VariantOption,
 } from "../lib/variants.js";
@@ -131,15 +131,16 @@ function stockBadge(
 
 type ProductRow = Prisma.ProductGetPayload<Record<string, never>>;
 
-function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string | null): CatalogItem {
+function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string | null, pricing: WebPricing): CatalogItem {
   const extra = toIdArray(row.onlineCategoryIds);
+  const price = shopperPrice(row, pricing);
   return {
     id: row.id,
     name: row.name,
     shortName: row.shortName,
     description: row.onlineDescription ?? row.description,
-    priceCents: row.onlinePriceCents ?? row.sellingPriceCents,
-    wholesalePriceCents: row.wholesalePriceCents,
+    priceCents: price,
+    wholesalePriceCents: row.wholesalePriceCents === null ? null : markUp(row.wholesalePriceCents, pricing),
     wholesaleMinQuantity: row.wholesaleMinQuantity,
     categoryId: row.categoryId,
     categoryName,
@@ -150,7 +151,7 @@ function toCatalogItem(row: ProductRow, qty: number | null, categoryName: string
     stock: stockBadge(qty, row),
     brand: row.brand?.trim() || null,
     compareAtPriceCents:
-      row.onlineCompareAtPriceCents && row.onlineCompareAtPriceCents > (row.onlinePriceCents ?? row.sellingPriceCents)
+      row.onlineCompareAtPriceCents && row.onlineCompareAtPriceCents > price
         ? row.onlineCompareAtPriceCents
         : null,
     variantSummary: null,
@@ -227,6 +228,7 @@ export async function getStorePayload(ctx: ShopContext) {
 // --- Catalog --------------------------------------------------------------------------------------
 
 export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
+  const pricing = readWebPricing(ctx.store.pricingJson);
   return withTenantContext(ctx.tenantId, async (tx) => {
     // AND of independent OR-groups: [published+active] AND [in this category, POS or online-extra]
     // AND [matches the search term].
@@ -250,7 +252,7 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
     }
     const where: Prisma.ProductWhereInput = { AND: and };
 
-    // The price a shopper sees is `onlinePriceCents ?? sellingPriceCents` — a coalesce Prisma can't
+    // The price a shopper sees is `onlinePriceCents ?? sellingPriceCents + markup` — Prisma can't
     // sort or range-filter on. So: one light pass over the matching set (id + the fields that order
     // it; the public catalog is small), sort/filter here, then load full rows for just this page.
     // Rows come back name-ordered by the DB, so "featured" keeps exactly the order it always had.
@@ -270,9 +272,9 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
       })
     ).map((r) => {
       // A shared-stock product is priced by its cheapest variant ("From …"); its range is kept.
-      const shopper = r.onlinePriceCents ?? r.sellingPriceCents;
+      const shopper = shopperPrice(r, pricing);
       const shared = activeSharedVariants(parseVariantConfig(r.variantConfigJson));
-      const prices = shared.length ? shared.map((v) => sharedVariantPrice(v, shopper)) : [shopper];
+      const prices = shared.length ? shared.map((v) => shopperVariantPrice(v, shopper, pricing)) : [shopper];
       return {
         id: r.id,
         groupId: r.variantGroupId,
@@ -358,7 +360,7 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
       priceRange,
       brands,
       products: rows.map((r) => ({
-        ...toCatalogItem(r, stockByProduct.get(r.id) ?? null, r.categoryId ? (names.get(r.categoryId) ?? null) : null),
+        ...toCatalogItem(r, stockByProduct.get(r.id) ?? null, r.categoryId ? (names.get(r.categoryId) ?? null) : null, pricing),
         variantSummary: summaryById.get(r.id) ?? null,
       })),
     };
@@ -366,6 +368,7 @@ export async function listCatalog(ctx: ShopContext, query: CatalogQuery) {
 }
 
 export async function getProductDetail(ctx: ShopContext, productId: string) {
+  const pricing = readWebPricing(ctx.store.pricingJson);
   return withTenantContext(ctx.tenantId, async (tx) => {
     const row = await tx.product.findFirst({
       where: { id: productId, publishedOnline: true, status: "active" },
@@ -381,6 +384,7 @@ export async function getProductDetail(ctx: ShopContext, productId: string) {
       row,
       stockByProduct.get(row.id) ?? null,
       row.categoryId ? (names.get(row.categoryId) ?? null) : null,
+      pricing,
     );
 
     // Shared stock: the variants live on this product.
@@ -393,7 +397,7 @@ export async function getProductDetail(ctx: ShopContext, productId: string) {
         name: row.name,
         label: variantLabel(config.options, v.values),
         values: v.values,
-        priceCents: sharedVariantPrice(v, item.priceCents),
+        priceCents: shopperVariantPrice(v, item.priceCents, pricing),
         compareAtPriceCents: null,
         stock: item.stock,
       }));
@@ -429,7 +433,7 @@ export async function getProductDetail(ctx: ShopContext, productId: string) {
           });
         const variants: ShopVariant[] = withValues
           .map(({ m, values }) => {
-            const own = toCatalogItem(m, stock.get(m.id) ?? null, null);
+            const own = toCatalogItem(m, stock.get(m.id) ?? null, null, pricing);
             return {
               key: m.id,
               productId: m.id,
