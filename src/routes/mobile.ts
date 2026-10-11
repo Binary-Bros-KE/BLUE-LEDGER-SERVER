@@ -481,7 +481,8 @@ mobileRouter.post(
 );
 
 mobileRouter.get("/quotations/:id/stock-check", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
-  const result = await mobileQuotationsService.checkQuotationStock(req.mobileSession!.tenantId, req.params.id as string);
+  const stockSource = req.query.stockSource === "main_store" ? "main_store" : "storefront";
+  const result = await mobileQuotationsService.checkQuotationStock(req.mobileSession!.tenantId, req.params.id as string, stockSource);
   res.json(result);
 });
 

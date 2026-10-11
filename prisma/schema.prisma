@@ -654,6 +654,12 @@ model Tenant {
   /// existing invoices can no longer be edited from any device or the mobile app. Default false so
   /// every existing tenant keeps today's behaviour.
   invoiceEditsDisabled Boolean @default(false)
+  /// Admin-dashboard-controlled ONLY (never pushed by a device), same lifecycle as
+  /// invoiceEditsDisabled above: when true, an invoice (and a quotation converted into one) may draw
+  /// its stock straight from the Main Store instead of the selling storefront's own shelf — chosen
+  /// per invoice, see Sale.stockLocationId. Default false so every existing tenant keeps today's
+  /// storefront-only behaviour.
+  invoiceStockFromMainStore Boolean @default(false)
 
   /// When a device last successfully PUSHED a business-profile edit here (POST /activation/profile)
   /// — deliberately NOT the same as this row's own `updatedAt`, which also bumps for a dozen
@@ -1357,6 +1363,11 @@ model Sale {
   /// includeTaxBreakdown above. When false, resolveBusinessInfo (share-service.ts) returns a
   /// generic heading instead of the real business name and strips every other identity field.
   includeBusinessInfo Boolean @default(true)
+  /// Where this invoice's stock was actually deducted from, when that ISN'T locationId — only ever
+  /// the tenant's Main Store (see Tenant.invoiceStockFromMainStore). Null means "the selling
+  /// storefront itself" — today's behaviour and every pre-existing row. Every restock path (invoice
+  /// edit, cancellation, sale return/void) reads this so stock goes back to where it came from.
+  stockLocationId     String?
   /// Already a JSON-text column locally (a list of individual payment entries against this
   /// sale/invoice) — carries straight through as Json.
   payments            Json

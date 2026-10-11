@@ -127,6 +127,9 @@ export const tenantUpdateSchema = z.object({
   // Admin-dashboard-only switch (deliberately NOT in activationProfileUpdateSchema — a device can
   // never push this): when true, invoice editing is disabled on every device and the mobile app.
   invoiceEditsDisabled: z.boolean().optional(),
+  // Same admin-only treatment as invoiceEditsDisabled: when true, invoices may draw stock straight
+  // from the Main Store instead of the selling storefront (chosen per invoice).
+  invoiceStockFromMainStore: z.boolean().optional(),
 });
 
 export type TenantUpdateInput = z.infer<typeof tenantUpdateSchema>;

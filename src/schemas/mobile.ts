@@ -179,6 +179,14 @@ export type MobileCreateSupplierInput = z.infer<typeof mobileCreateSupplierSchem
 // discountAmountCents/unitPriceCents/isLocallySourced/localCostCents/localSupplierId) to Checkout's
 // own items, matching DESKTOP's own single shared prepareCart across sale/invoice/quotation.
 
+/** Where an invoice's stock is deducted from — "main_store" is only accepted when the tenant's admin
+ * "Invoice stock from Main Store" toggle (Tenant.invoiceStockFromMainStore) is on. Optional
+ * everywhere: omitted on create means "storefront" (today's behaviour), omitted on update means
+ * "keep whatever the invoice already uses". */
+export const mobileInvoiceStockSourceSchema = z.enum(["storefront", "main_store"]);
+
+export type MobileInvoiceStockSource = z.infer<typeof mobileInvoiceStockSourceSchema>;
+
 const mobileInitialPaymentSchema = z.object({
   paymentMethodId: z.string().trim().min(1),
   amountCents: z.coerce.number().int().positive("Amount must be greater than 0"),
@@ -196,6 +204,7 @@ export const mobileInvoiceSchema = z.object({
   initialPayment: mobileInitialPaymentSchema.nullable().optional(),
   delivery: mobileCheckoutDeliverySchema.optional(),
   serviceCharges: mobileServiceChargesFieldSchema,
+  stockSource: mobileInvoiceStockSourceSchema.optional(),
   /** Only ever read on CREATE when the signed-in employee has no assigned branch — ignored on
    * update (an invoice's storefront is fixed at creation), same as DESKTOP. */
   locationId: z.string().trim().min(1).optional(),
@@ -259,6 +268,7 @@ export type MobileConvertToSaleInput = z.infer<typeof mobileConvertToSaleSchema>
 export const mobileConvertToInvoiceSchema = z.object({
   dueDate: z.string().trim().min(1, "Due date is required"),
   quantityOverrides: z.array(mobileQuotationQuantityOverrideSchema).optional().default([]),
+  stockSource: mobileInvoiceStockSourceSchema.optional(),
 });
 
 export type MobileConvertToInvoiceInput = z.infer<typeof mobileConvertToInvoiceSchema>;

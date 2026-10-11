@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { buildServiceCharges, type MobileServiceChargeInput, prepareMobileCart, sumServiceChargeFees } from "../lib/mobile-cart.js";
+import { deductInvoiceStock, invoiceStockSourceOf, resolveInvoiceStockLocationId, restockInvoiceStock } from "../lib/invoice-stock.js";
 import { buildDeliveryJson, createDeliveryCostExpenseIfNeeded } from "../lib/mobile-delivery.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import type { TenantTaxConfig } from "../lib/tax-breakdown.js";
@@ -53,51 +54,6 @@ async function requireInvoiceRow(tx: Prisma.TransactionClient, tenantId: string,
   return row;
 }
 
-/** Restocks every stock-tracked, non-locally-sourced item on an invoice — shared by updateInvoice
- * (restock-then-rededuct), cancelInvoice (self-approved direct cancel), and approveInvoiceCancel
- * (manager-approved cancel). A locally-sourced or untracked item was never actually deducted from
- * inventory at insert time, so crediting it back here would fabricate stock that was never taken —
- * matches DESKTOP's own restockAndMarkCancelled condition exactly. */
-async function restockInvoiceItems(
-  tx: Prisma.TransactionClient,
-  tenantId: string,
-  employeeId: string,
-  items: Array<{ productId: string; quantity: number; isLocallySourced: boolean }>,
-  locationId: string,
-  referenceType: string,
-  referenceId: string,
-  now: Date,
-): Promise<void> {
-  const restockRows = items.filter((item) => !item.isLocallySourced);
-  if (restockRows.length === 0) return;
-
-  const trackedProducts = await tx.product.findMany({
-    where: { id: { in: restockRows.map((i) => i.productId) }, trackStock: true },
-    select: { id: true },
-  });
-  const trackedIds = new Set(trackedProducts.map((p) => p.id));
-  const restockMovements = restockRows.filter((item) => trackedIds.has(item.productId));
-  if (restockMovements.length === 0) return;
-
-  await tx.stockMovement.createMany({
-    data: restockMovements.map((item) => ({
-      id: randomUUID(),
-      tenantId,
-      deviceId: OWNER_APP_DEVICE_ID,
-      productId: item.productId,
-      locationId,
-      movementType: "return",
-      quantityChange: item.quantity,
-      referenceType,
-      referenceId,
-      performedBy: employeeId,
-      allocationExplicit: false,
-      localCreatedAt: now,
-      localUpdatedAt: now,
-    })),
-  });
-}
-
 /** Creates a new invoice — goods/services are considered delivered now, payment can follow over
  * time. Mirrors DESKTOP's own invoice-service.ts createInvoice/insertInvoiceFromCart: real
  * server-side cart preparation (prepareMobileCart), immediate stock deduction (same
@@ -118,7 +74,11 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
 
       const locationId = await resolveMobileLocation(tx, tenantId, employee.branchId, parsed.locationId);
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
-      const cart = await prepareMobileCart(tx, tenantId, locationId, parsed.items, tenantTaxConfig, { checkStock: true });
+      // Null = the storefront itself; otherwise the Main Store (admin toggle — see invoice-stock.ts).
+      // prepareMobileCart only reads its location for the stock check, so pointing it at the stock
+      // location is all pricing needs; deductInvoiceStock below does the Main Store earmark check.
+      const stockLocationId = await resolveInvoiceStockLocationId(tx, tenantId, parsed.stockSource ?? "storefront");
+      const cart = await prepareMobileCart(tx, tenantId, stockLocationId ?? locationId, parsed.items, tenantTaxConfig, { checkStock: true });
 
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
       const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
@@ -193,6 +153,7 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
           invoiceNotes: parsed.invoiceNotes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
           includeBusinessInfo: parsed.includeBusinessInfo,
+          stockLocationId,
           payments,
           items: cart.items,
           serviceCharges: preparedServiceCharges,
@@ -202,25 +163,15 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
         },
       });
 
-      if (cart.stockMovementRows.length > 0) {
-        await tx.stockMovement.createMany({
-          data: cart.stockMovementRows.map((movement) => ({
-            id: movement.id,
-            tenantId,
-            deviceId: OWNER_APP_DEVICE_ID,
-            productId: movement.productId,
-            locationId,
-            movementType: "sale",
-            quantityChange: movement.quantityChange,
-            referenceType: "invoice",
-            referenceId: saleId,
-            performedBy: employeeId,
-            allocationExplicit: false,
-            localCreatedAt: now,
-            localUpdatedAt: now,
-          })),
-        });
-      }
+      await deductInvoiceStock(tx, {
+        tenantId,
+        employeeId,
+        storefrontId: locationId,
+        stockLocationId,
+        lines: cart.stockMovementRows.map((movement) => ({ productId: movement.productId, quantity: -movement.quantityChange })),
+        referenceId: saleId,
+        now,
+      });
 
       if (parsed.delivery) {
         await createDeliveryCostExpenseIfNeeded(tx, tenantId, OWNER_APP_DEVICE_ID, mobileDeviceSequence, {
@@ -273,6 +224,8 @@ export type MobileInvoiceEditData = {
   invoiceNotes: string | null;
   includeTaxBreakdown: boolean;
   includeBusinessInfo: boolean;
+  /** Where this invoice currently draws its stock — the edit form pre-selects it. */
+  stockSource: "storefront" | "main_store";
   items: MobileEditableItem[];
   delivery: MobileEditableDelivery | null;
   serviceCharges: MobileServiceChargeInput[];
@@ -303,6 +256,7 @@ export async function getInvoiceEditData(tenantId: string, id: string): Promise<
       invoiceNotes: row.invoiceNotes,
       includeTaxBreakdown: row.includeTaxBreakdown,
       includeBusinessInfo: row.includeBusinessInfo,
+      stockSource: invoiceStockSourceOf(row),
       serviceCharges: serviceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),
       items: items.map((item) => ({
         productId: item.productId,
@@ -336,7 +290,9 @@ export async function getInvoiceEditData(tenantId: string, id: string): Promise<
  * "nothing committed yet" reasoning as a draft quotation, except an invoice's own commitment line is
  * "has any payment been recorded" rather than a status field. Restocks every existing line first,
  * then re-deducts the new cart — same net effect as diffing old vs new quantities, matching
- * DESKTOP's own updateInvoice exactly. The invoice's own storefront is fixed at creation. */
+ * DESKTOP's own updateInvoice exactly. The invoice's own storefront is fixed at creation; its stock
+ * source CAN change on edit (old lines restock to the old source, new lines deduct from the new one).
+ * An omitted stockSource keeps whatever the invoice already uses. */
 export async function updateInvoice(tenantId: string, employeeId: string, id: string, input: unknown): Promise<MobileInvoiceResult> {
   const parsed: MobileInvoiceInput = mobileInvoiceSchema.parse(input);
 
@@ -355,7 +311,9 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
       if (!customer || customer.tenantId !== tenantId) throw new NotFoundError("Customer not found");
 
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
-      const cart = await prepareMobileCart(tx, tenantId, row.locationId, parsed.items, tenantTaxConfig, { checkStock: false });
+      const nextStockLocationId =
+        parsed.stockSource === undefined ? row.stockLocationId : await resolveInvoiceStockLocationId(tx, tenantId, parsed.stockSource);
+      const cart = await prepareMobileCart(tx, tenantId, nextStockLocationId ?? row.locationId, parsed.items, tenantTaxConfig, { checkStock: false });
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
       const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
       const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
@@ -367,7 +325,16 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
       // happen in the SAME transaction, so a new cart that needs more stock than's available throws
       // and the whole edit rolls back with nothing left half-adjusted, matching DESKTOP exactly.
       const existingItems = row.items as unknown as Array<{ productId: string; quantity: number; isLocallySourced: boolean }>;
-      await restockInvoiceItems(tx, tenantId, employeeId, existingItems, row.locationId, "invoice_edit", id, now);
+      await restockInvoiceStock(tx, {
+        tenantId,
+        employeeId,
+        storefrontId: row.locationId,
+        stockLocationId: row.stockLocationId,
+        items: existingItems,
+        referenceType: "invoice_edit",
+        referenceId: id,
+        now,
+      });
 
       const mobileDeviceSequence = await ensureEmployeeMobileSequence(tx, tenantId, employeeId, (await tx.employee.findUniqueOrThrow({ where: { id: employeeId } })).mobileDeviceSequence);
       const { json: deliveryJson } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
@@ -388,6 +355,7 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
           invoiceNotes: parsed.invoiceNotes?.trim() || null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
           includeBusinessInfo: parsed.includeBusinessInfo,
+          stockLocationId: nextStockLocationId,
           items: cart.items,
           serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
@@ -404,26 +372,16 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
       // Re-check stock for the NEW cart now that old items are restocked (checkStock:false above was
       // deliberate — the restock above must land first so the new cart is validated against
       // post-restock availability, not pre-restock).
-      const revalidated = await prepareMobileCart(tx, tenantId, row.locationId, parsed.items, tenantTaxConfig, { checkStock: true });
-      if (revalidated.stockMovementRows.length > 0) {
-        await tx.stockMovement.createMany({
-          data: revalidated.stockMovementRows.map((movement) => ({
-            id: movement.id,
-            tenantId,
-            deviceId: OWNER_APP_DEVICE_ID,
-            productId: movement.productId,
-            locationId: row.locationId,
-            movementType: "sale",
-            quantityChange: movement.quantityChange,
-            referenceType: "invoice",
-            referenceId: id,
-            performedBy: employeeId,
-            allocationExplicit: false,
-            localCreatedAt: now,
-            localUpdatedAt: now,
-          })),
-        });
-      }
+      const revalidated = await prepareMobileCart(tx, tenantId, nextStockLocationId ?? row.locationId, parsed.items, tenantTaxConfig, { checkStock: true });
+      await deductInvoiceStock(tx, {
+        tenantId,
+        employeeId,
+        storefrontId: row.locationId,
+        stockLocationId: nextStockLocationId,
+        lines: revalidated.stockMovementRows.map((movement) => ({ productId: movement.productId, quantity: -movement.quantityChange })),
+        referenceId: id,
+        now,
+      });
 
       return { id };
     },
@@ -537,6 +495,9 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
         sectionLabel?: string | null;
       }>;
       const originalServiceCharges = original.serviceCharges as unknown as MobileServiceChargeInput[];
+      // Carried over like everything else — unless the admin has since turned the Main Store toggle
+      // off, in which case the duplicate falls back to the storefront instead of failing outright.
+      const { invoiceStockFromMainStore } = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { invoiceStockFromMainStore: true } });
 
       return createInvoice(tenantId, employeeId, {
         customerId: original.customerId,
@@ -562,6 +523,7 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
         initialPayment: null,
         serviceCharges: originalServiceCharges.map((charge) => ({ name: charge.name, feeCents: charge.feeCents, costCents: charge.costCents })),
         locationId: original.locationId,
+        stockSource: invoiceStockFromMainStore ? invoiceStockSourceOf(original) : "storefront",
       });
     },
     { timeoutMs: 15_000 },
@@ -593,7 +555,16 @@ export async function cancelInvoice(tenantId: string, employeeId: string, saleId
       const now = new Date();
       const cancellationId = `invoice_cancel_${randomUUID()}`;
 
-      await restockInvoiceItems(tx, tenantId, employeeId, items, row.locationId, "invoice_cancellation", cancellationId, now);
+      await restockInvoiceStock(tx, {
+        tenantId,
+        employeeId,
+        storefrontId: row.locationId,
+        stockLocationId: row.stockLocationId,
+        items,
+        referenceType: "invoice_cancellation",
+        referenceId: cancellationId,
+        now,
+      });
 
       await tx.invoiceCancellation.create({
         data: {
@@ -730,7 +701,16 @@ export async function approveInvoiceCancel(tenantId: string, employeeId: string,
 
       const items = saleRow.items as unknown as Array<{ productId: string; quantity: number; isLocallySourced: boolean }>;
       const now = new Date();
-      await restockInvoiceItems(tx, tenantId, employeeId, items, saleRow.locationId, "invoice_cancellation", id, now);
+      await restockInvoiceStock(tx, {
+        tenantId,
+        employeeId,
+        storefrontId: saleRow.locationId,
+        stockLocationId: saleRow.stockLocationId,
+        items,
+        referenceType: "invoice_cancellation",
+        referenceId: id,
+        now,
+      });
 
       await tx.sale.update({ where: { id: cancellationRow.saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now, syncedAt: now } });
       await tx.invoiceCancellation.update({

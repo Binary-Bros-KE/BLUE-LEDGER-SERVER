@@ -60,6 +60,7 @@ type BusinessProfileFields = {
   vatRatePercent: number;
   pricesTaxInclusive: boolean;
   invoiceEditsDisabled: boolean;
+  invoiceStockFromMainStore: boolean;
 };
 
 function extractBusinessProfileFields(tenant: Tenant): BusinessProfileFields & { businessProfileUpdatedAt: string | null } {
@@ -84,6 +85,7 @@ function extractBusinessProfileFields(tenant: Tenant): BusinessProfileFields & {
     vatRatePercent: tenant.vatRatePercent,
     pricesTaxInclusive: tenant.pricesTaxInclusive,
     invoiceEditsDisabled: tenant.invoiceEditsDisabled,
+    invoiceStockFromMainStore: tenant.invoiceStockFromMainStore,
     businessProfileUpdatedAt: tenant.businessProfileUpdatedAt?.toISOString() ?? null,
   };
 }
