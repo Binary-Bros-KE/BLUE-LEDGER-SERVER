@@ -67,6 +67,18 @@ function readPayments(json: Prisma.JsonValue): OnlineOrderPayment[] {
   return Array.isArray(json) ? (json as unknown as OnlineOrderPayment[]) : [];
 }
 
+export type OnlineOrderStockHold = {
+  locationId: string;
+  items: { productId: string; qty: number }[];
+  heldAt: string;
+};
+
+function readStockHold(json: Prisma.JsonValue | null): OnlineOrderStockHold | null {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return null;
+  const hold = json as unknown as OnlineOrderStockHold;
+  return typeof hold.locationId === "string" && Array.isArray(hold.items) ? hold : null;
+}
+
 function readHistory(json: Prisma.JsonValue): OnlineOrderHistoryEntry[] {
   return Array.isArray(json) ? (json as unknown as OnlineOrderHistoryEntry[]) : [];
 }
@@ -104,6 +116,8 @@ export type OnlineOrderView = {
   history: OnlineOrderHistoryEntry[];
   riderId: string | null;
   riderName: string | null;
+  /** stock held out of a branch for this order (set on confirmation) */
+  stockHold: OnlineOrderStockHold | null;
 };
 
 export function formatOrderNumber(seq: number): string {
@@ -144,6 +158,7 @@ function toView(r: OrderRow): OnlineOrderView {
     history: readHistory(r.historyJson),
     riderId: r.riderId,
     riderName: r.riderName,
+    stockHold: readStockHold(r.stockHoldJson),
   };
 }
 
@@ -317,22 +332,64 @@ function assertOpen(row: OrderRow, action: string): void {
   }
 }
 
+/** Search + date filters (everything except status) — also scopes the per-status counts. */
+function listScope(q: OrderListInput): Prisma.OnlineOrderWhereInput[] {
+  const and: Prisma.OnlineOrderWhereInput[] = [];
+  if (q.from || q.to) {
+    and.push({ createdAt: { ...(q.from ? { gte: new Date(q.from) } : {}), ...(q.to ? { lt: new Date(q.to) } : {}) } });
+  }
+  const term = q.search?.trim();
+  if (term) {
+    const or: Prisma.OnlineOrderWhereInput[] = [
+      { customerName: { contains: term, mode: "insensitive" } },
+      { customerEmail: { contains: term, mode: "insensitive" } },
+    ];
+    const digits = term.replace(/\D/g, "");
+    // "WEB-0012", "web12" or "12" → order 12. A long digit run is a phone number, not an order.
+    if (/^(web-?)?\d{1,6}$/i.test(term)) or.push({ orderSeq: Number(digits) });
+    if (digits.length >= 3) or.push({ customerPhone: { contains: digits.length > 9 ? digits.slice(-9) : digits } });
+    and.push({ OR: or });
+  }
+  return and;
+}
+
 export async function listOrders(tenantId: string, q: OrderListInput) {
   return withTenantContext(tenantId, async (tx) => {
-    const where: Prisma.OnlineOrderWhereInput = q.statuses
+    const scope = listScope(q);
+    const statusFilter: Prisma.OnlineOrderWhereInput = q.statuses
       ? { status: { in: q.statuses } }
       : q.status === "ALL"
         ? {}
         : { status: q.status };
-    const [rows, total, grouped, unseen] = await Promise.all([
+    const where: Prisma.OnlineOrderWhereInput = { AND: [...scope, statusFilter] };
+    const closed = ["COMPLETED", "CANCELLED"];
+    // Orders still being worked on come first, then completed, then cancelled — newest first within
+    // each. Paged as one list: open orders fill pages before any closed one appears.
+    const [openRows, openTotal] = await Promise.all([
       tx.onlineOrder.findMany({
-        where,
+        where: { AND: [where, { status: { notIn: closed } }] },
         orderBy: { createdAt: "desc" },
         skip: (q.page - 1) * q.pageSize,
         take: q.pageSize,
       }),
+      tx.onlineOrder.count({ where: { AND: [where, { status: { notIn: closed } }] } }),
+    ]);
+    const closedSkip = Math.max(0, (q.page - 1) * q.pageSize - openTotal);
+    const closedTake = q.pageSize - openRows.length;
+    const closedRows =
+      closedTake > 0
+        ? await tx.onlineOrder.findMany({
+            where: { AND: [where, { status: { in: closed } }] },
+            // COMPLETED sorts before CANCELLED alphabetically
+            orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+            skip: closedSkip,
+            take: closedTake,
+          })
+        : [];
+    const rows = [...openRows, ...closedRows];
+    const [total, grouped, unseen] = await Promise.all([
       tx.onlineOrder.count({ where }),
-      tx.onlineOrder.groupBy({ by: ["status"], _count: { _all: true } }),
+      tx.onlineOrder.groupBy({ by: ["status"], where: { AND: scope }, _count: { _all: true } }),
       tx.onlineOrder.count({ where: { seenAt: null } }),
     ]);
     const counts: Record<string, number> = Object.fromEntries(ONLINE_ORDER_STATUSES.map((s) => [s, 0]));
@@ -365,7 +422,9 @@ export async function setOrderStatus(tenantId: string, deviceId: string, input: 
     const number = formatOrderNumber(existing.orderSeq);
     const from = existing.status;
     const to = input.status;
-    if (from === to) return toView(existing);
+    const existingHold = readStockHold(existing.stockHoldJson);
+    // Another till already moved it here — any hold this request carries is surplus; say so.
+    if (from === to) return { ...toView(existing), holdAccepted: false, releasedHold: null };
 
     if (to === "COMPLETED") {
       throw new HttpError(409, `Complete ${number} from the POS — that records it as a sale.`);
@@ -403,11 +462,21 @@ export async function setOrderStatus(tenantId: string, deviceId: string, input: 
 
     const now = new Date();
     const shipping = to === "SHIPPED" ? { riderId: input.riderId ?? null, riderName: input.riderName ?? null } : {};
+    // Back to pending / cancelled gives the held stock back — returned to the caller (who writes the
+    // release movements) and cleared here in the same locked update, so only one till ever does it.
+    const releasedHold = (to === "NEW" || to === "CANCELLED") && existingHold ? existingHold : null;
+    const holdAccepted = !existingHold && !releasedHold && !!input.stockHold && to !== "NEW" && to !== "CANCELLED";
+    const hold: Prisma.InputJsonValue | typeof Prisma.DbNull | undefined = releasedHold
+      ? Prisma.DbNull
+      : holdAccepted
+        ? ({ ...input.stockHold!, heldAt: now.toISOString() } as Prisma.InputJsonValue)
+        : undefined;
     const row = await tx.onlineOrder.update({
       where: { id: input.id },
       data: {
         status: to,
         ...shipping,
+        ...(hold !== undefined ? { stockHoldJson: hold } : {}),
         statusChangedAt: now,
         handledByDeviceId: deviceId,
         seenAt: existing.seenAt ?? now,
@@ -418,7 +487,7 @@ export async function setOrderStatus(tenantId: string, deviceId: string, input: 
         ),
       },
     });
-    return toView(row);
+    return { ...toView(row), holdAccepted, releasedHold };
   });
 }
 
@@ -592,6 +661,8 @@ export async function linkOrderSale(tenantId: string, deviceId: string, input: O
       data: {
         linkedSaleId: input.saleId,
         linkedReceiptNumber: input.receiptNumber ?? null,
+        // the POS released the hold inside the sale's own transaction
+        stockHoldJson: Prisma.DbNull,
         status: "COMPLETED",
         statusChangedAt: now,
         handledByDeviceId: deviceId,

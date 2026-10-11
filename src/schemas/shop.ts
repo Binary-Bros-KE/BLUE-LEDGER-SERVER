@@ -467,6 +467,11 @@ export const orderListSchema = z.object({
   status: z.enum([...ONLINE_ORDER_STATUSES, "ALL"]).default("ALL"),
   /** several statuses at once (a POS tab like "Ready / shipped") — wins over `status` when given */
   statuses: z.array(z.enum(ONLINE_ORDER_STATUSES)).min(1).max(ONLINE_ORDER_STATUSES.length).optional(),
+  /** order number ("WEB-0012" / "12"), customer name, phone or email */
+  search: z.string().trim().max(120).optional(),
+  /** placed on/after `from` and before `to` (ISO instants — the POS turns local dates into them) */
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(30),
 });
@@ -480,6 +485,16 @@ export const orderStatusSchema = z.object({
   /** SHIPPED only: the rider taking it (a POS rider id + display name), optional */
   riderId: z.string().trim().min(1).max(80).nullish(),
   riderName: z.string().trim().min(1).max(150).nullish(),
+  /** Stock the POS just took out for this order (sent when confirming). Kept only if the order had
+   * no hold yet — the response's holdAccepted says whether it was, so a losing till gives it back. */
+  stockHold: z
+    .object({
+      locationId: z.string().trim().min(1).max(80),
+      items: z
+        .array(z.object({ productId: z.string().trim().min(1).max(64), qty: z.number().int().min(1).max(100_000) }))
+        .max(200),
+    })
+    .nullish(),
   actorName,
 });
 

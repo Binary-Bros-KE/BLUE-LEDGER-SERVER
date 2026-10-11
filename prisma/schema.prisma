@@ -454,6 +454,11 @@ model OnlineOrder {
   /// Rider the order was shipped with (delivery orders) — copied onto the sale's delivery note.
   riderId      String?
   riderName    String?
+  /// Stock a POS took out of a branch when the order was confirmed, so the till can't sell it again:
+  /// { locationId, items: [{ productId, qty }], heldAt }. The POS writes the matching online_hold
+  /// stock movements; whoever cancels / un-confirms gets it back (and is the only one who does —
+  /// it's cleared atomically), and completing releases it inside the sale's own transaction.
+  stockHoldJson Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
