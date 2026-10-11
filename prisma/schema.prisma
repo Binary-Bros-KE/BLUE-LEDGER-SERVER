@@ -1802,8 +1802,11 @@ model StockRequest {
   requestedAt     DateTime
   reviewedBy      String?
   reviewedAt      DateTime?
+  /// Storekeeper's optional note explaining a partial/zero dispatch (DESKTOP's fulfillment_note).
+  fulfillmentNote String?
   /// stock_request_items rows — {id, productId, quantityRequested, previousQuantity, newQuantity,
-  /// mainStorePreviousQuantity, mainStoreNewQuantity, createdAt}[]. The last four are null until the
+  /// mainStorePreviousQuantity, mainStoreNewQuantity, quantityDispatched, createdAt}[]. quantityDispatched
+  /// (what was actually shipped — partial fulfillment) is null until approval. The other four are null until the
   /// request is approved, then frozen at that moment (DESKTOP's approveStockRequest) — a plain
   /// replace-all on pull stays safe since it's driven by the pushing device's current item state, not
   /// an "only ever inserted once" assumption.
