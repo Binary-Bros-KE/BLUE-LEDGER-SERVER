@@ -452,10 +452,18 @@ function buildConversionItems(
     sectionLabel?: string | null;
   }>,
   quantityOverrides: Array<{ productId: string; quantity: number }>,
+  sourcedLines: Array<{ productId: string; localCostCents: number; localSupplierId?: string | undefined }> = [],
 ): MobileCartItemInput[] {
-  const overrideByProduct = new Map(quantityOverrides.map((entry) => [entry.productId, entry.quantity]));
-  return quotationItems.map((item) => {
+  // A line marked sourced at conversion is bought elsewhere on the spot: full quoted quantity, no
+  // stock check/deduction (prepareMobileCart validates its supplier).
+  const sourcedByProduct = new Map(sourcedLines.map((entry) => [entry.productId, entry]));
+  const overrideByProduct = new Map(
+    quantityOverrides.filter((entry) => !sourcedByProduct.has(entry.productId)).map((entry) => [entry.productId, entry.quantity]),
+  );
+  // An override of 0 leaves the line off entirely (nothing in stock anywhere right now).
+  return quotationItems.filter((item) => overrideByProduct.get(item.productId) !== 0).map((item) => {
     const overriddenQuantity = overrideByProduct.get(item.productId);
+    const sourced = sourcedByProduct.get(item.productId);
     return {
       productId: item.productId,
       quantity: overriddenQuantity ?? item.quantity,
@@ -463,9 +471,9 @@ function buildConversionItems(
       // Frozen price carries over unchanged even under a quantity override — same as DESKTOP's own
       // repriceLineForQuantity keeping the frozen unit price and only re-deriving discount/tax.
       unitPriceCents: item.unitPriceCents,
-      isLocallySourced: item.isLocallySourced,
-      localCostCents: item.localCostCents ?? undefined,
-      localSupplierId: item.localSupplierId ?? undefined,
+      isLocallySourced: sourced ? true : item.isLocallySourced,
+      localCostCents: sourced ? sourced.localCostCents : (item.localCostCents ?? undefined),
+      localSupplierId: sourced ? sourced.localSupplierId : (item.localSupplierId ?? undefined),
       variantKey: item.variantKey ?? null,
       sectionLabel: item.sectionLabel ?? null,
     };
@@ -509,7 +517,7 @@ export async function convertQuotationToSale(tenantId: string, employeeId: strin
       const tenant = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true, pricesTaxInclusive: true } });
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
       const quotationItems = quotation.items as unknown as Parameters<typeof buildConversionItems>[0];
-      const conversionItems = buildConversionItems(quotationItems, parsed.quantityOverrides);
+      const conversionItems = buildConversionItems(quotationItems, parsed.quantityOverrides, parsed.sourcedLines);
       const cart = await prepareMobileCart(tx, tenantId, locationId, conversionItems, tenantTaxConfig, { checkStock: true });
 
       const deliveryRow = quotation.delivery as unknown as {
@@ -640,8 +648,11 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
   const parsed: MobileConvertToInvoiceInput = mobileConvertToInvoiceSchema.parse(input);
 
   const { quotation, locationId } = await withTenantContext(tenantId, (tx) => requireAcceptedQuotationAtActiveBranch(tx, tenantId, employeeId, id));
-  if (!quotation.customerId) {
-    throw new HttpError(400, "This quotation has no customer — pick a customer before converting it to an invoice.");
+  // A walk-in quotation is billed to the customer chosen in the convert step (createInvoice below
+  // validates it exists) rather than being a dead end.
+  const customerId = quotation.customerId ?? parsed.customerId;
+  if (!customerId) {
+    throw new HttpError(400, "This quotation was for a walk-in customer — choose who to bill before converting it to an invoice.");
   }
 
   const quotationItems = quotation.items as unknown as Parameters<typeof buildConversionItems>[0];
@@ -657,7 +668,7 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
   } | null;
 
   const result = await createInvoice(tenantId, employeeId, {
-    customerId: quotation.customerId,
+    customerId,
     transactionType: "invoice",
     dueDate: parsed.dueDate,
     invoiceNotes: quotation.notes ?? undefined,
@@ -665,7 +676,7 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
     includeBusinessInfo: quotation.includeBusinessInfo,
     // Each line's stock source from the convert dialog (per line, keyed by productId), falling back
     // to the legacy whole-invoice choice; createInvoice enforces the admin toggle regardless.
-    items: buildConversionItems(quotationItems, parsed.quantityOverrides).map((item) => ({
+    items: buildConversionItems(quotationItems, parsed.quantityOverrides, parsed.sourcedLines).map((item) => ({
       ...item,
       stockSource: parsed.stockSources.find((entry) => entry.productId === item.productId)?.stockSource ?? parsed.stockSource,
     })),

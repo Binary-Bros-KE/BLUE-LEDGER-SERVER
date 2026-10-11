@@ -259,16 +259,31 @@ export const mobileQuotationSchema = z.object({
 
 export type MobileQuotationInput = z.infer<typeof mobileQuotationSchema>;
 
+/** 0 is allowed and means "leave this line off" — same as DESKTOP's convert dialog. */
 const mobileQuotationQuantityOverrideSchema = z.object({
   productId: z.string().trim().min(1),
-  quantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+  quantity: z.coerce.number().int().min(0, "Quantity can't be negative"),
 });
+
+/** Lines marked "Sourced from another shop" at conversion — bought elsewhere on the spot (no stock
+ * check, no deduction). localCostCents is the line's TOTAL buying cost, same as a cart line's. */
+const mobileConvertSourcedLinesSchema = z
+  .array(
+    z.object({
+      productId: z.string().trim().min(1),
+      localCostCents: z.coerce.number().int().positive("Enter the buying price for this locally-sourced item"),
+      localSupplierId: z.string().trim().min(1).optional(),
+    }),
+  )
+  .optional()
+  .default([]);
 
 export const mobileConvertToSaleSchema = z.object({
   paymentMethodId: z.string().trim().min(1, "Select a payment method"),
   paymentReference: z.string().trim().optional(),
   amountReceivedCents: z.coerce.number().int().min(0).nullable().optional(),
   quantityOverrides: z.array(mobileQuotationQuantityOverrideSchema).optional().default([]),
+  sourcedLines: mobileConvertSourcedLinesSchema,
 });
 
 export type MobileConvertToSaleInput = z.infer<typeof mobileConvertToSaleSchema>;
@@ -276,6 +291,7 @@ export type MobileConvertToSaleInput = z.infer<typeof mobileConvertToSaleSchema>
 export const mobileConvertToInvoiceSchema = z.object({
   dueDate: z.string().trim().min(1, "Due date is required"),
   quantityOverrides: z.array(mobileQuotationQuantityOverrideSchema).optional().default([]),
+  sourcedLines: mobileConvertSourcedLinesSchema,
   /** Per-line stock source, keyed by productId (same keying as quantityOverrides). */
   stockSources: z
     .array(z.object({ productId: z.string().trim().min(1), stockSource: mobileInvoiceStockSourceSchema }))
@@ -283,6 +299,8 @@ export const mobileConvertToInvoiceSchema = z.object({
     .default([]),
   /** Legacy whole-invoice default for lines not listed in stockSources. */
   stockSource: mobileInvoiceStockSourceSchema.optional(),
+  /** Who to bill when the quotation was for a walk-in (no customer of its own) — ignored otherwise. */
+  customerId: z.string().trim().min(1).optional(),
 });
 
 export type MobileConvertToInvoiceInput = z.infer<typeof mobileConvertToInvoiceSchema>;
