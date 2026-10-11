@@ -124,12 +124,15 @@ export function requireMobilePermission(module: string, action: string) {
           throw new HttpError(403, "This account is no longer active. Contact your Super Admin.");
         }
         const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
+        session.isSuperAdmin = role?.isSuperAdmin ?? false;
         return (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
       });
       session.permissions = permissions;
     }
 
-    if (!permissions[module]?.includes(action)) {
+    // A Super Admin has every permission by definition — never limited by its stored JSON, which only
+    // lists the modules that existed when the role was seeded (same rule as DESKTOP's auth-service).
+    if (!session.isSuperAdmin && !permissions[module]?.includes(action)) {
       throw new HttpError(403, `Your account doesn't have "${action}" access to ${module} — ask your Super Admin to grant it.`);
     }
     next();
