@@ -415,7 +415,17 @@ export const deliveryReorderSchema = z.object({
 
 // --- Online orders (storefront checkout → POS inbox) ---------------------------------------------
 
-export const ONLINE_ORDER_STATUSES = ["NEW", "CONFIRMED", "COMPLETED", "CANCELLED"] as const;
+/** NEW is shown as "Pending". See services/shop-order-service.ts ORDER_FLOWS for the step order. */
+export const ONLINE_ORDER_STATUSES = [
+  "NEW",
+  "CONFIRMED",
+  "READY",
+  "PICKED_UP",
+  "SHIPPED",
+  "DELIVERED",
+  "COMPLETED",
+  "CANCELLED",
+] as const;
 
 /** POST /shop/orders — only ids + quantities are trusted from the shopper; every price, name and
  * the delivery fee are re-read server-side. */
@@ -455,13 +465,49 @@ export const newsletterSignupSchema = z.object({
 
 export const orderListSchema = z.object({
   status: z.enum([...ONLINE_ORDER_STATUSES, "ALL"]).default("ALL"),
+  /** several statuses at once (a POS tab like "Ready / shipped") — wins over `status` when given */
+  statuses: z.array(z.enum(ONLINE_ORDER_STATUSES)).min(1).max(ONLINE_ORDER_STATUSES.length).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(30),
 });
 
+/** Who on the POS did it — shown in the order's history. */
+const actorName = z.string().trim().max(120).nullish();
+
 export const orderStatusSchema = z.object({
   id: z.string().trim().min(1).max(64),
   status: z.enum(ONLINE_ORDER_STATUSES),
+  /** SHIPPED only: the rider taking it (a POS rider id + display name), optional */
+  riderId: z.string().trim().min(1).max(80).nullish(),
+  riderName: z.string().trim().min(1).max(150).nullish(),
+  actorName,
+});
+
+/** POST /shop-admin/orders/payment/add — the POS validated the method locally (it owns them). */
+export const orderPaymentAddSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  paymentMethodId: z.string().trim().min(1).max(80),
+  paymentMethodName: z.string().trim().min(1).max(120),
+  amountCents: z.number().int().min(1).max(100_000_000_000),
+  reference: z.string().trim().min(1).max(120).nullish(),
+  notes: z.string().trim().max(500).nullish(),
+  receivedBy: z.string().trim().min(1).max(80),
+  receivedByName: z.string().trim().min(1).max(120),
+});
+
+export const orderPaymentRemoveSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  paymentId: z.string().trim().min(1).max(80),
+  actorName,
+});
+
+/** POST /shop-admin/orders/fulfilment — switch between pick-up and delivery before it's dispatched. */
+export const orderFulfilmentSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  deliveryType: z.enum(["pickup", "delivery"]),
+  deliveryAddress: z.string().trim().max(500).nullish(),
+  deliveryMethodId: z.string().trim().max(64).nullish(),
+  actorName,
 });
 
 export const orderGetSchema = z.object({ id: z.string().trim().min(1).max(64) });
@@ -471,6 +517,7 @@ export const orderLinkSaleSchema = z.object({
   id: z.string().trim().min(1).max(64),
   saleId: z.string().trim().min(1).max(80),
   receiptNumber: z.string().trim().min(1).max(40).nullish(),
+  actorName,
 });
 
 export const orderSeenSchema = z.object({ ids: z.array(z.string().trim().min(1).max(64)).max(200).optional() });
@@ -479,6 +526,9 @@ export type ShopOrderCreateInput = z.infer<typeof shopOrderCreateSchema>;
 export type OrderListInput = z.infer<typeof orderListSchema>;
 export type OrderStatusInput = z.infer<typeof orderStatusSchema>;
 export type OrderLinkSaleInput = z.infer<typeof orderLinkSaleSchema>;
+export type OrderPaymentAddInput = z.infer<typeof orderPaymentAddSchema>;
+export type OrderPaymentRemoveInput = z.infer<typeof orderPaymentRemoveSchema>;
+export type OrderFulfilmentInput = z.infer<typeof orderFulfilmentSchema>;
 
 export type StoreConfigUpdateInput = z.infer<typeof storeConfigUpdateSchema>;
 export type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;

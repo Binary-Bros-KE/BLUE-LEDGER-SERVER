@@ -401,7 +401,11 @@ model OnlineOrder {
   /// Per-tenant running number — shown as WEB-0001. Unique per tenant (retry on collision).
   orderSeq Int
 
-  /// NEW → CONFIRMED → COMPLETED, or CANCELLED. Free-form text (validated in the schema layer).
+  /// Step by step, per fulfilment route (services/shop-order-service.ts ORDER_FLOWS):
+  ///   pickup:   NEW (pending) → CONFIRMED → READY → PICKED_UP → COMPLETED
+  ///   delivery: NEW (pending) → CONFIRMED → SHIPPED → DELIVERED → COMPLETED
+  /// COMPLETED only once a POS converted it to a sale; CANCELLED from any step before the hand-over.
+  /// Free-form text (validated in the schema layer).
   status String @default("NEW")
 
   customerName    String
@@ -438,6 +442,18 @@ model OnlineOrder {
   /// number. Once set it never changes: one web order becomes at most one sale.
   linkedSaleId        String?
   linkedReceiptNumber String?
+
+  /// Payments the shop recorded against the order before it became a sale — the POS SalePayment
+  /// shape [{ id, paymentMethodId, paymentMethodName, amountCents, reference, receivedBy,
+  /// receivedByName, receivedAt, notes }]. Never more than totalCents in all; carried onto the sale
+  /// as-is when the order is completed.
+  paymentsJson Json @default("[]")
+  /// Audit trail shown on the order: [{ at, kind: "status"|"payment"|"payment_removed"|"fulfilment",
+  /// status?, amountCents?, method?, by? }].
+  historyJson  Json @default("[]")
+  /// Rider the order was shipped with (delivery orders) — copied onto the sale's delivery note.
+  riderId      String?
+  riderName    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

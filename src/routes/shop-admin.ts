@@ -12,9 +12,12 @@ import {
   storeConfigUpdateSchema,
   themeImageUploadSchema,
   themeUpdateSchema,
+  orderFulfilmentSchema,
   orderGetSchema,
   orderLinkSaleSchema,
   orderListSchema,
+  orderPaymentAddSchema,
+  orderPaymentRemoveSchema,
   orderSeenSchema,
   orderStatusSchema,
 } from "../schemas/shop.js";
@@ -75,6 +78,21 @@ shopAdminRouter.post("/orders/summary", async (req, res) => {
 shopAdminRouter.post("/orders/status", async (req, res) => {
   const input = orderStatusSchema.parse(req.body);
   res.json(await orderService.setOrderStatus(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
+});
+
+shopAdminRouter.post("/orders/payment/add", async (req, res) => {
+  const input = orderPaymentAddSchema.parse(req.body);
+  res.json(await orderService.addOrderPayment(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
+});
+
+shopAdminRouter.post("/orders/payment/remove", async (req, res) => {
+  const input = orderPaymentRemoveSchema.parse(req.body);
+  res.json(await orderService.removeOrderPayment(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
+});
+
+shopAdminRouter.post("/orders/fulfilment", async (req, res) => {
+  const input = orderFulfilmentSchema.parse(req.body);
+  res.json(await orderService.setOrderFulfilment(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
 });
 
 shopAdminRouter.post("/orders/seen", async (req, res) => {

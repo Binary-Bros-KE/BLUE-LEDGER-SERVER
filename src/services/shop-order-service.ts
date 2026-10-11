@@ -1,8 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import type { ShopContext } from "../middleware/shop-tenant.js";
-import type { OrderLinkSaleInput, OrderListInput, OrderStatusInput, ShopOrderCreateInput } from "../schemas/shop.js";
+import {
+  ONLINE_ORDER_STATUSES,
+  type OrderFulfilmentInput,
+  type OrderLinkSaleInput,
+  type OrderListInput,
+  type OrderPaymentAddInput,
+  type OrderPaymentRemoveInput,
+  type OrderStatusInput,
+  type ShopOrderCreateInput,
+} from "../schemas/shop.js";
 import { activeSharedVariants, parseVariantConfig, variantLabel } from "../lib/variants.js";
 import { readWebPricing, shopperPrice, shopperVariantPrice } from "../lib/web-pricing.js";
 
@@ -25,6 +35,41 @@ export type OnlineOrderItem = {
   qty: number;
   lineTotalCents: number;
 };
+
+/** Same shape as the POS's SalePayment, so the payments carry onto the sale unchanged. */
+export type OnlineOrderPayment = {
+  id: string;
+  paymentMethodId: string;
+  paymentMethodName: string;
+  amountCents: number;
+  reference: string | null;
+  receivedBy: string;
+  receivedByName: string;
+  receivedAt: string;
+  notes: string | null;
+};
+
+export type OnlineOrderHistoryEntry = {
+  at: string;
+  kind: "status" | "payment" | "payment_removed" | "fulfilment";
+  /** the new status (kind "status") or route "pickup"/"delivery" (kind "fulfilment") */
+  status?: string;
+  amountCents?: number;
+  /** payment method name, or the delivery option chosen */
+  method?: string;
+  /** who on the POS did it */
+  by?: string | null;
+  rider?: string | null;
+  receipt?: string;
+};
+
+function readPayments(json: Prisma.JsonValue): OnlineOrderPayment[] {
+  return Array.isArray(json) ? (json as unknown as OnlineOrderPayment[]) : [];
+}
+
+function readHistory(json: Prisma.JsonValue): OnlineOrderHistoryEntry[] {
+  return Array.isArray(json) ? (json as unknown as OnlineOrderHistoryEntry[]) : [];
+}
 
 export type OnlineOrderView = {
   id: string;
@@ -52,6 +97,13 @@ export type OnlineOrderView = {
   /** set once a POS rang the order up as a sale */
   linkedSaleId: string | null;
   linkedReceiptNumber: string | null;
+  payments: OnlineOrderPayment[];
+  paidCents: number;
+  /** totalCents - paidCents (never negative) */
+  balanceCents: number;
+  history: OnlineOrderHistoryEntry[];
+  riderId: string | null;
+  riderName: string | null;
 };
 
 export function formatOrderNumber(seq: number): string {
@@ -61,6 +113,8 @@ export function formatOrderNumber(seq: number): string {
 type OrderRow = Prisma.OnlineOrderGetPayload<object>;
 
 function toView(r: OrderRow): OnlineOrderView {
+  const payments = readPayments(r.paymentsJson);
+  const paidCents = payments.reduce((s, p) => s + p.amountCents, 0);
   return {
     id: r.id,
     orderNumber: formatOrderNumber(r.orderSeq),
@@ -84,6 +138,12 @@ function toView(r: OrderRow): OnlineOrderView {
     statusChangedAt: r.statusChangedAt?.toISOString() ?? null,
     linkedSaleId: r.linkedSaleId,
     linkedReceiptNumber: r.linkedReceiptNumber,
+    payments,
+    paidCents,
+    balanceCents: Math.max(0, r.totalCents - paidCents),
+    history: readHistory(r.historyJson),
+    riderId: r.riderId,
+    riderName: r.riderName,
   };
 }
 
@@ -204,9 +264,66 @@ export async function createOrder(
 
 // --- POS side (device-authed /shop-admin/orders/*) ------------------------------------------------
 
+/**
+ * The steps an order walks through, per fulfilment route. Each step is unlocked only by the one
+ * before it; COMPLETED comes after the last step and is reached only by converting the order to a
+ * POS sale (linkOrderSale) — never by a plain status change. Cancelling is allowed up to, but not
+ * after, the hand-over (PICKED_UP / DELIVERED).
+ */
+export const ORDER_FLOWS = {
+  pickup: ["NEW", "CONFIRMED", "READY", "PICKED_UP"],
+  delivery: ["NEW", "CONFIRMED", "SHIPPED", "DELIVERED"],
+} as const;
+
+const HANDED_OVER = new Set(["PICKED_UP", "DELIVERED"]);
+/** The route can be switched only before anything has been prepared for it. */
+const ROUTE_EDITABLE = new Set(["NEW", "CONFIRMED"]);
+
+function flowFor(deliveryType: string): readonly string[] {
+  return deliveryType === "pickup" ? ORDER_FLOWS.pickup : ORDER_FLOWS.delivery;
+}
+
+const STATUS_WORDS: Record<string, string> = {
+  NEW: "pending",
+  CONFIRMED: "confirmed",
+  READY: "ready for pickup",
+  PICKED_UP: "picked up",
+  SHIPPED: "shipped",
+  DELIVERED: "delivered",
+  COMPLETED: "completed",
+  CANCELLED: "cancelled",
+};
+
+/** Locks the order row for the rest of the transaction, so two tills can't interleave a status
+ * change / payment on the same order (e.g. both recording the last payment and overpaying it). */
+async function lockOrder(tx: Prisma.TransactionClient, id: string): Promise<OrderRow> {
+  await tx.$executeRaw`SELECT 1 FROM "online_orders" WHERE "id" = ${id} FOR UPDATE`;
+  const row = await tx.onlineOrder.findUnique({ where: { id } });
+  if (!row) throw new HttpError(404, "Order not found");
+  return row;
+}
+
+function historyWith(row: OrderRow, entry: Omit<OnlineOrderHistoryEntry, "at">, at = new Date()): Prisma.InputJsonValue {
+  const clean = Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined && v !== null));
+  return [...readHistory(row.historyJson), { at: at.toISOString(), ...clean }] as unknown as Prisma.InputJsonValue;
+}
+
+function assertOpen(row: OrderRow, action: string): void {
+  if (row.linkedSaleId || row.status === "COMPLETED") {
+    throw new HttpError(409, `${formatOrderNumber(row.orderSeq)} is already completed — ${action} isn't possible any more.`);
+  }
+  if (row.status === "CANCELLED") {
+    throw new HttpError(409, `${formatOrderNumber(row.orderSeq)} is cancelled — reopen it first.`);
+  }
+}
+
 export async function listOrders(tenantId: string, q: OrderListInput) {
   return withTenantContext(tenantId, async (tx) => {
-    const where: Prisma.OnlineOrderWhereInput = q.status === "ALL" ? {} : { status: q.status };
+    const where: Prisma.OnlineOrderWhereInput = q.statuses
+      ? { status: { in: q.statuses } }
+      : q.status === "ALL"
+        ? {}
+        : { status: q.status };
     const [rows, total, grouped, unseen] = await Promise.all([
       tx.onlineOrder.findMany({
         where,
@@ -218,7 +335,7 @@ export async function listOrders(tenantId: string, q: OrderListInput) {
       tx.onlineOrder.groupBy({ by: ["status"], _count: { _all: true } }),
       tx.onlineOrder.count({ where: { seenAt: null } }),
     ]);
-    const counts: Record<string, number> = { NEW: 0, CONFIRMED: 0, COMPLETED: 0, CANCELLED: 0 };
+    const counts: Record<string, number> = Object.fromEntries(ONLINE_ORDER_STATUSES.map((s) => [s, 0]));
     for (const g of grouped) counts[g.status] = g._count._all;
     return { orders: rows.map(toView), total, page: q.page, pageSize: q.pageSize, counts, unseen };
   });
@@ -236,17 +353,203 @@ export async function orderSummary(tenantId: string) {
   });
 }
 
+/**
+ * Moves an order one step: forward to the next step of its route, back one step (undoing a
+ * mis-click), to CANCELLED (before the hand-over), or from CANCELLED back to NEW (reopen).
+ * Anything else — skipping a step, or COMPLETED (that's linkOrderSale's job) — is refused here,
+ * so every till follows the same order no matter which build it runs.
+ */
 export async function setOrderStatus(tenantId: string, deviceId: string, input: OrderStatusInput) {
   return withTenantContext(tenantId, async (tx) => {
-    const existing = await tx.onlineOrder.findUnique({ where: { id: input.id } });
-    if (!existing) throw new HttpError(404, "Order not found");
+    const existing = await lockOrder(tx, input.id);
+    const number = formatOrderNumber(existing.orderSeq);
+    const from = existing.status;
+    const to = input.status;
+    if (from === to) return toView(existing);
+
+    if (to === "COMPLETED") {
+      throw new HttpError(409, `Complete ${number} from the POS — that records it as a sale.`);
+    }
+    if (existing.linkedSaleId || from === "COMPLETED") {
+      throw new HttpError(409, `${number} is already completed and recorded as a sale.`);
+    }
+
+    const flow = flowFor(existing.deliveryType);
+    if (to === "CANCELLED") {
+      if (HANDED_OVER.has(from)) {
+        throw new HttpError(409, `${number} was already ${STATUS_WORDS[from]} — it can't be cancelled now.`);
+      }
+    } else if (from === "CANCELLED") {
+      if (to !== "NEW") throw new HttpError(409, `Reopen ${number} first — it goes back to pending.`);
+    } else {
+      const at = flow.indexOf(from);
+      const target = flow.indexOf(to);
+      if (target === -1) {
+        throw new HttpError(409, `"${STATUS_WORDS[to] ?? to}" isn't a step for a ${existing.deliveryType} order.`);
+      }
+      // An order sitting on a step its route doesn't have can only have come from an older build —
+      // let it rejoin the flow anywhere up to the hand-over rather than getting stuck.
+      const allowed = at === -1 ? !HANDED_OVER.has(to) : target === at + 1 || target === at - 1;
+      if (!allowed) {
+        const next = flow[at + 1];
+        throw new HttpError(
+          409,
+          next
+            ? `${number} is ${STATUS_WORDS[from]} — mark it ${STATUS_WORDS[next]} first.`
+            : `${number} is ${STATUS_WORDS[from]} — the only step left is completing it as a sale.`,
+        );
+      }
+    }
+
+    const now = new Date();
+    const shipping = to === "SHIPPED" ? { riderId: input.riderId ?? null, riderName: input.riderName ?? null } : {};
     const row = await tx.onlineOrder.update({
       where: { id: input.id },
       data: {
-        status: input.status,
-        statusChangedAt: new Date(),
+        status: to,
+        ...shipping,
+        statusChangedAt: now,
         handledByDeviceId: deviceId,
-        seenAt: existing.seenAt ?? new Date(),
+        seenAt: existing.seenAt ?? now,
+        historyJson: historyWith(
+          existing,
+          { kind: "status", status: to, by: input.actorName, rider: to === "SHIPPED" ? input.riderName : undefined },
+          now,
+        ),
+      },
+    });
+    return toView(row);
+  });
+}
+
+/** Records money received for an order before it becomes a sale. Never more than what's still owed,
+ * so the payments always add up to at most the total — exactly what the sale will need. */
+export async function addOrderPayment(tenantId: string, deviceId: string, input: OrderPaymentAddInput) {
+  return withTenantContext(tenantId, async (tx) => {
+    const existing = await lockOrder(tx, input.id);
+    assertOpen(existing, "recording a payment");
+    const payments = readPayments(existing.paymentsJson);
+    const balance = existing.totalCents - payments.reduce((s, p) => s + p.amountCents, 0);
+    if (balance <= 0) throw new HttpError(409, `${formatOrderNumber(existing.orderSeq)} is already fully paid.`);
+    if (input.amountCents > balance) {
+      throw new HttpError(
+        409,
+        `Only ${existing.currency} ${(balance / 100).toFixed(2)} is still owed on ${formatOrderNumber(existing.orderSeq)}.`,
+      );
+    }
+    const now = new Date();
+    const payment: OnlineOrderPayment = {
+      id: `payment_${randomUUID()}`,
+      paymentMethodId: input.paymentMethodId,
+      paymentMethodName: input.paymentMethodName,
+      amountCents: input.amountCents,
+      reference: input.reference ?? null,
+      receivedBy: input.receivedBy,
+      receivedByName: input.receivedByName,
+      receivedAt: now.toISOString(),
+      notes: input.notes || null,
+    };
+    const row = await tx.onlineOrder.update({
+      where: { id: input.id },
+      data: {
+        paymentsJson: [...payments, payment] as unknown as Prisma.InputJsonValue,
+        handledByDeviceId: deviceId,
+        seenAt: existing.seenAt ?? now,
+        historyJson: historyWith(
+          existing,
+          { kind: "payment", amountCents: input.amountCents, method: input.paymentMethodName, by: input.receivedByName },
+          now,
+        ),
+      },
+    });
+    return toView(row);
+  });
+}
+
+/** Takes back a payment recorded by mistake (or refunded) while the order is still open. */
+export async function removeOrderPayment(tenantId: string, deviceId: string, input: OrderPaymentRemoveInput) {
+  return withTenantContext(tenantId, async (tx) => {
+    const existing = await lockOrder(tx, input.id);
+    if (existing.linkedSaleId || existing.status === "COMPLETED") {
+      throw new HttpError(409, `${formatOrderNumber(existing.orderSeq)} is already a sale — its payments are on the receipt now.`);
+    }
+    const payments = readPayments(existing.paymentsJson);
+    const removed = payments.find((p) => p.id === input.paymentId);
+    if (!removed) throw new HttpError(404, "Payment not found");
+    const row = await tx.onlineOrder.update({
+      where: { id: input.id },
+      data: {
+        paymentsJson: payments.filter((p) => p.id !== input.paymentId) as unknown as Prisma.InputJsonValue,
+        handledByDeviceId: deviceId,
+        historyJson: historyWith(existing, {
+          kind: "payment_removed",
+          amountCents: removed.amountCents,
+          method: removed.paymentMethodName,
+          by: input.actorName,
+        }),
+      },
+    });
+    return toView(row);
+  });
+}
+
+/**
+ * Switches an order between pick-up and delivery (the customer changed their mind) while it's still
+ * pending/confirmed. Delivery re-reads the fee from this shop's own delivery option, exactly as
+ * checkout does; pick-up drops it. Refused if what's already been paid would exceed the new total.
+ */
+export async function setOrderFulfilment(tenantId: string, deviceId: string, input: OrderFulfilmentInput) {
+  return withTenantContext(tenantId, async (tx) => {
+    const existing = await lockOrder(tx, input.id);
+    const number = formatOrderNumber(existing.orderSeq);
+    assertOpen(existing, "changing pick-up / delivery");
+    if (!ROUTE_EDITABLE.has(existing.status)) {
+      throw new HttpError(409, `${number} is already ${STATUS_WORDS[existing.status]} — pick-up / delivery can't change now.`);
+    }
+
+    let deliveryMethodId: string | null = null;
+    let deliveryMethodName: string | null = null;
+    let deliveryFeeCents = 0;
+    let deliveryAddress: string | null = null;
+    if (input.deliveryType === "delivery") {
+      deliveryAddress = input.deliveryAddress?.trim() || existing.deliveryAddress?.trim() || null;
+      if (!deliveryAddress) throw new HttpError(400, "Enter the delivery address.");
+      if (input.deliveryMethodId) {
+        const m = await tx.webDeliveryMethod.findFirst({ where: { id: input.deliveryMethodId, active: true } });
+        if (!m) throw new HttpError(409, "That delivery option is no longer available. Choose another.");
+        deliveryMethodId = m.id;
+        deliveryMethodName = m.name;
+        deliveryFeeCents = m.priceCents;
+      }
+    }
+
+    const totalCents = existing.subtotalCents + deliveryFeeCents;
+    const paid = readPayments(existing.paymentsJson).reduce((s, p) => s + p.amountCents, 0);
+    if (paid > totalCents) {
+      throw new HttpError(
+        409,
+        `${existing.currency} ${(paid / 100).toFixed(2)} is already paid but the new total would be ${existing.currency} ${(
+          totalCents / 100
+        ).toFixed(2)}. Remove or refund a payment first.`,
+      );
+    }
+
+    const row = await tx.onlineOrder.update({
+      where: { id: input.id },
+      data: {
+        deliveryType: input.deliveryType,
+        deliveryAddress,
+        deliveryMethodId,
+        deliveryMethodName,
+        deliveryFeeCents,
+        totalCents,
+        handledByDeviceId: deviceId,
+        historyJson: historyWith(existing, {
+          kind: "fulfilment",
+          status: input.deliveryType,
+          method: deliveryMethodName ?? undefined,
+          by: input.actorName,
+        }),
       },
     });
     return toView(row);
@@ -262,18 +565,23 @@ export async function getOrder(tenantId: string, id: string) {
 }
 
 /**
- * Records that a POS rang this order up as a sale, and completes it. Idempotent for the SAME sale
- * (a retry after a dropped response is fine); refuses a second, different sale — one web order
+ * Records that a POS converted this order into a sale, and completes it. Idempotent for the SAME
+ * sale (a retry after a dropped response is fine); refuses a second, different sale — one web order
  * becomes at most one sale, even with two tills racing.
+ *
+ * Deliberately NOT gated on the order's step: by the time this is called the sale already exists on
+ * the till, so refusing would only leave a real sale with an open order that another till could sell
+ * again. The current POS only completes from picked up / delivered; older builds rang orders up
+ * straight from pending/confirmed and must still be able to link.
  */
 export async function linkOrderSale(tenantId: string, deviceId: string, input: OrderLinkSaleInput) {
   return withTenantContext(tenantId, async (tx) => {
-    const existing = await tx.onlineOrder.findUnique({ where: { id: input.id } });
-    if (!existing) throw new HttpError(404, "Order not found");
-    if (existing.linkedSaleId && existing.linkedSaleId !== input.saleId) {
+    const existing = await lockOrder(tx, input.id);
+    if (existing.linkedSaleId) {
+      if (existing.linkedSaleId === input.saleId) return toView(existing);
       throw new HttpError(
         409,
-        `This order was already rung up as receipt ${existing.linkedReceiptNumber ?? existing.linkedSaleId}.`,
+        `This order was already completed as receipt ${existing.linkedReceiptNumber ?? existing.linkedSaleId}.`,
       );
     }
     const now = new Date();
@@ -286,6 +594,11 @@ export async function linkOrderSale(tenantId: string, deviceId: string, input: O
         statusChangedAt: now,
         handledByDeviceId: deviceId,
         seenAt: existing.seenAt ?? now,
+        historyJson: historyWith(
+          existing,
+          { kind: "status", status: "COMPLETED", by: input.actorName, receipt: input.receiptNumber ?? undefined },
+          now,
+        ),
       },
     });
     return toView(row);
