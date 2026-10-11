@@ -8,7 +8,7 @@ import {
   prepareMobileCart,
   sumServiceChargeFees,
 } from "../lib/mobile-cart.js";
-import { type InvoiceStockSource, mainStoreAvailableForStorefront, resolveInvoiceStockLocationId } from "../lib/invoice-stock.js";
+import { findMainStoreIdIfEnabled, mainStoreAvailableForStorefront } from "../lib/invoice-stock.js";
 import { buildDeliveryJson, createDeliveryCostExpenseIfNeeded } from "../lib/mobile-delivery.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import type { TenantTaxConfig } from "../lib/tax-breakdown.js";
@@ -385,18 +385,16 @@ export type MobileQuotationStockCheckItem = {
   requestedQuantity: number;
   availableQuantity: number;
   sufficient: boolean;
+  /** What the Main Store could supply this storefront for the line (its earmark + unallocated — the
+   * figure a Main Store invoice line is held to). Null unless the admin's "Invoice stock from Main
+   * Store" toggle is on — Convert to Invoice then lets each line pick its source. */
+  mainStoreAvailableQuantity: number | null;
 };
 
 /** Live stock at the quotation's own storefront for each line — lets APP warn before conversion.
  * A locally-sourced line never touched (and never will touch) this shop's own inventory, so it's
- * excluded — matches DESKTOP's own checkQuotationStock exactly. stockSource "main_store" (converting
- * to an invoice with the admin's Main Store toggle on) checks what the Main Store could supply this
- * storefront instead — its earmark + unallocated, the same figure the conversion itself enforces. */
-export async function checkQuotationStock(
-  tenantId: string,
-  id: string,
-  stockSource: InvoiceStockSource = "storefront",
-): Promise<MobileQuotationStockCheckItem[]> {
+ * excluded — matches DESKTOP's own checkQuotationStock exactly. */
+export async function checkQuotationStock(tenantId: string, id: string): Promise<MobileQuotationStockCheckItem[]> {
   return withTenantContext(tenantId, async (tx) => {
     const row = await tx.quotation.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Quotation not found");
@@ -405,7 +403,7 @@ export async function checkQuotationStock(
     const trackedItems = items.filter((item) => !item.isLocallySourced);
     if (trackedItems.length === 0) return [];
 
-    const mainStoreId = await resolveInvoiceStockLocationId(tx, tenantId, stockSource);
+    const mainStoreId = await findMainStoreIdIfEnabled(tx, tenantId);
     const [products, balances] = await Promise.all([
       tx.product.findMany({ where: { id: { in: trackedItems.map((i) => i.productId) } }, select: { id: true, name: true } }),
       // Read from the `inventory` running-balance table (see that Prisma model's own doc comment) —
@@ -416,9 +414,10 @@ export async function checkQuotationStock(
       }),
     ]);
     const productNameById = new Map(products.map((p) => [p.id, p.name]));
-    const stockByProduct = mainStoreId
+    const stockByProduct = new Map(balances.map((b) => [b.productId, b.quantity]));
+    const mainStoreByProduct = mainStoreId
       ? await mainStoreAvailableForStorefront(tx, tenantId, mainStoreId, row.locationId, trackedItems.map((i) => i.productId))
-      : new Map(balances.map((b) => [b.productId, b.quantity]));
+      : null;
 
     return trackedItems.map((item) => {
       const availableQuantity = stockByProduct.get(item.productId) ?? 0;
@@ -430,6 +429,7 @@ export async function checkQuotationStock(
         requestedQuantity: item.quantity,
         availableQuantity,
         sufficient: availableQuantity >= item.quantity,
+        mainStoreAvailableQuantity: mainStoreByProduct ? (mainStoreByProduct.get(item.productId) ?? 0) : null,
       };
     });
   });
@@ -663,7 +663,12 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
     invoiceNotes: quotation.notes ?? undefined,
     includeTaxBreakdown: quotation.includeTaxBreakdown,
     includeBusinessInfo: quotation.includeBusinessInfo,
-    items: buildConversionItems(quotationItems, parsed.quantityOverrides),
+    // Each line's stock source from the convert dialog (per line, keyed by productId), falling back
+    // to the legacy whole-invoice choice; createInvoice enforces the admin toggle regardless.
+    items: buildConversionItems(quotationItems, parsed.quantityOverrides).map((item) => ({
+      ...item,
+      stockSource: parsed.stockSources.find((entry) => entry.productId === item.productId)?.stockSource ?? parsed.stockSource,
+    })),
     initialPayment: null,
     delivery: deliveryRow
       ? {
@@ -684,9 +689,6 @@ export async function convertQuotationToInvoice(tenantId: string, employeeId: st
       costCents: charge.costCents,
     })),
     locationId,
-    // The convert dialog's Storefront / Main Store choice (only offered when the admin toggle is on —
-    // createInvoice enforces that regardless).
-    stockSource: parsed.stockSource,
   });
 
   await withTenantContext(tenantId, (tx) => {

@@ -55,6 +55,10 @@ export type PreparedMobileCartItem = {
   variantLabel: string | null;
   /** DESKTOP's per-line section, carried through unchanged */
   sectionLabel: string | null;
+  /** Invoices only: where THIS line's stock was deducted from when that isn't the storefront (only
+   * ever the Main Store) — null = the storefront. Absent on checkout/quotation lines. DESKTOP pulls it
+   * into sale_items.stock_location_id. */
+  stockLocationId?: string | null;
   createdAt: string;
 };
 
@@ -69,7 +73,8 @@ export type PreparedMobileCart = {
   grandTotalCents: number;
   /** Only ever non-empty when `checkStock` was true — a quotation never deducts stock (or even
    * checks it — see this function's own doc comment), so its caller simply never looks at this. */
-  stockMovementRows: Array<{ id: string; productId: string; quantityChange: number }>;
+  /** stockLocationId: null = the storefront (`locationId`), otherwise that line's own stock location. */
+  stockMovementRows: Array<{ id: string; productId: string; quantityChange: number; stockLocationId: string | null }>;
 };
 
 /**
@@ -95,7 +100,10 @@ export async function prepareMobileCart(
   locationId: string,
   items: MobileCartItemInput[],
   tenantTaxConfig: TenantTaxConfig,
-  options: { checkStock: boolean },
+  /** lineStockLocationIds (invoices only): per line, aligned with `items` — null = check/deduct at
+   * `locationId` (the storefront), otherwise at that location (the Main Store). Omitted = every line
+   * at `locationId`, and prepared items carry no stockLocationId key at all. */
+  options: { checkStock: boolean; lineStockLocationIds?: Array<string | null> },
 ): Promise<PreparedMobileCart> {
   if (items.length === 0) throw new HttpError(400, "Add at least one item");
 
@@ -104,13 +112,17 @@ export async function prepareMobileCart(
 
   // Read from the `inventory` running-balance table (see that Prisma model's own doc comment) —
   // O(cart size), not a live sum over this product's entire movement history at this location.
+  const lineLocation = (index: number): string => options.lineStockLocationIds?.[index] ?? locationId;
+  const stockLocationIds = [...new Set(items.map((_, index) => lineLocation(index)))];
   const balances = options.checkStock
     ? await tx.inventory.findMany({
-        where: { tenantId, locationId, productId: { in: items.map((i) => i.productId) } },
-        select: { productId: true, quantity: true },
+        where: { tenantId, locationId: { in: stockLocationIds }, productId: { in: items.map((i) => i.productId) } },
+        select: { productId: true, locationId: true, quantity: true },
       })
     : [];
-  const stockByProduct = new Map(balances.map((b) => [b.productId, b.quantity]));
+  // Keyed by location too — a mixed invoice checks its storefront lines against the storefront and
+  // its Main Store lines against the Main Store (deductInvoiceStock then applies the earmark rule).
+  const stockByLocationProduct = new Map(balances.map((b) => [`${b.locationId}:${b.productId}`, b.quantity]));
 
   // Batch-validate every distinct local supplier referenced across the cart in one query.
   const localSupplierIds = [
@@ -129,13 +141,14 @@ export async function prepareMobileCart(
   let discountAmountCents = 0;
   let taxAmountCents = 0;
   const preparedItems: PreparedMobileCartItem[] = [];
-  const stockMovementRows: Array<{ id: string; productId: string; quantityChange: number }> = [];
+  const stockMovementRows: PreparedMobileCart["stockMovementRows"] = [];
   const now = new Date();
   // Stock is checked against everything requested of a product so far, not line by line — two
   // lines of the same product (e.g. two colours of a shared-stock product) draw from ONE balance.
   const requestedByProduct = new Map<string, number>();
 
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
+    const stockKey = `${lineLocation(index)}:${item.productId}`;
     const product = productById.get(item.productId);
     if (!product || product.status !== "active") {
       throw new HttpError(400, "One of the selected products is no longer available");
@@ -171,9 +184,9 @@ export async function prepareMobileCart(
     }
 
     if (options.checkStock && product.trackStock && !item.isLocallySourced) {
-      const available = stockByProduct.get(product.id) ?? 0;
-      const requested = (requestedByProduct.get(product.id) ?? 0) + item.quantity;
-      requestedByProduct.set(product.id, requested);
+      const available = stockByLocationProduct.get(stockKey) ?? 0;
+      const requested = (requestedByProduct.get(stockKey) ?? 0) + item.quantity;
+      requestedByProduct.set(stockKey, requested);
       if (available - requested < 0 && !product.allowNegativeStock) {
         throw new HttpError(400, `"${product.name}" doesn't have enough stock (${available} available)`);
       }
@@ -202,11 +215,17 @@ export async function prepareMobileCart(
       variantKey: variant?.key ?? null,
       variantLabel: variant?.label ?? null,
       sectionLabel: item.sectionLabel ?? null,
+      ...(options.lineStockLocationIds ? { stockLocationId: options.lineStockLocationIds[index] ?? null } : {}),
       createdAt: now.toISOString(),
     });
 
     if (options.checkStock && product.trackStock && !item.isLocallySourced) {
-      stockMovementRows.push({ id: randomUUID(), productId: product.id, quantityChange: -item.quantity });
+      stockMovementRows.push({
+        id: randomUUID(),
+        productId: product.id,
+        quantityChange: -item.quantity,
+        stockLocationId: options.lineStockLocationIds?.[index] ?? null,
+      });
     }
   }
 
