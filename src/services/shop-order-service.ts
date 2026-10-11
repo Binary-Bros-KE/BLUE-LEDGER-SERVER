@@ -510,7 +510,9 @@ export async function setOrderFulfilment(tenantId: string, deviceId: string, inp
     let deliveryMethodId: string | null = null;
     let deliveryMethodName: string | null = null;
     let deliveryFeeCents = 0;
-    let deliveryAddress: string | null = null;
+    // Kept while it's a pick-up (only read for delivery orders), so switching back to delivery
+    // doesn't lose the address the shopper typed at checkout.
+    let deliveryAddress: string | null = existing.deliveryAddress;
     if (input.deliveryType === "delivery") {
       deliveryAddress = input.deliveryAddress?.trim() || existing.deliveryAddress?.trim() || null;
       if (!deliveryAddress) throw new HttpError(400, "Enter the delivery address.");
