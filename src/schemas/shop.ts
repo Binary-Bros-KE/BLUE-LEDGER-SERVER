@@ -479,6 +479,14 @@ export const orderListSchema = z.object({
 /** Who on the POS did it — shown in the order's history. */
 const actorName = z.string().trim().max(120).nullish();
 
+/** Stock a POS took out of a branch for an order (OnlineOrder.stockHoldJson, minus heldAt). */
+const stockHoldInput = z.object({
+  locationId: z.string().trim().min(1).max(80),
+  items: z
+    .array(z.object({ productId: z.string().trim().min(1).max(64), qty: z.number().int().min(1).max(100_000) }))
+    .max(200),
+});
+
 export const orderStatusSchema = z.object({
   id: z.string().trim().min(1).max(64),
   status: z.enum(ONLINE_ORDER_STATUSES),
@@ -487,14 +495,7 @@ export const orderStatusSchema = z.object({
   riderName: z.string().trim().min(1).max(150).nullish(),
   /** Stock the POS just took out for this order (sent when confirming). Kept only if the order had
    * no hold yet — the response's holdAccepted says whether it was, so a losing till gives it back. */
-  stockHold: z
-    .object({
-      locationId: z.string().trim().min(1).max(80),
-      items: z
-        .array(z.object({ productId: z.string().trim().min(1).max(64), qty: z.number().int().min(1).max(100_000) }))
-        .max(200),
-    })
-    .nullish(),
+  stockHold: stockHoldInput.nullish(),
   actorName,
 });
 
@@ -513,6 +514,26 @@ export const orderPaymentAddSchema = z.object({
 export const orderPaymentRemoveSchema = z.object({
   id: z.string().trim().min(1).max(64),
   paymentId: z.string().trim().min(1).max(80),
+  actorName,
+});
+
+/** POST /shop-admin/orders/items — new quantities for the order's existing lines (a line left out is
+ * removed). Prices stay as ordered. Only while pending/confirmed and nothing has been paid. */
+export const orderItemsEditSchema = z.object({
+  id: z.string().trim().min(1).max(64),
+  items: z
+    .array(
+      z.object({
+        productId: z.string().trim().min(1).max(64),
+        variantKey: z.string().trim().min(1).max(40).nullish(),
+        qty: z.number().int().min(1).max(999),
+      }),
+    )
+    .min(1, "An order needs at least one item — cancel it instead")
+    .max(100),
+  /** a confirmed order's re-taken hold (the POS already moved the stock) + the hold it replaced */
+  stockHold: stockHoldInput.nullish(),
+  replacesHeldAt: z.string().trim().max(40).nullish(),
   actorName,
 });
 
@@ -544,6 +565,7 @@ export type OrderLinkSaleInput = z.infer<typeof orderLinkSaleSchema>;
 export type OrderPaymentAddInput = z.infer<typeof orderPaymentAddSchema>;
 export type OrderPaymentRemoveInput = z.infer<typeof orderPaymentRemoveSchema>;
 export type OrderFulfilmentInput = z.infer<typeof orderFulfilmentSchema>;
+export type OrderItemsEditInput = z.infer<typeof orderItemsEditSchema>;
 
 export type StoreConfigUpdateInput = z.infer<typeof storeConfigUpdateSchema>;
 export type ProductImageUploadInput = z.infer<typeof productImageUploadSchema>;

@@ -6,6 +6,7 @@ import type { ShopContext } from "../middleware/shop-tenant.js";
 import {
   ONLINE_ORDER_STATUSES,
   type OrderFulfilmentInput,
+  type OrderItemsEditInput,
   type OrderLinkSaleInput,
   type OrderListInput,
   type OrderPaymentAddInput,
@@ -51,7 +52,7 @@ export type OnlineOrderPayment = {
 
 export type OnlineOrderHistoryEntry = {
   at: string;
-  kind: "status" | "payment" | "payment_removed" | "fulfilment";
+  kind: "status" | "payment" | "payment_removed" | "fulfilment" | "items";
   /** the new status (kind "status") or route "pickup"/"delivery" (kind "fulfilment") */
   status?: string;
   amountCents?: number;
@@ -556,6 +557,73 @@ export async function removeOrderPayment(tenantId: string, deviceId: string, inp
           method: removed.paymentMethodName,
           by: input.actorName,
         }),
+      },
+    });
+    return toView(row);
+  });
+}
+
+/**
+ * Changes the quantities of an order's lines, or drops lines (the customer wants fewer, or the shop
+ * can't get them all). Prices stay exactly as ordered; the total is recomputed. Only while
+ * pending/confirmed and before any payment — once money is taken, the order is what was agreed.
+ *
+ * A confirmed order already holds stock: the POS releases the old hold and takes the new one
+ * locally first, then sends the new hold with the heldAt of the one it replaced — refused if another
+ * till changed the hold in between, so the POS undoes its stock move.
+ */
+export async function editOrderItems(tenantId: string, deviceId: string, input: OrderItemsEditInput) {
+  return withTenantContext(tenantId, async (tx) => {
+    const existing = await lockOrder(tx, input.id);
+    const number = formatOrderNumber(existing.orderSeq);
+    assertOpen(existing, "editing items");
+    if (!ROUTE_EDITABLE.has(existing.status)) {
+      throw new HttpError(409, `${number} is already ${STATUS_WORDS[existing.status]} — its items can't change now.`);
+    }
+    if (readPayments(existing.paymentsJson).length > 0) {
+      throw new HttpError(409, `${number} has a payment recorded — its items can't be edited any more.`);
+    }
+
+    const hold = readStockHold(existing.stockHoldJson);
+    if (hold) {
+      if (!input.stockHold || input.replacesHeldAt !== hold.heldAt) {
+        throw new HttpError(409, `${number}'s held stock changed on another till — refresh and try again.`);
+      }
+    } else if (input.stockHold) {
+      throw new HttpError(409, `${number} holds no stock — refresh and try again.`);
+    }
+
+    const key = (productId: string, variantKey: string | null | undefined) => `${productId}|${variantKey ?? ""}`;
+    const current = (Array.isArray(existing.itemsJson) ? existing.itemsJson : []) as unknown as OnlineOrderItem[];
+    const byKey = new Map(current.map((it) => [key(it.productId, it.variantKey), it]));
+    const seen = new Set<string>();
+    const items: OnlineOrderItem[] = input.items.map((line) => {
+      const k = key(line.productId, line.variantKey);
+      const was = byKey.get(k);
+      if (!was || seen.has(k)) throw new HttpError(400, "Only the order's own items can be changed — new items can't be added.");
+      seen.add(k);
+      return { ...was, qty: line.qty, lineTotalCents: was.unitPriceCents * line.qty };
+    });
+
+    const changes: string[] = [];
+    for (const it of current) {
+      const now = items.find((n) => key(n.productId, n.variantKey) === key(it.productId, it.variantKey));
+      if (!now) changes.push(`removed ${it.name}`);
+      else if (now.qty !== it.qty) changes.push(`${it.name} ${it.qty}→${now.qty}`);
+    }
+    if (changes.length === 0) return toView(existing);
+
+    const subtotalCents = items.reduce((s, it) => s + it.lineTotalCents, 0);
+    const now = new Date();
+    const row = await tx.onlineOrder.update({
+      where: { id: input.id },
+      data: {
+        itemsJson: items as unknown as Prisma.InputJsonValue,
+        subtotalCents,
+        totalCents: subtotalCents + existing.deliveryFeeCents,
+        ...(hold ? { stockHoldJson: { ...input.stockHold!, heldAt: now.toISOString() } as Prisma.InputJsonValue } : {}),
+        handledByDeviceId: deviceId,
+        historyJson: historyWith(existing, { kind: "items", method: changes.join("; ").slice(0, 500), by: input.actorName }, now),
       },
     });
     return toView(row);

@@ -13,6 +13,7 @@ import {
   themeImageUploadSchema,
   themeUpdateSchema,
   orderFulfilmentSchema,
+  orderItemsEditSchema,
   orderGetSchema,
   orderLinkSaleSchema,
   orderListSchema,
@@ -88,6 +89,11 @@ shopAdminRouter.post("/orders/payment/add", async (req, res) => {
 shopAdminRouter.post("/orders/payment/remove", async (req, res) => {
   const input = orderPaymentRemoveSchema.parse(req.body);
   res.json(await orderService.removeOrderPayment(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
+});
+
+shopAdminRouter.post("/orders/items", async (req, res) => {
+  const input = orderItemsEditSchema.parse(req.body);
+  res.json(await orderService.editOrderItems(req.syncContext!.tenantId, req.syncContext!.deviceId, input));
 });
 
 shopAdminRouter.post("/orders/fulfilment", async (req, res) => {
