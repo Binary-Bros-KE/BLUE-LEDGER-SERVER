@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { withTenantContext } from "../lib/tenant-context.js";
-import { type MobileCreateSupplierInput, mobileCreateSupplierSchema } from "../schemas/mobile.js";
+import { type MobileCreateSupplierInput, mobileCreateSupplierSchema, mobileSupplierBalanceAdjustSchema } from "../schemas/mobile.js";
 
 /** Same synthetic deviceId used by every other Owner-App-originated write — see
  * mobile-checkout-service.ts's own doc comment for why. */
@@ -15,8 +16,8 @@ export type MobileSupplier = { id: string; businessName: string; phone1: string 
 
 const SUPPLIER_SELECT = { id: true, businessName: true, phone1: true } as const;
 
-/** Backs Checkout's "Sourced from another shop" supplier picker AND — same list, no separate
- * Suppliers tab exists yet, unlike Customers/Riders (not requested). */
+/** Backs Checkout's "Sourced from another shop" supplier picker and every other supplier picker
+ * (New Purchase) — the Suppliers tab itself uses listSuppliersWithBalances below. */
 export async function listSuppliers(tenantId: string): Promise<MobileSupplier[]> {
   return withTenantContext(tenantId, async (tx) =>
     tx.supplier.findMany({
@@ -54,5 +55,104 @@ export async function createSupplier(tenantId: string, employeeId: string, input
       },
       select: SUPPLIER_SELECT,
     });
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Supplier balances — a supplier's balance is the running sum of its SupplierBalanceEntry rows
+// (DESKTOP's own append-only ledger: purchase_received grows it, payment shrinks it, both written by
+// purchases — see mobile-purchases-service.ts). The only entry a person creates directly is a
+// "manual_adjustment" (DESKTOP's supplier-balance-service.ts adjustSupplierBalance): an opening
+// balance carried over from an old system, a correction, or money settled outside a purchase.
+// Signed: positive = more owed to the supplier, negative = less.
+// ---------------------------------------------------------------------------------------------
+
+export type MobileSupplierWithBalance = MobileSupplier & { supplierCode: string; balanceCents: number };
+
+export type MobileSupplierBalanceEntry = {
+  id: string;
+  entryType: string;
+  amountCents: number;
+  notes: string | null;
+  /** The purchase number when the entry came from a purchase. */
+  reference: string | null;
+  performedByName: string | null;
+  createdAt: string;
+};
+
+/** Suppliers tab list — biggest balance owed first. */
+export async function listSuppliersWithBalances(tenantId: string): Promise<MobileSupplierWithBalance[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const [suppliers, sums] = await Promise.all([
+      tx.supplier.findMany({ where: { tenantId, status: "active" }, select: { ...SUPPLIER_SELECT, supplierCode: true } }),
+      tx.supplierBalanceEntry.groupBy({ by: ["supplierId"], where: { tenantId }, _sum: { amountCents: true } }),
+    ]);
+    const balanceBySupplier = new Map(sums.map((row) => [row.supplierId, row._sum.amountCents ?? 0]));
+    return suppliers
+      .map((sup) => ({ ...sup, balanceCents: balanceBySupplier.get(sup.id) ?? 0 }))
+      .sort((a, b) => b.balanceCents - a.balanceCents || a.businessName.localeCompare(b.businessName));
+  });
+}
+
+/** DESKTOP's listSupplierBalanceEntries — most recent first. */
+export async function listSupplierBalanceEntries(tenantId: string, supplierId: string): Promise<MobileSupplierBalanceEntry[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const supplier = await tx.supplier.findUnique({ where: { id: supplierId }, select: { tenantId: true } });
+    if (!supplier || supplier.tenantId !== tenantId) throw new NotFoundError("Supplier not found");
+
+    const entries = await tx.supplierBalanceEntry.findMany({ where: { tenantId, supplierId }, orderBy: { localCreatedAt: "desc" }, take: 200 });
+    const purchaseIds = [...new Set(entries.filter((e) => e.referenceType === "purchase" && e.referenceId).map((e) => e.referenceId as string))];
+    const employeeIds = [...new Set(entries.map((e) => e.performedBy).filter((id): id is string => Boolean(id)))];
+    const [purchases, employees] = await Promise.all([
+      tx.purchase.findMany({ where: { id: { in: purchaseIds } }, select: { id: true, purchaseNumber: true } }),
+      tx.employee.findMany({ where: { id: { in: employeeIds } }, select: { id: true, firstName: true, lastName: true } }),
+    ]);
+    const purchaseNumberById = new Map(purchases.map((p) => [p.id, p.purchaseNumber]));
+    const employeeNameById = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
+
+    return entries.map((e) => ({
+      id: e.id,
+      entryType: e.entryType,
+      amountCents: e.amountCents,
+      notes: e.notes,
+      reference: e.referenceId ? (purchaseNumberById.get(e.referenceId) ?? null) : null,
+      performedByName: e.performedBy ? (employeeNameById.get(e.performedBy) ?? null) : null,
+      createdAt: e.localCreatedAt.toISOString(),
+    }));
+  });
+}
+
+/** DESKTOP's adjustSupplierBalance. Idempotent on the client-minted `id` (the entry's own id). */
+export async function adjustSupplierBalance(tenantId: string, employeeId: string, supplierId: string, input: unknown): Promise<{ id: string; balanceCents: number }> {
+  const parsed = mobileSupplierBalanceAdjustSchema.parse(input);
+  const entryId = parsed.id.startsWith("supplier_balance_") ? parsed.id : `supplier_balance_${parsed.id}`;
+  const now = new Date();
+
+  return withTenantContext(tenantId, async (tx) => {
+    const supplier = await tx.supplier.findUnique({ where: { id: supplierId }, select: { tenantId: true } });
+    if (!supplier || supplier.tenantId !== tenantId) throw new NotFoundError("Supplier not found");
+
+    const existing = await tx.supplierBalanceEntry.findUnique({ where: { id: entryId }, select: { id: true } });
+    if (!existing) {
+      await tx.supplierBalanceEntry.create({
+        data: {
+          id: entryId,
+          tenantId,
+          deviceId: OWNER_APP_DEVICE_ID,
+          supplierId,
+          entryType: "manual_adjustment",
+          amountCents: parsed.amountCents,
+          referenceType: null,
+          referenceId: null,
+          notes: parsed.notes,
+          performedBy: employeeId,
+          // Immutable row — same localCreatedAt-for-both convention as StockMovement.
+          localCreatedAt: now,
+          localUpdatedAt: now,
+        },
+      });
+    }
+    const sum = await tx.supplierBalanceEntry.aggregate({ where: { tenantId, supplierId }, _sum: { amountCents: true } });
+    return { id: entryId, balanceCents: sum._sum.amountCents ?? 0 };
   });
 }

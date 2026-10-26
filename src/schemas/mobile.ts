@@ -626,3 +626,15 @@ export const mobileCollectCustomerPaymentSchema = z.object({
   reference: mobileOptionalText(120),
   notes: mobileOptionalText(500),
 });
+
+/** Mirrors DESKTOP's own supplierBalanceAdjustSchema — signed (positive = more owed to the supplier,
+ * negative = less), non-zero. `id` is minted CLIENT-SIDE and resent on retry (idempotency). */
+export const mobileSupplierBalanceAdjustSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  amountCents: z.coerce
+    .number()
+    .int()
+    .refine((value) => value !== 0, "Enter a non-zero amount")
+    .refine((value) => Math.abs(value) <= 100_000_000_000, "Amount is too large"),
+  notes: mobileOptionalText(500),
+});

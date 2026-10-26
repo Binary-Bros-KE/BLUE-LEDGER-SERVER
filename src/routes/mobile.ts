@@ -426,6 +426,28 @@ mobileRouter.post(
   },
 );
 
+// Supplier balances — see mobile-suppliers-service.ts. Same suppliers.view / suppliers.edit grants
+// DESKTOP's own supplier-balance-service.ts checks.
+mobileRouter.get("/suppliers/balances", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "view"), async (req, res) => {
+  const result = await mobileSuppliersService.listSuppliersWithBalances(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.get("/suppliers/:id/balance-entries", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "view"), async (req, res) => {
+  const result = await mobileSuppliersService.listSupplierBalanceEntries(req.mobileSession!.tenantId, req.params.id as string);
+  res.json(result);
+});
+
+mobileRouter.post("/suppliers/:id/balance-adjustments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "edit"), async (req, res) => {
+  const result = await mobileSuppliersService.adjustSupplierBalance(
+    req.mobileSession!.tenantId,
+    req.mobileSession!.employeeId,
+    req.params.id as string,
+    req.body,
+  );
+  res.status(201).json(result);
+});
+
 mobileRouter.get("/customers/:id/statement", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const result = await mobileCustomersService.getStatement(req.mobileSession!.tenantId, req.params.id as string);
   if (!result) {
