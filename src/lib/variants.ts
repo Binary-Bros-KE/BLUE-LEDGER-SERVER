@@ -14,6 +14,10 @@ export type SharedVariant = {
   values: Record<string, string>;
   priceCents: number | null;
   active: boolean;
+  /** A shared-stock variant's own codes (DESKTOP's variant editor) — scanning must land on exactly
+   * this variant, and no product may reuse them (see DESKTOP's findSharedVariantCodeOwner). */
+  sku: string | null;
+  barcode: string | null;
 };
 export type VariantConfig = {
   mode: "shared" | "separate";
@@ -56,6 +60,8 @@ export function parseVariantConfig(value: Prisma.JsonValue | null | undefined): 
         values: strRecord(xx.values),
         priceCents: typeof xx.priceCents === "number" ? xx.priceCents : null,
         active: xx.active !== false,
+        sku: typeof xx.sku === "string" && xx.sku.trim() ? xx.sku.trim() : null,
+        barcode: typeof xx.barcode === "string" && xx.barcode.trim() ? xx.barcode.trim() : null,
       },
     ];
   });

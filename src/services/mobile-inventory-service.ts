@@ -9,6 +9,8 @@ export type MobileProductListItem = {
   id: string;
   name: string;
   sku: string;
+  /** Scanned at Checkout (camera or a hardware scanner) — null when the product has none. */
+  barcode: string | null;
   categoryName: string | null;
   /** Needed for mobile checkout's cart preview — the SAME product-catalog fields DESKTOP's own
    * Checkout screen shows. Never trusted server-side for the actual sale total (mobile-checkout-
@@ -63,7 +65,7 @@ export type MobileProductVariants = {
   title: string | null;
   options: VariantOption[];
   /** shared stock: the sellable variants (priceCents null = the product's own price) */
-  shared: Array<{ key: string; values: Record<string, string>; label: string; priceCents: number | null }>;
+  shared: Array<{ key: string; values: Record<string, string>; label: string; priceCents: number | null; sku: string | null; barcode: string | null }>;
   /** separate stock: this product's own option values + label ("XL") */
   values: Record<string, string>;
   label: string | null;
@@ -92,6 +94,7 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
           trackStock: true,
           name: true,
           sku: true,
+          barcode: true,
           categoryId: true,
           reorderLevel: true,
           sellingPriceCents: true,
@@ -131,7 +134,14 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
           groupId: null,
           title: own.title,
           options: own.options,
-          shared: shared.map((v) => ({ key: v.key, values: v.values, label: variantLabel(own.options, v.values), priceCents: v.priceCents })),
+          shared: shared.map((v) => ({
+            key: v.key,
+            values: v.values,
+            label: variantLabel(own.options, v.values),
+            priceCents: v.priceCents,
+            sku: v.sku,
+            barcode: v.barcode,
+          })),
           values: {},
           label: null,
         };
@@ -173,6 +183,7 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
         id: product.id,
         name: product.name,
         sku: product.sku,
+        barcode: product.barcode,
         categoryName: product.categoryId ? (categoryNameById.get(product.categoryId) ?? null) : null,
         sellingPriceCents: product.sellingPriceCents,
         taxType: product.taxType,

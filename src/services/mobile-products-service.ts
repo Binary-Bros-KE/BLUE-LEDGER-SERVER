@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { withTenantContext } from "../lib/tenant-context.js";
+import { parseVariantConfig } from "../lib/variants.js";
 import type { MobileSession } from "../middleware/mobile-auth.js";
 import {
   type MobileCreateProductInput,
@@ -187,6 +188,25 @@ async function assertUniqueProductFields(
   if (byName) throw new ConflictError(`A product named "${fields.name}" already exists`);
   if (bySku) throw new ConflictError(`SKU "${fields.sku}" is already in use`);
   if (byBarcode) throw new ConflictError(`Barcode "${fields.barcode}" is already in use`);
+
+  // A shared-stock variant's own SKU/barcode counts too — scanning must land on exactly one thing
+  // (DESKTOP's findSharedVariantCodeOwner).
+  const withVariants = await tx.product.findMany({
+    where: { tenantId, ...notSelf, variantConfigJson: { not: Prisma.DbNull } },
+    select: { name: true, variantConfigJson: true },
+  });
+  const wantedSku = fields.sku.toLowerCase();
+  const wantedBarcode = fields.barcode?.toLowerCase() ?? null;
+  for (const row of withVariants) {
+    const config = parseVariantConfig(row.variantConfigJson);
+    if (config?.mode !== "shared") continue;
+    if (config.variants.some((v) => v.sku?.toLowerCase() === wantedSku)) {
+      throw new ConflictError(`SKU "${fields.sku}" is already used by a variant of "${row.name}"`);
+    }
+    if (wantedBarcode && config.variants.some((v) => v.barcode?.toLowerCase() === wantedBarcode)) {
+      throw new ConflictError(`Barcode "${fields.barcode}" is already used by a variant of "${row.name}"`);
+    }
+  }
 }
 
 /** Fields shared by create and update. taxRate is kept in step with taxType exactly the way DESKTOP's
