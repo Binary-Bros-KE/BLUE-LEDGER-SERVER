@@ -616,3 +616,13 @@ export const mobileCreateExpenseSchema = mobileExpenseInputSchema.extend({
 export const mobileCreateExpenseCategorySchema = z.object({
   name: z.string().trim().min(1, "Category name is required").max(150),
 });
+
+/** Body for POST /mobile/customers/:id/payments — one payment spread across the customer's unpaid
+ * invoices, oldest first. `id` is minted CLIENT-SIDE and resent on retry (idempotency). */
+export const mobileCollectCustomerPaymentSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  paymentMethodId: z.string().trim().min(1, "Select a payment method"),
+  amountCents: z.coerce.number().int().positive("Amount must be greater than 0"),
+  reference: mobileOptionalText(120),
+  notes: mobileOptionalText(500),
+});

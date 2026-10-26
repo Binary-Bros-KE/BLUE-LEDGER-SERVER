@@ -372,6 +372,28 @@ mobileRouter.post(
   },
 );
 
+// Customer debt — see mobile-customers-service.ts. Seeing balances needs customers.view; collecting
+// a payment needs sales.edit, the same grant as recording a payment on a single invoice.
+mobileRouter.get("/customers/balances", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("customers", "view"), async (req, res) => {
+  const result = await mobileCustomersService.listCustomersWithBalances(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.get("/customers/:id/debt", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("customers", "view"), async (req, res) => {
+  const result = await mobileCustomersService.getCustomerDebt(req.mobileSession!.tenantId, req.params.id as string);
+  res.json(result);
+});
+
+mobileRouter.post("/customers/:id/payments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "edit"), async (req, res) => {
+  const result = await mobileCustomersService.collectCustomerPayment(
+    req.mobileSession!.tenantId,
+    req.mobileSession!.employeeId,
+    req.params.id as string,
+    req.body,
+  );
+  res.json(result);
+});
+
 mobileRouter.get("/riders", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const result = await mobileRidersService.listRiders(req.mobileSession!.tenantId);
   res.json(result);

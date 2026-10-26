@@ -435,12 +435,15 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
   );
 }
 
-async function applyPayment(
+/** Exported for mobile-customers-service.ts's collectCustomerPayment, which spreads one customer
+ * payment across several invoices through this same path. `payment.id` lets that caller fix the
+ * payment entry's id so a retried request can recognise what it already applied. */
+export async function applyPayment(
   tx: Prisma.TransactionClient,
   tenantId: string,
   employeeId: string,
   saleId: string,
-  payment: { paymentMethodId: string; amountCents: number; reference: string | null; notes: string | null },
+  payment: { id?: string; paymentMethodId: string; amountCents: number; reference: string | null; notes: string | null },
 ): Promise<MobileInvoiceResult> {
   const row = await requireInvoiceRow(tx, tenantId, saleId);
   if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice has been cancelled");
@@ -458,7 +461,7 @@ async function applyPayment(
   const existingPayments = row.payments as unknown as SalePayment[];
   const now = new Date();
   const newPayment: SalePayment = {
-    id: `payment_${randomUUID()}`,
+    id: payment.id ?? `payment_${randomUUID()}`,
     paymentMethodId: method.id,
     paymentMethodName: method.name,
     amountCents: payment.amountCents,
@@ -478,7 +481,10 @@ async function applyPayment(
     where: { id: saleId },
     // syncedAt must be set explicitly on every mobile-originated update — see updateInvoice's own
     // comment on this exact bug class.
-    data: { payments, amountPaidCents, balanceDueCents, paymentStatus, localUpdatedAt: now, syncedAt: now },
+    // deviceId too: DESKTOP's push treats a row still stamped with ITS OWN deviceId as "my own
+    // version" and skips the conflict check, so a desktop holding a stale copy of this invoice could
+    // otherwise silently overwrite the payment just recorded here.
+    data: { payments, amountPaidCents, balanceDueCents, paymentStatus, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now },
   });
 
   return { id: saleId };
