@@ -732,3 +732,17 @@ export const mobileStockTransferSchema = z
     notes: mobileOptionalText(500),
   })
   .refine((data) => data.fromLocationId !== data.toLocationId, { message: "Choose two different locations", path: ["toLocationId"] });
+
+export const mobileStockValueQuerySchema = z.object({
+  locationId: z.string().trim().min(1).optional(),
+});
+
+/** Inclusive calendar-day range in the phone's own timezone (getTimezoneOffset convention). */
+export const mobileProductPerformanceQuerySchema = z
+  .object({
+    startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "startDate must be YYYY-MM-DD"),
+    endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "endDate must be YYYY-MM-DD"),
+    timezoneOffsetMinutes: z.coerce.number().int().min(-14 * 60).max(14 * 60).default(0),
+    locationId: z.string().trim().min(1).optional(),
+  })
+  .refine((d) => d.startDate <= d.endDate, { message: "Start date must be on or before the end date", path: ["startDate"] });

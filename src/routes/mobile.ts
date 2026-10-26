@@ -27,6 +27,7 @@ import * as mobileMetricsService from "../services/mobile-metrics-service.js";
 import * as mobilePurchasesService from "../services/mobile-purchases-service.js";
 import * as mobileProductsService from "../services/mobile-products-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
+import * as mobileReportsService from "../services/mobile-reports-service.js";
 import * as mobileRidersService from "../services/mobile-riders-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
 import * as mobileSalesService from "../services/mobile-sales-service.js";
@@ -916,4 +917,25 @@ mobileRouter.get("/cash-up", requireMobileAuth, requireOwnerAppAccess, requireMo
   const forcedLocationId = session.isSuperAdmin ? null : branchId;
   const result = await mobileCashUpService.getCashUp(session.tenantId, req.query, forcedEmployeeId, forcedLocationId);
   res.json(result);
+});
+
+/** Reports tab (mobile-reports-service.ts) — reports.view, same as DESKTOP's Inventory/Products
+ * reports. A branch-scoped (non-Super-Admin) employee only ever sees their own storefront, DESKTOP's
+ * resolveReportLocationScope rule. */
+async function reportLocationScope(tenantId: string, employeeId: string, isSuperAdmin: boolean): Promise<string | null> {
+  if (isSuperAdmin) return null;
+  const { branchId } = await withTenantContext(tenantId, (tx) => tx.employee.findUniqueOrThrow({ where: { id: employeeId }, select: { branchId: true } }));
+  return branchId;
+}
+
+mobileRouter.get("/reports/stock-value", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("reports", "view"), async (req, res) => {
+  const session = req.mobileSession!;
+  const scope = await reportLocationScope(session.tenantId, session.employeeId, session.isSuperAdmin ?? false);
+  res.json(await mobileReportsService.getStockValueReport(session.tenantId, req.query, scope));
+});
+
+mobileRouter.get("/reports/product-performance", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("reports", "view"), async (req, res) => {
+  const session = req.mobileSession!;
+  const scope = await reportLocationScope(session.tenantId, session.employeeId, session.isSuperAdmin ?? false);
+  res.json(await mobileReportsService.getProductPerformanceReport(session.tenantId, req.query, scope));
 });
