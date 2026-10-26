@@ -218,6 +218,7 @@ export async function computeSalesAndProfit(
         grandTotalCents: true,
         amountPaidCents: true,
         paymentMethodId: true,
+        payments: true,
         items: true,
         serviceCharges: true,
         delivery: true,
@@ -303,8 +304,15 @@ export async function computeSalesAndProfit(
   let retailWholesaleCents = 0;
   const nonInvoiceSales = liveSales.filter((s) => s.invoiceNumber === null);
   for (const sale of nonInvoiceSales) {
-    const methodName = sale.paymentMethodId ? (paymentMethodNameById.get(sale.paymentMethodId) ?? "Other") : "Other";
-    addToBucket(sale.paymentMethodId ?? "other", methodName, sale.grandTotalCents);
+    // A split-payment sale carries its own payments list (amounts add up to exactly the total) — spread
+    // it across those methods instead of crediting the whole total to the primary one.
+    const split = asArray<SalePaymentEntry>(sale.payments);
+    if (split.length > 0) {
+      for (const payment of split) addToBucket(payment.paymentMethodId ?? "other", payment.paymentMethodName || "Other", payment.amountCents);
+    } else {
+      const methodName = sale.paymentMethodId ? (paymentMethodNameById.get(sale.paymentMethodId) ?? "Other") : "Other";
+      addToBucket(sale.paymentMethodId ?? "other", methodName, sale.grandTotalCents);
+    }
     retailWholesaleCents += sale.grandTotalCents;
   }
 

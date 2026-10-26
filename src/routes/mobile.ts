@@ -15,6 +15,7 @@ import {
   salesReportPeriodQuerySchema,
 } from "../schemas/mobile.js";
 import * as mobileAuthService from "../services/mobile-auth-service.js";
+import * as mobileCashUpService from "../services/mobile-cashup-service.js";
 import * as mobileCheckoutService from "../services/mobile-checkout-service.js";
 import * as mobileCustomersService from "../services/mobile-customers-service.js";
 import * as mobileDirectoryService from "../services/mobile-directory-service.js";
@@ -893,5 +894,20 @@ mobileRouter.post("/mpesa/status", requireMobileAuth, requireOwnerAppAccess, req
 mobileRouter.post("/mpesa/status/check", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
   const { checkoutRequestId } = mobileMpesaStatusSchema.parse(req.body);
   const result = await mpesaService.checkMpesaStatusManually({ tenantId: req.mobileSession!.tenantId, deviceId: OWNER_APP_DEVICE_ID, checkoutRequestId });
+  res.json(result);
+});
+
+/** End-of-day cash-up (mobile-cashup-service.ts). Anyone who can sell (sales.create) gets THEIR OWN
+ * cash-up; seeing everyone's, or another employee's, needs reports.view — the same grant the
+ * dashboard's revenue figures need. A branch-scoped employee is always held to their own storefront. */
+mobileRouter.get("/cash-up", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  const session = req.mobileSession!;
+  const canSeeAll = session.isSuperAdmin || (session.permissions?.["reports"] ?? []).includes("view");
+  const { branchId } = await withTenantContext(session.tenantId, (tx) =>
+    tx.employee.findUniqueOrThrow({ where: { id: session.employeeId }, select: { branchId: true } }),
+  );
+  const forcedEmployeeId = canSeeAll ? null : session.employeeId;
+  const forcedLocationId = session.isSuperAdmin ? null : branchId;
+  const result = await mobileCashUpService.getCashUp(session.tenantId, req.query, forcedEmployeeId, forcedLocationId);
   res.json(result);
 });

@@ -703,3 +703,12 @@ export const mobileStkPushSchema = z.object({
 export const mobileMpesaStatusSchema = z.object({
   checkoutRequestId: z.string().trim().min(1),
 });
+
+/** GET /mobile/cash-up — one calendar day in the phone's own timezone (same timezoneOffsetMinutes
+ * convention as the dashboard: JS getTimezoneOffset, Nairobi = -180). */
+export const mobileCashUpQuerySchema = z.object({
+  date: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+  timezoneOffsetMinutes: z.coerce.number().int().min(-14 * 60).max(14 * 60).default(0),
+  locationId: z.string().trim().min(1).optional(),
+  employeeId: z.string().trim().min(1).optional(),
+});
