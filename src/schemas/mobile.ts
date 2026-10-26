@@ -691,3 +691,15 @@ export const mobileUpdatePaymentMethodSchema = z
     requiresReference: z.boolean().optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: "Nothing to change" });
+
+/** Body for POST /mobile/mpesa/stk-push. locationId only matters for a branch-less employee — a
+ * branch-scoped one always pushes from their own storefront's Till (resolveMobileLocation). */
+export const mobileStkPushSchema = z.object({
+  locationId: z.string().trim().min(1).optional(),
+  phone: z.string().trim().min(9, "Enter a valid phone number"),
+  amountCents: z.coerce.number().int().positive("Amount must be greater than 0"),
+});
+
+export const mobileMpesaStatusSchema = z.object({
+  checkoutRequestId: z.string().trim().min(1),
+});

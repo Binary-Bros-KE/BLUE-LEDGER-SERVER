@@ -5,11 +5,13 @@ import {
   mobileBooleanValueSchema,
   mobileCancellationDecisionSchema,
   mobileDashboardQuerySchema,
+  mobileMpesaStatusSchema,
   mobileQuotationStatusSchema,
   mobileSaleReturnRequestSchema,
   mobileRequestCancelSchema,
   mobileSalesQuerySchema,
   mobileShareLinkSchema,
+  mobileStkPushSchema,
   salesReportPeriodQuerySchema,
 } from "../schemas/mobile.js";
 import * as mobileAuthService from "../services/mobile-auth-service.js";
@@ -32,7 +34,10 @@ import * as mobileStockLedgerService from "../services/mobile-stock-ledger-servi
 import * as mobileSuppliersService from "../services/mobile-suppliers-service.js";
 import * as mobileTransactionsService from "../services/mobile-transactions-service.js";
 import * as mobileWorkingHoursService from "../services/mobile-working-hours-service.js";
+import * as mpesaService from "../services/mpesa-service.js";
 import { createShareLink } from "../services/share-service.js";
+import { withTenantContext } from "../lib/tenant-context.js";
+import { OWNER_APP_DEVICE_ID, resolveMobileLocation } from "../services/mobile-checkout-service.js";
 
 /** Read-only Owner App — see plan notes in schema.prisma's MobileLoginAttempt comment. Deliberately
  * NOT behind requireAuth (that's the Blue Ledger Account/JWT system) — this is a tenant Employee
@@ -840,5 +845,53 @@ mobileRouter.post("/settings/payment-methods", requireMobileAuth, requireOwnerAp
 
 mobileRouter.patch("/settings/payment-methods/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("payment_methods", "edit"), async (req, res) => {
   const result = await mobileSettingsService.updatePaymentMethod(req.mobileSession!.tenantId, req.params.id as string, req.body);
+  res.json(result);
+});
+
+// M-Pesa STK push from mobile Checkout — the exact same mpesa-service.ts functions DESKTOP's own
+// /mpesa routes call (Till credentials never leave the server), with the tenant taken from the
+// mobile session and deviceId "owner-app" recorded on the transaction. Gated by sales.create, the
+// same grant as checkout itself. A branch-scoped cashier always pushes from their own storefront.
+async function resolveStkLocation(tenantId: string, employeeId: string, requested: string | undefined): Promise<string> {
+  return withTenantContext(tenantId, async (tx) => {
+    const employee = await tx.employee.findUniqueOrThrow({ where: { id: employeeId }, select: { branchId: true } });
+    return resolveMobileLocation(tx, tenantId, employee.branchId, requested);
+  });
+}
+
+mobileRouter.get("/mpesa/configured", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  const session = req.mobileSession!;
+  const requested = typeof req.query.locationId === "string" && req.query.locationId ? req.query.locationId : undefined;
+  const locationId = await resolveStkLocation(session.tenantId, session.employeeId, requested);
+  const result = await mpesaService.isMpesaConfigured({ tenantId: session.tenantId, deviceId: OWNER_APP_DEVICE_ID, locationId });
+  res.json(result);
+});
+
+mobileRouter.post("/mpesa/stk-push", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  const session = req.mobileSession!;
+  const parsed = mobileStkPushSchema.parse(req.body);
+  const locationId = await resolveStkLocation(session.tenantId, session.employeeId, parsed.locationId);
+  const result = await mpesaService.requestStkPush({
+    tenantId: session.tenantId,
+    deviceId: OWNER_APP_DEVICE_ID,
+    employeeId: session.employeeId,
+    locationId,
+    phone: parsed.phone,
+    amountCents: parsed.amountCents,
+  });
+  res.status(201).json(result);
+});
+
+// Passive — polled while "waiting for the customer to enter their PIN". Never calls Safaricom.
+mobileRouter.post("/mpesa/status", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  const { checkoutRequestId } = mobileMpesaStatusSchema.parse(req.body);
+  const result = await mpesaService.getMpesaStatus({ tenantId: req.mobileSession!.tenantId, deviceId: OWNER_APP_DEVICE_ID, checkoutRequestId });
+  res.json(result);
+});
+
+// Manual "Check now" — actively re-queries Safaricom (throttled server-side), same as DESKTOP's.
+mobileRouter.post("/mpesa/status/check", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  const { checkoutRequestId } = mobileMpesaStatusSchema.parse(req.body);
+  const result = await mpesaService.checkMpesaStatusManually({ tenantId: req.mobileSession!.tenantId, deviceId: OWNER_APP_DEVICE_ID, checkoutRequestId });
   res.json(result);
 });

@@ -22,7 +22,8 @@ export const OWNER_APP_DEVICE_ID = "owner-app";
 
 export type MobileCheckoutResult = { id: string; receiptNumber: string; grandTotalCents: number };
 
-export type MobilePaymentMethodOption = { id: string; name: string; requiresReference: boolean };
+/** `code` lets Checkout recognise M-Pesa ("MPESA", DESKTOP's own seeded code) to offer an STK push. */
+export type MobilePaymentMethodOption = { id: string; name: string; code: string; requiresReference: boolean };
 
 /** One entry of Sale.payments — the same shape DESKTOP's own SalePayment uses. */
 type SalePayment = {
@@ -102,7 +103,7 @@ export async function listPaymentMethods(tenantId: string): Promise<MobilePaymen
   return withTenantContext(tenantId, async (tx) => {
     const methods = await tx.paymentMethod.findMany({
       where: { tenantId, isActive: true },
-      select: { id: true, name: true, requiresReference: true },
+      select: { id: true, name: true, code: true, requiresReference: true },
       orderBy: { sortOrder: "asc" },
     });
     return methods;
