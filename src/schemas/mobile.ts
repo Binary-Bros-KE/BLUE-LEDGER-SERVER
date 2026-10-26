@@ -638,3 +638,40 @@ export const mobileSupplierBalanceAdjustSchema = z.object({
     .refine((value) => Math.abs(value) <= 100_000_000_000, "Amount is too large"),
   notes: mobileOptionalText(500),
 });
+
+/** The day-to-day subset of DESKTOP's businessProfileInputSchema that also syncs to the cloud (see
+ * activationProfileUpdateSchema) — logo, owner details, business type and currency stay DESKTOP-only. */
+export const mobileBusinessProfileSchema = z.object({
+  businessName: z.string().trim().min(1, "Business name is required").max(200),
+  contactPhone: mobileOptionalText(50),
+  alternativePhone: mobileOptionalText(50),
+  email: mobileOptionalText(200),
+  website: mobileOptionalText(200),
+  kraPin: mobileOptionalText(50),
+  cityTown: mobileOptionalText(100),
+  physicalAddress: mobileOptionalText(500),
+  vatRatePercent: z.coerce.number().min(0).max(100),
+  pricesTaxInclusive: z.boolean(),
+});
+
+/** What a storefront prints on its receipts — the synced Location fields DESKTOP prints from. */
+export const mobileStorefrontDetailsSchema = z.object({
+  phone: mobileOptionalText(50),
+  email: mobileOptionalText(200),
+  physicalAddress: mobileOptionalText(500),
+  receiptHeader: mobileOptionalText(500),
+  receiptFooter: mobileOptionalText(500),
+});
+
+export const mobileCreatePaymentMethodSchema = z.object({
+  name: z.string().trim().min(1, "Payment method name is required").max(100),
+  requiresReference: z.boolean().default(false),
+});
+
+export const mobileUpdatePaymentMethodSchema = z
+  .object({
+    name: z.string().trim().min(1).max(100).optional(),
+    isActive: z.boolean().optional(),
+    requiresReference: z.boolean().optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, { message: "Nothing to change" });

@@ -27,6 +27,7 @@ import * as mobileQuotationsService from "../services/mobile-quotations-service.
 import * as mobileRidersService from "../services/mobile-riders-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
 import * as mobileSalesService from "../services/mobile-sales-service.js";
+import * as mobileSettingsService from "../services/mobile-settings-service.js";
 import * as mobileStockLedgerService from "../services/mobile-stock-ledger-service.js";
 import * as mobileSuppliersService from "../services/mobile-suppliers-service.js";
 import * as mobileTransactionsService from "../services/mobile-transactions-service.js";
@@ -807,3 +808,37 @@ mobileRouter.post(
     res.json(result);
   },
 );
+
+// Settings — see mobile-settings-service.ts. Each section checks the same module DESKTOP's own screen
+// does (business_profile / locations / payment_methods); reading needs any one of them.
+mobileRouter.get("/settings", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const session = req.mobileSession!;
+  const perms = session.permissions ?? {};
+  const allowed = session.isSuperAdmin || ["business_profile", "locations", "payment_methods"].some((m) => (perms[m] ?? []).length > 0);
+  if (!allowed) {
+    res.status(403).json({ error: "Your account doesn't have access to settings — ask your Super Admin." });
+    return;
+  }
+  const result = await mobileSettingsService.getSettings(session.tenantId);
+  res.json(result);
+});
+
+mobileRouter.put("/settings/business-profile", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("business_profile", "edit"), async (req, res) => {
+  const result = await mobileSettingsService.updateBusinessProfile(req.mobileSession!.tenantId, req.body);
+  res.json(result);
+});
+
+mobileRouter.put("/settings/storefronts/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("locations", "edit"), async (req, res) => {
+  const result = await mobileSettingsService.updateStorefrontDetails(req.mobileSession!.tenantId, req.params.id as string, req.body);
+  res.json(result);
+});
+
+mobileRouter.post("/settings/payment-methods", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("payment_methods", "create"), async (req, res) => {
+  const result = await mobileSettingsService.createPaymentMethod(req.mobileSession!.tenantId, req.body);
+  res.status(201).json(result);
+});
+
+mobileRouter.patch("/settings/payment-methods/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("payment_methods", "edit"), async (req, res) => {
+  const result = await mobileSettingsService.updatePaymentMethod(req.mobileSession!.tenantId, req.params.id as string, req.body);
+  res.json(result);
+});
