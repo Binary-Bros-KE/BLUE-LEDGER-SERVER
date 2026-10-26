@@ -648,6 +648,33 @@ mobileRouter.get("/purchases/:id", requireMobileAuth, requireOwnerAppAccess, asy
   res.json(result);
 });
 
+// Purchase lifecycle — see mobile-purchases-service.ts's write-actions section. Same
+// purchases.create / purchases.edit grants DESKTOP's own purchase-service.ts checks.
+mobileRouter.post("/purchases", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "create"), async (req, res) => {
+  const result = await mobilePurchasesService.createPurchase(req.mobileSession!, req.body);
+  res.status(201).json(result);
+});
+
+mobileRouter.post("/purchases/:id/order", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "edit"), async (req, res) => {
+  const result = await mobilePurchasesService.markPurchaseOrdered(req.mobileSession!, req.params.id as string);
+  res.json(result);
+});
+
+mobileRouter.post("/purchases/:id/cancel", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "edit"), async (req, res) => {
+  const result = await mobilePurchasesService.cancelPurchase(req.mobileSession!, req.params.id as string);
+  res.json(result);
+});
+
+mobileRouter.post("/purchases/:id/receive", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "edit"), async (req, res) => {
+  const result = await mobilePurchasesService.receivePurchaseGoods(req.mobileSession!, req.params.id as string, req.body);
+  res.json(result);
+});
+
+mobileRouter.post("/purchases/:id/payments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "edit"), async (req, res) => {
+  const result = await mobilePurchasesService.recordPurchasePayment(req.mobileSession!, req.params.id as string, req.body);
+  res.json(result);
+});
+
 mobileRouter.get("/expenses", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);
   const result = await mobileExpensesService.listExpenses(req.mobileSession!.tenantId, parsed.locationId ?? null);

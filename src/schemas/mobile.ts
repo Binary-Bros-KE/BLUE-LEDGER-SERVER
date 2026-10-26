@@ -539,3 +539,55 @@ export const mobileStockAdjustmentSchema = z
   .refine((data) => data.mode === "count" || data.quantity > 0, { message: "Quantity must be greater than 0", path: ["quantity"] });
 
 export type MobileStockAdjustmentInput = z.infer<typeof mobileStockAdjustmentSchema>;
+
+const mobileCents = z.coerce.number().int().min(0).max(100_000_000_000);
+
+/** Mirrors DESKTOP's own purchaseItemInputSchema (shared/schemas/purchase.ts) — line tax is always
+ * computed server-side from taxType + cost, never taken from the client. */
+const mobilePurchaseItemSchema = z.object({
+  productId: z.string().trim().min(1),
+  orderedQuantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+  unitCostCents: mobileCents,
+  /** Optional new selling price — pushed onto the product when the order is placed, same as DESKTOP. */
+  sellingPriceCents: mobileCents.nullable().optional().transform((value) => value ?? null),
+  discountAmountCents: mobileCents.optional().default(0),
+  taxType: z.enum(["vat", "exempted", "zero_rated"]).default("vat"),
+});
+
+/** The day-to-day subset of DESKTOP's purchaseCreateSchema — shipment tracking and attachments stay
+ * DESKTOP-only. `id` is minted CLIENT-SIDE and resent on retry (same idempotency contract as mobile
+ * checkout), so a dropped connection can never create the same purchase twice. */
+export const mobileCreatePurchaseSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  supplierId: z.string().trim().min(1, "Select a supplier"),
+  supplierInvoiceNumber: mobileOptionalText(100),
+  locationId: z.string().trim().min(1, "Select where the goods will be received"),
+  /** "Shipping Fee" — owed to the supplier, added to the order total. */
+  shippingCostCents: mobileCents.optional().default(0),
+  /** "Shipping Cost" — the business's own out-of-pocket cost, booked as an Expense, never owed. */
+  shippingExpenseCents: mobileCents.optional().default(0),
+  notes: mobileOptionalText(1000),
+  items: z.array(mobilePurchaseItemSchema).min(1, "Add at least one product"),
+  intent: z.enum(["draft", "ordered"]).default("ordered"),
+});
+
+export type MobileCreatePurchaseInput = z.infer<typeof mobileCreatePurchaseSchema>;
+
+export const mobileReceivePurchaseSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        purchaseItemId: z.string().trim().min(1),
+        receivingQuantity: z.coerce.number().int().positive("Enter a quantity greater than 0"),
+      }),
+    )
+    .min(1, "Enter at least one quantity to receive"),
+});
+
+/** `amountCents` omitted = pay off the full balance currently due (DESKTOP's markPurchasePaid). */
+export const mobilePurchasePaymentSchema = z.object({
+  paymentMethodId: z.string().trim().min(1, "Select a payment method"),
+  amountCents: z.coerce.number().int().positive("Amount must be greater than 0").optional(),
+  reference: mobileOptionalText(120),
+  notes: mobileOptionalText(500),
+});
