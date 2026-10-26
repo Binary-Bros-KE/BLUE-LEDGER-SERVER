@@ -681,6 +681,39 @@ mobileRouter.get("/expenses", requireMobileAuth, requireOwnerAppAccess, async (r
   res.json(result);
 });
 
+// Expense writes — see mobile-expenses-service.ts. Same expenses.create/edit/delete and
+// expense_categories.create grants DESKTOP checks; "delete" is always an archive.
+mobileRouter.get("/expense-categories", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileExpensesService.listExpenseCategories(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.post(
+  "/expense-categories",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("expense_categories", "create"),
+  async (req, res) => {
+    const result = await mobileExpensesService.createExpenseCategory(req.mobileSession!.tenantId, req.body);
+    res.status(201).json(result);
+  },
+);
+
+mobileRouter.post("/expenses", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("expenses", "create"), async (req, res) => {
+  const result = await mobileExpensesService.createExpense(req.mobileSession!, req.body);
+  res.status(201).json(result);
+});
+
+mobileRouter.put("/expenses/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("expenses", "edit"), async (req, res) => {
+  const result = await mobileExpensesService.updateExpense(req.mobileSession!, req.params.id as string, req.body);
+  res.json(result);
+});
+
+mobileRouter.post("/expenses/:id/archive", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("expenses", "delete"), async (req, res) => {
+  const result = await mobileExpensesService.archiveExpense(req.mobileSession!, req.params.id as string);
+  res.json(result);
+});
+
 mobileRouter.get("/stock-ledger", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);
   const result = await mobileStockLedgerService.listStockMovements(req.mobileSession!.tenantId, parsed.locationId ?? null);

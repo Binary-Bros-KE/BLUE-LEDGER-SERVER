@@ -591,3 +591,28 @@ export const mobilePurchasePaymentSchema = z.object({
   reference: mobileOptionalText(120),
   notes: mobileOptionalText(500),
 });
+
+/** Mirrors DESKTOP's own expenseInputSchema (shared/schemas/expense.ts) minus the attachment —
+ * every expense needs a storefront ("no General/Head Office catch-all"), category and payment
+ * method. expenseDate is the plain YYYY-MM-DD string DESKTOP stores. */
+export const mobileExpenseInputSchema = z.object({
+  expenseDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "Expense date is required"),
+  categoryId: z.string().trim().min(1, "Select a category"),
+  amountCents: z.coerce.number().int().positive("Amount must be greater than 0").max(100_000_000_000),
+  paidBy: mobileOptionalText(150),
+  paymentMethodId: z.string().trim().min(1, "Select a payment method"),
+  storefrontId: z.string().trim().min(1, "Select a storefront"),
+  reference: mobileOptionalText(120),
+  description: mobileOptionalText(1000),
+});
+
+export type MobileExpenseInput = z.infer<typeof mobileExpenseInputSchema>;
+
+export const mobileCreateExpenseSchema = mobileExpenseInputSchema.extend({
+  /** Minted CLIENT-SIDE, resent unchanged on retry — same idempotency contract as checkout. */
+  id: z.string().trim().min(1).max(100),
+});
+
+export const mobileCreateExpenseCategorySchema = z.object({
+  name: z.string().trim().min(1, "Category name is required").max(150),
+});
