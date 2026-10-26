@@ -152,6 +152,11 @@ export const mobileCheckoutSchema = z.object({
    * cashier actually choose. */
   includeTaxBreakdown: z.coerce.boolean().optional().default(true),
   includeBusinessInfo: z.coerce.boolean().optional().default(true),
+  /** Set by the app when this sale was completed while offline and is only reaching SERVER now — see
+   * mobile-checkout-service.ts's checkout doc comment for what changes. */
+  queuedOffline: z.boolean().optional(),
+  /** When the sale actually happened on the phone (ISO) — only read with queuedOffline. */
+  offlineCompletedAt: z.string().datetime().optional(),
 });
 
 export type MobileCheckoutInput = z.infer<typeof mobileCheckoutSchema>;

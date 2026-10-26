@@ -20,7 +20,13 @@ const RECEIPT_DIGITS = 7;
  * session was never issued a real one (see mobile-auth.ts's MobileSession doc comment). */
 export const OWNER_APP_DEVICE_ID = "owner-app";
 
-export type MobileCheckoutResult = { id: string; receiptNumber: string; grandTotalCents: number };
+/** stockShortfalls: products a queued-offline sale took below zero — the app shows them so someone
+ * can recount; always empty for a normal online sale (that's rejected instead). */
+export type MobileCheckoutResult = { id: string; receiptNumber: string; grandTotalCents: number; stockShortfalls: string[] };
+
+/** How far back an offline sale may be dated — older than this and it's stamped "now" instead, so a
+ * wrong phone clock can't drop a sale into some long-closed day. */
+const MAX_OFFLINE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** `code` lets Checkout recognise M-Pesa ("MPESA", DESKTOP's own seeded code) to offer an STK push. */
 export type MobilePaymentMethodOption = { id: string; name: string; code: string; requiresReference: boolean };
@@ -156,6 +162,12 @@ export async function resolveMobileLocation(
  * schema.prisma's Sale/StockMovement doc comments), so DESKTOP's existing, already origin-agnostic
  * pull path (sync-engine.ts's applySalePulledRow / applyStockMovementPulledRow) picks this up with
  * zero DESKTOP-side changes — confirmed by reading both functions before writing this.
+ *
+ * Offline queue (queuedOffline): the app completed this sale with no connection and is only sending it
+ * now. Everything is validated exactly as usual EXCEPT stock — the goods already left the shop, so a
+ * shortfall is deducted anyway and reported in stockShortfalls rather than rejecting a sale that
+ * already happened. The app sends every line's unitPriceCents explicitly for such a sale (the price
+ * the customer actually paid), and completedAt is the phone's own sale time (see MAX_OFFLINE_AGE_MS).
  */
 export async function checkout(tenantId: string, employeeId: string, input: unknown): Promise<MobileCheckoutResult> {
   const parsed: MobileCheckoutInput = mobileCheckoutSchema.parse(input);
@@ -165,7 +177,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
     async (tx) => {
       const existing = await tx.sale.findUnique({ where: { id: parsed.id } });
       if (existing) {
-        return { id: existing.id, receiptNumber: existing.receiptNumber ?? "", grandTotalCents: existing.grandTotalCents };
+        return { id: existing.id, receiptNumber: existing.receiptNumber ?? "", grandTotalCents: existing.grandTotalCents, stockShortfalls: [] };
       }
 
       const [tenant, employee, paymentMethod] = await Promise.all([
@@ -194,7 +206,10 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       }
 
       const tenantTaxConfig: TenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
-      const cart = await prepareMobileCart(tx, tenantId, locationId, parsed.items, tenantTaxConfig, { checkStock: true });
+      const cart = await prepareMobileCart(tx, tenantId, locationId, parsed.items, tenantTaxConfig, {
+        checkStock: true,
+        allowStockShortfall: parsed.queuedOffline === true,
+      });
 
       // Delivery fee + service charge fees fold straight in, matching DESKTOP's own prepareCart
       // extraFeesCents — a cashier who's asked to collect either must see and be validated against
@@ -202,7 +217,11 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
       const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
       const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
-      const now = new Date();
+      // A queued-offline sale is dated when it really happened (so the day's cash-up is right), within
+      // MAX_OFFLINE_AGE_MS and never in the future; anything else is "now".
+      const offlineAt = parsed.queuedOffline && parsed.offlineCompletedAt ? new Date(parsed.offlineCompletedAt) : null;
+      const now =
+        offlineAt && offlineAt.getTime() <= Date.now() && Date.now() - offlineAt.getTime() <= MAX_OFFLINE_AGE_MS ? offlineAt : new Date();
 
       // Split: the payments list decides the primary method, what was tendered and the change.
       const split = isSplit ? await buildSplitPayments(tx, tenantId, employee, parsed.payments!, grandTotalCents, now) : null;
@@ -295,7 +314,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
         });
       }
 
-      return { id: parsed.id, receiptNumber: receiptNumber ?? "", grandTotalCents };
+      return { id: parsed.id, receiptNumber: receiptNumber ?? "", grandTotalCents, stockShortfalls: cart.stockShortfalls };
     },
     // Generous relative to how long a single checkout actually takes — matches sync-service.ts's own
     // reasoning for raising the interactive-transaction timeout past Prisma's 5s default, here for a

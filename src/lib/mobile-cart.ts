@@ -75,6 +75,8 @@ export type PreparedMobileCart = {
    * checks it — see this function's own doc comment), so its caller simply never looks at this. */
   /** stockLocationId: null = the storefront (`locationId`), otherwise that line's own stock location. */
   stockMovementRows: Array<{ id: string; productId: string; quantityChange: number; stockLocationId: string | null }>;
+  /** Products that went short — only ever non-empty with allowStockShortfall. */
+  stockShortfalls: string[];
 };
 
 /**
@@ -103,7 +105,14 @@ export async function prepareMobileCart(
   /** lineStockLocationIds (invoices only): per line, aligned with `items` — null = check/deduct at
    * `locationId` (the storefront), otherwise at that location (the Main Store). Omitted = every line
    * at `locationId`, and prepared items carry no stockLocationId key at all. */
-  options: { checkStock: boolean; lineStockLocationIds?: Array<string | null> },
+  options: {
+    checkStock: boolean;
+    lineStockLocationIds?: Array<string | null>;
+    /** Checkout queued while offline (mobile-checkout-service.ts): the goods already left the shop, so
+     * a stock shortfall since then must not reject the sale. Stock is still deducted (it may go
+     * negative); each short product is reported in stockShortfalls instead of throwing. */
+    allowStockShortfall?: boolean;
+  },
 ): Promise<PreparedMobileCart> {
   if (items.length === 0) throw new HttpError(400, "Add at least one item");
 
@@ -146,6 +155,7 @@ export async function prepareMobileCart(
   // Stock is checked against everything requested of a product so far, not line by line — two
   // lines of the same product (e.g. two colours of a shared-stock product) draw from ONE balance.
   const requestedByProduct = new Map<string, number>();
+  const stockShortfalls: string[] = [];
 
   for (const [index, item] of items.entries()) {
     const stockKey = `${lineLocation(index)}:${item.productId}`;
@@ -188,7 +198,10 @@ export async function prepareMobileCart(
       const requested = (requestedByProduct.get(stockKey) ?? 0) + item.quantity;
       requestedByProduct.set(stockKey, requested);
       if (available - requested < 0 && !product.allowNegativeStock) {
-        throw new HttpError(400, `"${product.name}" doesn't have enough stock (${available} available)`);
+        if (!options.allowStockShortfall) {
+          throw new HttpError(400, `"${product.name}" doesn't have enough stock (${available} available)`);
+        }
+        if (!stockShortfalls.includes(product.name)) stockShortfalls.push(product.name);
       }
     }
 
@@ -231,5 +244,5 @@ export async function prepareMobileCart(
 
   const grandTotalCents = preparedItems.reduce((sum, item) => sum + item.lineTotalCents, 0);
 
-  return { items: preparedItems, subtotalCents, discountAmountCents, taxAmountCents, grandTotalCents, stockMovementRows };
+  return { items: preparedItems, subtotalCents, discountAmountCents, taxAmountCents, grandTotalCents, stockMovementRows, stockShortfalls };
 }
