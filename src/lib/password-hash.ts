@@ -1,4 +1,4 @@
-import { scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 const KEY_LENGTH = 64;
 
@@ -14,10 +14,19 @@ const DEFAULT_COST = 32768;
  * generous headroom means a future cost increase doesn't need this touched again. */
 const MAX_MEM = 64 * 1024 * 1024;
 
-/** Verifies a plain PIN/password against a hash produced by DESKTOP's hashSecret. Handles both the
- * current `cost:salt:derived` format and the original `salt:derived` format (implicitly Node's own
- * default cost of 16384). SERVER never hashes a new secret itself — only verifies ones synced down
- * from a device — so there is no matching hashSecret() here. */
+/** Byte-for-byte the same output format as DESKTOP's hashSecret (`cost:salt:derived`) — needed now
+ * that the Owner App can reset an employee's PIN (mobile-employees-service.ts). The hash reaches
+ * every DESKTOP install via the normal employees pull, and DESKTOP's own verifySecret must accept it
+ * exactly as if it had been created locally. */
+export function hashSecret(plain: string): string {
+  const salt = randomBytes(16).toString("hex");
+  const derived = scryptSync(plain, salt, KEY_LENGTH, { cost: DEFAULT_COST, maxmem: MAX_MEM }).toString("hex");
+  return `${DEFAULT_COST}:${salt}:${derived}`;
+}
+
+/** Verifies a plain PIN/password against a hash produced by hashSecret (this one or DESKTOP's).
+ * Handles both the current `cost:salt:derived` format and the original `salt:derived` format
+ * (implicitly Node's own default cost of 16384). */
 export function verifySecret(plain: string, stored: string): boolean {
   const parts = stored.split(":");
   const [cost, salt, derivedHex] =

@@ -381,3 +381,161 @@ export const mobileToggleManualLockSchema = z.object({
 });
 
 export type MobileToggleManualLockInput = z.infer<typeof mobileToggleManualLockSchema>;
+
+/** Same 6-digit rule as DESKTOP's own shared/schemas/employee.ts pinSchema — a PIN set here must
+ * also work on every DESKTOP install once the employee row is pulled down. */
+const employeePinSchema = z.string().trim().regex(/^\d{6}$/, "PIN must be exactly 6 digits");
+
+/** Mirrors DESKTOP's EMPLOYEE_STATUS_OPTIONS (shared/types/employee.ts). */
+export const mobileEmployeeStatusSchema = z.enum(["active", "suspended", "terminated"]);
+
+/** The Owner App's "Add employee" form — deliberately the system-access essentials only (who they
+ * are, which role/storefront, their login PIN). Everything HR-shaped (DOB, department, default
+ * salary, photo, …) stays on DESKTOP's full Employee form. employeeCode is uppercased exactly like
+ * DESKTOP's own employeeBaseFields.employeeCode, so uniqueness is compared on the same value. */
+export const mobileCreateEmployeeSchema = z.object({
+  employeeCode: z
+    .string()
+    .trim()
+    .min(1, "Employee code is required")
+    .max(30)
+    .transform((value) => value.toUpperCase()),
+  firstName: z.string().trim().min(1, "First name is required").max(80),
+  lastName: z.string().trim().min(1, "Last name is required").max(80),
+  phone: z
+    .string()
+    .trim()
+    .max(50)
+    .optional()
+    .transform((value) => (value ? value : null)),
+  roleId: z.string().trim().min(1, "Choose a role"),
+  branchId: z.string().trim().min(1).nullable(),
+  pin: employeePinSchema,
+});
+
+export type MobileCreateEmployeeInput = z.infer<typeof mobileCreateEmployeeSchema>;
+
+/** Body for PATCH /mobile/employees/:id/access — every field optional so Suspend/Reactivate can
+ * send just `status`, while the Edit Access sheet sends role + branch together. */
+export const mobileEmployeeAccessSchema = z
+  .object({
+    roleId: z.string().trim().min(1).optional(),
+    branchId: z.string().trim().min(1).nullable().optional(),
+    status: mobileEmployeeStatusSchema.optional(),
+  })
+  .refine((data) => data.roleId !== undefined || data.branchId !== undefined || data.status !== undefined, {
+    message: "Nothing to change",
+  });
+
+export type MobileEmployeeAccessInput = z.infer<typeof mobileEmployeeAccessSchema>;
+
+export const mobileEmployeePinResetSchema = z.object({
+  pin: employeePinSchema,
+});
+
+/** Mirrors DESKTOP's UNIT_OF_MEASURE_OPTIONS (shared/types/product.ts) — validated against the same
+ * list so a mobile-created product round-trips into DESKTOP's own Product form without a blank. */
+export const MOBILE_UNIT_OF_MEASURE_VALUES = [
+  "piece", "pack", "box", "carton", "set", "kg", "g", "L", "mL", "m", "cm", "dozen", "pair", "roll",
+  "bottle", "can", "bag", "sack", "bundle", "tray", "tube", "jar", "bucket", "plate", "sheet",
+] as const;
+
+const mobilePriceCents = z.coerce.number().int().min(0).max(100_000_000_000);
+const mobileNullablePriceCents = mobilePriceCents.nullable().optional().transform((value) => value ?? null);
+const mobileOptionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .nullable()
+    .optional()
+    .transform((value) => (value ? value : null));
+
+/** The day-to-day subset of DESKTOP's own productFieldsSchema (shared/schemas/product.ts) — same
+ * bounds, same uppercased SKU, same "minimum price can't exceed selling price" refinement. Online
+ * store content, variants, brand, short name and supplier SKU stay DESKTOP-only and are never
+ * touched by a mobile edit (mobile-products-service.ts only writes the fields listed here). */
+const mobileProductFields = z.object({
+  name: z.string().trim().min(1, "Product name is required").max(200),
+  sku: z
+    .string()
+    .trim()
+    .max(64)
+    .optional()
+    .transform((value) => (value ? value.toUpperCase() : undefined)),
+  barcode: mobileOptionalText(64),
+  categoryId: z.string().trim().min(1).nullable().optional().transform((value) => value ?? null),
+  storefrontId: z.string().trim().min(1).nullable().optional().transform((value) => value ?? null),
+  unitOfMeasure: z.enum(MOBILE_UNIT_OF_MEASURE_VALUES).nullable().optional().transform((value) => value ?? null),
+  description: mobileOptionalText(1000),
+  buyingPriceCents: mobilePriceCents,
+  sellingPriceCents: mobilePriceCents,
+  wholesalePriceCents: mobileNullablePriceCents,
+  wholesaleMinQuantity: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  minimumPriceCents: mobileNullablePriceCents,
+  taxType: z.enum(["vat", "exempted", "zero_rated"]).default("vat"),
+  pricesTaxInclusive: z.boolean().nullable().optional().transform((value) => (value === undefined ? null : value)),
+  reorderLevel: z.coerce.number().int().min(0).max(1_000_000).default(0),
+  trackStock: z.boolean().default(true),
+  allowNegativeStock: z.boolean().default(false),
+});
+
+function minimumPriceNotAboveSelling(data: { minimumPriceCents: number | null; sellingPriceCents: number }): boolean {
+  return data.minimumPriceCents === null || data.minimumPriceCents <= data.sellingPriceCents;
+}
+
+const MINIMUM_PRICE_REFINEMENT_OPTS = {
+  message: "Minimum price can't be higher than the selling price",
+  path: ["minimumPriceCents"] as PropertyKey[],
+};
+
+export const mobileCreateProductSchema = mobileProductFields
+  .extend({
+    /** Optional opening stock at ONE location — same "opening_stock" movement DESKTOP's own
+     * createProduct records per openingStock entry. */
+    openingStock: z
+      .object({
+        locationId: z.string().trim().min(1),
+        quantity: z.coerce.number().int().min(1, "Opening stock must be at least 1"),
+      })
+      .nullable()
+      .optional()
+      .transform((value) => value ?? null),
+  })
+  .refine(minimumPriceNotAboveSelling, MINIMUM_PRICE_REFINEMENT_OPTS);
+
+export type MobileCreateProductInput = z.infer<typeof mobileCreateProductSchema>;
+
+export const mobileUpdateProductSchema = mobileProductFields.refine(minimumPriceNotAboveSelling, MINIMUM_PRICE_REFINEMENT_OPTS);
+
+export type MobileUpdateProductInput = z.infer<typeof mobileUpdateProductSchema>;
+
+/** Mirrors DESKTOP's ProductStatus — "inactive" is DESKTOP's own archive (hidden from selling,
+ * history kept). Products are never hard-deleted once synced. */
+export const mobileProductStatusSchema = z.object({
+  status: z.enum(["active", "inactive"]),
+});
+
+export const mobileCreateCategorySchema = z.object({
+  name: z.string().trim().min(1, "Category name is required").max(150),
+});
+
+/** Body for POST /mobile/stock-adjustments. `mode` picks the movement type the way DESKTOP's own
+ * manual-movement form does (MANUAL_STOCK_MOVEMENT_TYPE_OPTIONS):
+ *  - "add"    → reason "purchase" | "return" | "opening_stock", +quantity
+ *  - "remove" → "damage", −quantity
+ *  - "count"  → "adjustment" by (counted − current); `quantity` is the physical count itself.
+ * `id` is minted CLIENT-SIDE and resent on retry, same idempotency contract as mobile checkout. */
+export const mobileStockAdjustmentSchema = z
+  .object({
+    id: z.string().trim().min(1).max(100),
+    productId: z.string().trim().min(1),
+    locationId: z.string().trim().min(1),
+    mode: z.enum(["add", "remove", "count"]),
+    addReason: z.enum(["purchase", "return", "opening_stock"]).optional(),
+    quantity: z.coerce.number().int().min(0).max(10_000_000),
+    notes: mobileOptionalText(500),
+  })
+  .refine((data) => data.mode === "count" || data.quantity > 0, { message: "Quantity must be greater than 0", path: ["quantity"] });
+
+export type MobileStockAdjustmentInput = z.infer<typeof mobileStockAdjustmentSchema>;

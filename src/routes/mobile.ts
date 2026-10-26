@@ -16,11 +16,13 @@ import * as mobileAuthService from "../services/mobile-auth-service.js";
 import * as mobileCheckoutService from "../services/mobile-checkout-service.js";
 import * as mobileCustomersService from "../services/mobile-customers-service.js";
 import * as mobileDirectoryService from "../services/mobile-directory-service.js";
+import * as mobileEmployeesService from "../services/mobile-employees-service.js";
 import * as mobileExpensesService from "../services/mobile-expenses-service.js";
 import * as mobileInventoryService from "../services/mobile-inventory-service.js";
 import * as mobileInvoicesService from "../services/mobile-invoices-service.js";
 import * as mobileMetricsService from "../services/mobile-metrics-service.js";
 import * as mobilePurchasesService from "../services/mobile-purchases-service.js";
+import * as mobileProductsService from "../services/mobile-products-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
 import * as mobileRidersService from "../services/mobile-riders-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
@@ -71,12 +73,56 @@ mobileRouter.get("/dashboard", requireMobileAuth, requireOwnerAppAccess, async (
   res.json(result);
 });
 
-mobileRouter.get("/employees", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+// employees.view on both directory reads — same grant APP's Employees tab already requires to be
+// visible at all (navigation.ts); previously only the UI enforced it.
+mobileRouter.get("/employees", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("employees", "view"), async (req, res) => {
   const result = await mobileDirectoryService.listEmployees(req.mobileSession!.tenantId);
   res.json(result);
 });
 
-mobileRouter.get("/employees/:id/salaries", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+/** Backs the Employees tab's role picker (Add employee / Edit access). Same employees.view gate the
+ * tab itself needs — a role's bare name and Super Admin flag aren't sensitive beyond that. */
+mobileRouter.get("/roles", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("employees", "view"), async (req, res) => {
+  const result = await mobileEmployeesService.listRoles(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+/** System-access management — see mobile-employees-service.ts's own doc comment for the guard rules
+ * (branch scope, Super-Admin-only-by-Super-Admin, no self-lockout). Same employees.create/edit
+ * actions DESKTOP's own employee-service.ts checks. */
+mobileRouter.post("/employees", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("employees", "create"), async (req, res) => {
+  const result = await mobileEmployeesService.createEmployee(req.mobileSession!, req.body);
+  res.status(201).json(result);
+});
+
+mobileRouter.patch(
+  "/employees/:id/access",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("employees", "edit"),
+  async (req, res) => {
+    const result = await mobileEmployeesService.updateEmployeeAccess(req.mobileSession!, req.params.id as string, req.body);
+    res.json(result);
+  },
+);
+
+/** Changing your OWN PIN needs no employees.edit grant (any employee can do that, same as on the
+ * POS itself); resetting anyone else's does. */
+mobileRouter.post(
+  "/employees/:id/pin",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  async (req, res, next) => {
+    if (req.params.id === req.mobileSession!.employeeId) return next();
+    return requireMobilePermission("employees", "edit")(req, res, next);
+  },
+  async (req, res) => {
+    const result = await mobileEmployeesService.resetEmployeePin(req.mobileSession!, req.params.id as string, req.body);
+    res.json(result);
+  },
+);
+
+mobileRouter.get("/employees/:id/salaries", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("employees", "view"), async (req, res) => {
   const result = await mobileDirectoryService.getEmployeeSalaries(req.mobileSession!.tenantId, req.params.id as string);
   res.json(result);
 });
@@ -541,8 +587,45 @@ mobileRouter.get("/sales-report/tax", requireMobileAuth, requireOwnerAppAccess, 
 });
 
 mobileRouter.get("/products", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
-  const result = await mobileInventoryService.listProducts(req.mobileSession!.tenantId);
+  const result = await mobileInventoryService.listProducts(req.mobileSession!.tenantId, { includeAll: req.query.includeAll === "1" });
   res.json(result);
+});
+
+// Catalog + stock management — see mobile-products-service.ts. Same module/action pairs DESKTOP's
+// own product-service.ts / category-service.ts / inventory-service.ts check.
+mobileRouter.get("/categories", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const result = await mobileProductsService.listCategories(req.mobileSession!.tenantId);
+  res.json(result);
+});
+
+mobileRouter.post("/categories", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("categories", "create"), async (req, res) => {
+  const result = await mobileProductsService.createCategory(req.mobileSession!.tenantId, req.body);
+  res.status(201).json(result);
+});
+
+mobileRouter.post("/products", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("products", "create"), async (req, res) => {
+  const result = await mobileProductsService.createProduct(req.mobileSession!, req.body);
+  res.status(201).json(result);
+});
+
+mobileRouter.get("/products/:id/edit", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("products", "edit"), async (req, res) => {
+  const result = await mobileProductsService.getProductForEdit(req.mobileSession!.tenantId, req.params.id as string);
+  res.json(result);
+});
+
+mobileRouter.put("/products/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("products", "edit"), async (req, res) => {
+  const result = await mobileProductsService.updateProduct(req.mobileSession!, req.params.id as string, req.body);
+  res.json(result);
+});
+
+mobileRouter.post("/products/:id/status", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("products", "edit"), async (req, res) => {
+  const result = await mobileProductsService.setProductStatus(req.mobileSession!.tenantId, req.params.id as string, req.body);
+  res.json(result);
+});
+
+mobileRouter.post("/stock-adjustments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("inventory", "edit"), async (req, res) => {
+  const result = await mobileProductsService.recordStockAdjustment(req.mobileSession!, req.body);
+  res.status(201).json(result);
 });
 
 mobileRouter.get("/payment-methods", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {

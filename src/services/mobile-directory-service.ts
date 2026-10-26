@@ -7,6 +7,9 @@ import { prisma } from "../prisma.js";
  * mobile-metrics-service.ts for Product/Customer references. */
 
 export type MobileSessionInfo = {
+  /** The signed-in employee's own id — lets the Employees tab tell "this is you" apart (own PIN
+   * change allowed, own status/role change blocked — see mobile-employees-service.ts). */
+  employeeId: string;
   employeeName: string;
   roleName: string | null;
   currency: string;
@@ -58,6 +61,7 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
     const branch = employee.branchId ? await tx.location.findUnique({ where: { id: employee.branchId } }) : null;
     return {
+      employeeId: employee.id,
       employeeName: `${employee.firstName} ${employee.lastName}`.trim(),
       roleName: role?.roleName ?? null,
       currency: tenant.currency,
@@ -89,7 +93,13 @@ export type EmployeeSummary = {
   jobTitle: string | null;
   hireDate: string | null;
   status: string;
+  /** Raw ids alongside the display names — pre-fill the Employees tab's Edit Access sheet. */
+  roleId: string | null;
+  branchId: string | null;
   roleName: string | null;
+  /** Whether this employee's role is THE Super Admin role — APP hides Suspend/Edit Access on these
+   * for a non-Super-Admin viewer (mobile-employees-service.ts rejects it server-side regardless). */
+  isSuperAdmin: boolean;
   branchName: string | null;
 };
 
@@ -97,11 +107,12 @@ export async function listEmployees(tenantId: string): Promise<EmployeeSummary[]
   return withTenantContext(tenantId, async (tx) => {
     const [employees, roles, locations] = await Promise.all([
       tx.employee.findMany({ where: { tenantId }, orderBy: { firstName: "asc" } }),
-      tx.role.findMany({ where: { tenantId }, select: { id: true, roleName: true } }),
+      tx.role.findMany({ where: { tenantId }, select: { id: true, roleName: true, isSuperAdmin: true } }),
       tx.location.findMany({ where: { tenantId }, select: { id: true, locationName: true } }),
     ]);
 
     const roleNameById = new Map(roles.map((r) => [r.id, r.roleName]));
+    const superAdminRoleIds = new Set(roles.filter((r) => r.isSuperAdmin).map((r) => r.id));
     const locationNameById = new Map(locations.map((l) => [l.id, l.locationName]));
 
     return employees.map((e) => ({
@@ -119,7 +130,10 @@ export async function listEmployees(tenantId: string): Promise<EmployeeSummary[]
       jobTitle: e.jobTitle,
       hireDate: e.hireDate,
       status: e.status,
+      roleId: e.roleId,
+      branchId: e.branchId,
       roleName: e.roleId ? (roleNameById.get(e.roleId) ?? null) : null,
+      isSuperAdmin: e.roleId ? superAdminRoleIds.has(e.roleId) : false,
       branchName: e.branchId ? (locationNameById.get(e.branchId) ?? null) : null,
     }));
   });

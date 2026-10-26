@@ -50,6 +50,10 @@ export type MobileProductListItem = {
   outOfStock: boolean;
   /** Variants (lib/variants.ts) — null when the product has none. The app's picker reads this. */
   variants: MobileProductVariants | null;
+  /** "active" | "inactive" (archived) — only ever "active" unless listProducts' includeAll is set. */
+  status: string;
+  /** Only ever true unless includeAll is set (a non-stock item, e.g. a service). */
+  trackStock: boolean;
 };
 
 export type MobileProductVariants = {
@@ -74,13 +78,18 @@ export type MobileProductVariants = {
  * computeStockAlerts (quantity <= 0 = out of stock; 0 < reorderLevel and quantity < reorderLevel =
  * low stock) — one source of truth for what "low stock" means across the whole Owner App.
  */
-export async function listProducts(tenantId: string): Promise<MobileProductListItem[]> {
+/** `includeAll` widens this to archived and non-stock products too — only the Products tab's
+ * management view asks for that; Checkout and every other picker keep the active, stock-tracked
+ * catalog they always had. */
+export async function listProducts(tenantId: string, options: { includeAll?: boolean } = {}): Promise<MobileProductListItem[]> {
   return withTenantContext(tenantId, async (tx) => {
     const [products, categories, locations, balances] = await Promise.all([
       tx.product.findMany({
-        where: { tenantId, trackStock: true, status: "active" },
+        where: options.includeAll ? { tenantId } : { tenantId, trackStock: true, status: "active" },
         select: {
           id: true,
+          status: true,
+          trackStock: true,
           name: true,
           sku: true,
           categoryId: true,
@@ -176,9 +185,11 @@ export async function listProducts(tenantId: string): Promise<MobileProductListI
         storefrontQuantity,
         storefrontBreakdown,
         totalQuantity,
-        lowStock: totalQuantity > 0 && product.reorderLevel > 0 && totalQuantity < product.reorderLevel,
-        outOfStock: totalQuantity <= 0,
+        lowStock: product.trackStock && totalQuantity > 0 && product.reorderLevel > 0 && totalQuantity < product.reorderLevel,
+        outOfStock: product.trackStock && totalQuantity <= 0,
         variants: variantsOf(product),
+        status: product.status,
+        trackStock: product.trackStock,
       };
     });
   });

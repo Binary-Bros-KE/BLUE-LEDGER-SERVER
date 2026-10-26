@@ -20,13 +20,15 @@ function walkInAwareCustomerName(realCustomerName: string | null, walkInName: st
   return walkInName ? `Walk-in - ${walkInName}` : null;
 }
 
-export type MobileLocation = { id: string; locationName: string };
+/** `locationType` is only set by listLocations (the Main Store is "distribution_center") — lets the
+ * Products tab offer a branch-scoped employee just their own storefront plus the Main Store. */
+export type MobileLocation = { id: string; locationName: string; locationType?: string };
 
 /** Backs the Owner App's storefront filter chips — same "All" + per-branch pattern already used for
  * Employees, just a fresh lookup since a Sale's own storefront isn't resolved anywhere else yet. */
 export async function listLocations(tenantId: string): Promise<MobileLocation[]> {
   return withTenantContext(tenantId, async (tx) =>
-    tx.location.findMany({ where: { tenantId }, select: { id: true, locationName: true }, orderBy: { locationName: "asc" } }),
+    tx.location.findMany({ where: { tenantId }, select: { id: true, locationName: true, locationType: true }, orderBy: { locationName: "asc" } }),
   );
 }
 
