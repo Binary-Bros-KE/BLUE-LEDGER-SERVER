@@ -145,7 +145,7 @@ export async function toggleManualLock(tenantId: string, locationId: string, inp
     // syncedAt set explicitly here too — see upsertWorkingHours's own comment on why this can't be
     // left to Prisma's column default.
     const now = new Date();
-    const row = await tx.workingHours.update({ where: { id: existing.id }, data: { manuallyLocked: parsed.locked, localUpdatedAt: now, syncedAt: now } });
+    const row = await tx.workingHours.update({ where: { id: existing.id }, data: { manuallyLocked: parsed.locked, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now } });
     return {
       locationId,
       locationName: location.locationName,

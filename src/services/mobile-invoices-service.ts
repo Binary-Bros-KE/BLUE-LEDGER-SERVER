@@ -402,6 +402,7 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
           items: cart.items,
           serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
+          deviceId: OWNER_APP_DEVICE_ID,
           localUpdatedAt: now,
           // syncedAt is @default(now()) — Prisma only applies that on CREATE, never on a later
           // UPDATE. DESKTOP's pull is a delta query (syncedAt: { gt: since }), so leaving this out
@@ -635,7 +636,7 @@ export async function cancelInvoice(tenantId: string, employeeId: string, saleId
           localUpdatedAt: now,
         },
       });
-      await tx.sale.update({ where: { id: saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now, syncedAt: now } });
+      await tx.sale.update({ where: { id: saleId }, data: { paymentStatus: "cancelled", deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now } });
 
       return { id: saleId };
     },
@@ -763,10 +764,10 @@ export async function approveInvoiceCancel(tenantId: string, employeeId: string,
         now,
       });
 
-      await tx.sale.update({ where: { id: cancellationRow.saleId }, data: { paymentStatus: "cancelled", localUpdatedAt: now, syncedAt: now } });
+      await tx.sale.update({ where: { id: cancellationRow.saleId }, data: { paymentStatus: "cancelled", deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now } });
       await tx.invoiceCancellation.update({
         where: { id },
-        data: { status: "approved", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now, syncedAt: now },
+        data: { status: "approved", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now },
       });
 
       return { id: cancellationRow.saleId };
@@ -783,7 +784,7 @@ export async function rejectInvoiceCancel(tenantId: string, employeeId: string, 
     const now = new Date();
     await tx.invoiceCancellation.update({
       where: { id },
-      data: { status: "rejected", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, localUpdatedAt: now, syncedAt: now },
+      data: { status: "rejected", approvedBy: employeeId, approvedAt: now, notes: notes?.trim() || cancellationRow.notes, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now },
     });
     return { id: cancellationRow.saleId };
   });

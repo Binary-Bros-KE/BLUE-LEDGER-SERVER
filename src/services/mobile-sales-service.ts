@@ -211,7 +211,7 @@ export async function setSaleIncludeTaxBreakdown(tenantId: string, id: string, v
     // syncedAt must be set explicitly on every mobile-originated update — see
     // mobile-invoices-service.ts's updateInvoice for the full explanation of this bug class.
     const now = new Date();
-    await tx.sale.update({ where: { id }, data: { includeTaxBreakdown: value, localUpdatedAt: now, syncedAt: now } });
+    await tx.sale.update({ where: { id }, data: { includeTaxBreakdown: value, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
@@ -233,7 +233,7 @@ export async function setSaleDeliveryDelivered(tenantId: string, id: string, del
     };
     // syncedAt must be set explicitly on every mobile-originated update — see
     // mobile-invoices-service.ts's updateInvoice for the full explanation of this bug class.
-    await tx.sale.update({ where: { id }, data: { delivery, localUpdatedAt: now, syncedAt: now } });
+    await tx.sale.update({ where: { id }, data: { delivery, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
@@ -245,7 +245,7 @@ export async function setSaleIncludeBusinessInfo(tenantId: string, id: string, v
     const row = await tx.sale.findUnique({ where: { id } });
     if (!row || row.tenantId !== tenantId) throw new NotFoundError("Sale not found");
     const now = new Date();
-    await tx.sale.update({ where: { id }, data: { includeBusinessInfo: value, localUpdatedAt: now, syncedAt: now } });
+    await tx.sale.update({ where: { id }, data: { includeBusinessInfo: value, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now } });
     return { id };
   });
 }
