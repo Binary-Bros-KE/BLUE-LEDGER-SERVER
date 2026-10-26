@@ -97,6 +97,12 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
   return withTenantContext(
     tenantId,
     async (tx) => {
+      const saleId = parsed.id ? (parsed.id.startsWith("sale_") ? parsed.id : `sale_${parsed.id}`) : `sale_${randomUUID()}`;
+      if (parsed.id) {
+        const existing = await tx.sale.findUnique({ where: { id: saleId }, select: { id: true } });
+        if (existing) return { id: existing.id };
+      }
+
       const [tenant, employee, customer] = await Promise.all([
         tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true, pricesTaxInclusive: true } }),
         tx.employee.findUniqueOrThrow({ where: { id: employeeId } }),
@@ -154,7 +160,6 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
       const { json: deliveryJson, riderName } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
       const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
-      const saleId = `sale_${randomUUID()}`;
       await tx.sale.create({
         data: {
           id: saleId,

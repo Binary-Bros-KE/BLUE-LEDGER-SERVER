@@ -130,6 +130,19 @@ export const mobileCheckoutSchema = z.object({
   paymentReference: z.string().trim().optional(),
   customerId: z.string().trim().min(1).optional(),
   amountReceivedCents: z.coerce.number().int().min(0),
+  /** Split payment — mirrors DESKTOP's checkoutInputSchema.payments. Sent only when the customer pays
+   * with 2+ methods; it then REPLACES paymentMethodId/paymentReference/amountReceivedCents (still sent
+   * for the first entry). See mobile-checkout-service.ts's buildSplitPayments for the rules. */
+  payments: z
+    .array(
+      z.object({
+        paymentMethodId: z.string().trim().min(1, "Select a payment method"),
+        amountCents: z.coerce.number().int().min(1, "Enter an amount for every payment").max(100_000_000_000),
+        reference: z.string().trim().optional(),
+      }),
+    )
+    .max(10)
+    .optional(),
   delivery: mobileCheckoutDeliverySchema.optional(),
   serviceCharges: mobileServiceChargesFieldSchema,
   notes: z.string().trim().optional(),
@@ -201,6 +214,9 @@ const mobileInitialPaymentSchema = z.object({
 });
 
 export const mobileInvoiceSchema = z.object({
+  /** Optional client-minted id (Checkout's "Put on account" sends one) — resent unchanged on retry so
+   * a dropped connection can't create the same invoice twice. Omitted = SERVER mints one, as before. */
+  id: z.string().trim().min(1).max(100).optional(),
   customerId: z.string().trim().min(1, "Select a customer"),
   transactionType: z.enum(["invoice", "wholesale_sale"]),
   dueDate: z.string().trim().min(1, "Due date is required"),

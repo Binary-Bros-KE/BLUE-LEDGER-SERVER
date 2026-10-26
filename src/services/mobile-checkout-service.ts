@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { buildServiceCharges, prepareMobileCart, sumServiceChargeFees } from "../lib/mobile-cart.js";
@@ -22,6 +23,77 @@ export const OWNER_APP_DEVICE_ID = "owner-app";
 export type MobileCheckoutResult = { id: string; receiptNumber: string; grandTotalCents: number };
 
 export type MobilePaymentMethodOption = { id: string; name: string; requiresReference: boolean };
+
+/** One entry of Sale.payments — the same shape DESKTOP's own SalePayment uses. */
+type SalePayment = {
+  id: string;
+  paymentMethodId: string;
+  paymentMethodName: string;
+  amountCents: number;
+  reference: string | null;
+  receivedBy: string;
+  receivedByName: string;
+  receivedAt: string;
+  notes: string | null;
+};
+
+/**
+ * Ported from DESKTOP's own sale-service.ts buildSplitPayments, rule for rule: every method must exist,
+ * be active and carry a reference if it needs one; together they must cover the grand total; anything
+ * tendered above the total is change, which can only come back out of a payment whose method needs no
+ * reference (cash) — so the stored amounts always add up to EXACTLY the total, which is what revenue
+ * reports, receipts and the Transactions tab read. Largest payment first (it becomes the sale's
+ * primary paymentMethodId for anything still reading that column).
+ */
+async function buildSplitPayments(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  employee: { id: string; firstName: string; lastName: string },
+  requested: Array<{ paymentMethodId: string; amountCents: number; reference?: string }>,
+  grandTotalCents: number,
+  now: Date,
+): Promise<{ payments: SalePayment[]; tenderedCents: number }> {
+  const methods = await tx.paymentMethod.findMany({ where: { tenantId, id: { in: requested.map((r) => r.paymentMethodId) } } });
+  const methodById = new Map(methods.map((m) => [m.id, m]));
+  const rows = requested.map((entry) => {
+    const method = methodById.get(entry.paymentMethodId);
+    if (!method) throw new NotFoundError("Payment method not found");
+    if (!method.isActive) throw new HttpError(400, `"${method.name}" is not active`);
+    const reference = entry.reference?.trim() || null;
+    if (method.requiresReference && !reference) throw new HttpError(400, `${method.name} requires a reference number`);
+    return { method, amountCents: entry.amountCents, reference };
+  });
+
+  const tenderedCents = rows.reduce((sum, row) => sum + row.amountCents, 0);
+  if (tenderedCents < grandTotalCents) {
+    throw new HttpError(400, `Payments add up to ${(tenderedCents / 100).toFixed(2)} but the total is ${(grandTotalCents / 100).toFixed(2)}`);
+  }
+  const changeCents = tenderedCents - grandTotalCents;
+  if (changeCents > 0) {
+    const cashLike = rows.filter((row) => !row.method.requiresReference).sort((a, b) => b.amountCents - a.amountCents)[0];
+    if (!cashLike || cashLike.amountCents < changeCents) {
+      throw new HttpError(400, "Payments add up to more than the total, and the extra can only be given back as change from a cash-type payment");
+    }
+    cashLike.amountCents -= changeCents;
+  }
+
+  const receivedByName = `${employee.firstName} ${employee.lastName}`.trim();
+  const payments = rows
+    .filter((row) => row.amountCents > 0)
+    .sort((a, b) => b.amountCents - a.amountCents)
+    .map((row) => ({
+      id: `payment_${randomUUID()}`,
+      paymentMethodId: row.method.id,
+      paymentMethodName: row.method.name,
+      amountCents: row.amountCents,
+      reference: row.reference,
+      receivedBy: employee.id,
+      receivedByName,
+      receivedAt: now.toISOString(),
+      notes: null,
+    }));
+  return { payments, tenderedCents };
+}
 
 /** Backs the Checkout tab's payment method picker — same active/non-system-agnostic list DESKTOP's
  * own Checkout screen shows (no server-side filtering beyond isActive; a tenant's own payment method
@@ -102,12 +174,16 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       ]);
 
       const locationId = await resolveMobileLocation(tx, tenantId, employee.branchId, parsed.locationId);
+      const isSplit = (parsed.payments?.length ?? 0) > 1;
 
-      if (!paymentMethod || !paymentMethod.isActive) {
-        throw new HttpError(400, "Selected payment method is unavailable");
-      }
-      if (paymentMethod.requiresReference && !parsed.paymentReference?.trim()) {
-        throw new HttpError(400, `${paymentMethod.name} requires a reference`);
+      // A split payment validates each of its own methods in buildSplitPayments below instead.
+      if (!isSplit) {
+        if (!paymentMethod || !paymentMethod.isActive) {
+          throw new HttpError(400, "Selected payment method is unavailable");
+        }
+        if (paymentMethod.requiresReference && !parsed.paymentReference?.trim()) {
+          throw new HttpError(400, `${paymentMethod.name} requires a reference`);
+        }
       }
       let customerName: string | null = null;
       if (parsed.customerId) {
@@ -125,10 +201,17 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       const deliveryFeeCents = parsed.delivery?.feeCents ?? 0;
       const serviceChargeFeeCents = sumServiceChargeFees(parsed.serviceCharges);
       const grandTotalCents = cart.grandTotalCents + deliveryFeeCents + serviceChargeFeeCents;
-      if (parsed.amountReceivedCents < grandTotalCents) {
+      const now = new Date();
+
+      // Split: the payments list decides the primary method, what was tendered and the change.
+      const split = isSplit ? await buildSplitPayments(tx, tenantId, employee, parsed.payments!, grandTotalCents, now) : null;
+      const primaryMethodId = split ? split.payments[0]!.paymentMethodId : parsed.paymentMethodId;
+      const primaryReference = split ? split.payments[0]!.reference : (parsed.paymentReference ?? null);
+      const amountReceivedCents = split ? split.tenderedCents : parsed.amountReceivedCents;
+      if (amountReceivedCents < grandTotalCents) {
         throw new HttpError(400, "Amount received is less than the total");
       }
-      const changeGivenCents = parsed.amountReceivedCents - grandTotalCents;
+      const changeGivenCents = amountReceivedCents - grandTotalCents;
 
       // Defensive re-lease — covers a 7-day JWT issued before this employee's very first
       // post-feature login (see mobile-auth-service.ts's ensureMobileDeviceSequence, the normal
@@ -137,7 +220,6 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       const mobileDeviceSequence = await ensureEmployeeMobileSequence(tx, tenantId, employeeId, employee.mobileDeviceSequence);
 
       const receiptNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, RECEIPT_PREFIX, RECEIPT_DIGITS);
-      const now = new Date();
       const { json: deliveryJson, riderName } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
       const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
@@ -155,9 +237,9 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           discountAmountCents: cart.discountAmountCents,
           taxAmountCents: cart.taxAmountCents,
           grandTotalCents,
-          paymentMethodId: parsed.paymentMethodId,
-          paymentReference: parsed.paymentReference ?? null,
-          amountReceivedCents: parsed.amountReceivedCents,
+          paymentMethodId: primaryMethodId,
+          paymentReference: primaryReference,
+          amountReceivedCents,
           changeGivenCents,
           notes: parsed.notes?.trim() || null,
           completedAt: now,
@@ -171,7 +253,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           invoiceNotes: null,
           includeTaxBreakdown: parsed.includeTaxBreakdown,
           includeBusinessInfo: parsed.includeBusinessInfo,
-          payments: [],
+          payments: (split?.payments ?? []) as unknown as Prisma.InputJsonValue,
           items: cart.items,
           serviceCharges: preparedServiceCharges,
           delivery: deliveryJson ?? Prisma.JsonNull,
@@ -207,7 +289,7 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
           delivery: parsed.delivery,
           riderName,
           locationId,
-          paymentMethodId: parsed.paymentMethodId,
+          paymentMethodId: primaryMethodId,
           now,
         });
       }
