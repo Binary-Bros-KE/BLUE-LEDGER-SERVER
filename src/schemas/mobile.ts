@@ -717,3 +717,18 @@ export const mobileCashUpQuerySchema = z.object({
   locationId: z.string().trim().min(1).optional(),
   employeeId: z.string().trim().min(1).optional(),
 });
+
+/** Body for POST /mobile/stock-transfers — DESKTOP's stockTransferInputSchema, several products at
+ * once. `id` is minted CLIENT-SIDE and resent on retry (idempotency). */
+export const mobileStockTransferSchema = z
+  .object({
+    id: z.string().trim().min(1).max(100),
+    fromLocationId: z.string().trim().min(1, "Choose where the stock is coming from"),
+    toLocationId: z.string().trim().min(1, "Choose where the stock is going"),
+    items: z
+      .array(z.object({ productId: z.string().trim().min(1), quantity: z.coerce.number().int().positive("Quantity must be greater than 0") }))
+      .min(1, "Add at least one product")
+      .max(100),
+    notes: mobileOptionalText(500),
+  })
+  .refine((data) => data.fromLocationId !== data.toLocationId, { message: "Choose two different locations", path: ["toLocationId"] });

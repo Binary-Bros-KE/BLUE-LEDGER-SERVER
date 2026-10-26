@@ -13,6 +13,7 @@ import {
   mobileCreateProductSchema,
   mobileProductStatusSchema,
   mobileStockAdjustmentSchema,
+  mobileStockTransferSchema,
   mobileUpdateProductSchema,
 } from "../schemas/mobile.js";
 import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
@@ -401,6 +402,34 @@ async function writeStockMovement(
   });
 }
 
+/**
+ * DESKTOP's applyValidatedStockMovement rule for any decrease: a location can't go below zero unless
+ * the product allows negative stock, and at the Main Store only the UNALLOCATED pool counts (plain
+ * total minus every storefront's named earmark — DESKTOP's trueUnallocatedQuantity), so the phone can
+ * never take stock a Storekeeper already earmarked for a shop.
+ */
+async function assertCanDecrease(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  product: { id: string; name: string; allowNegativeStock: boolean },
+  location: { locationName: string; locationType: string },
+  currentQuantity: number,
+  decrease: number,
+): Promise<void> {
+  if (product.allowNegativeStock) return;
+  let available = currentQuantity;
+  if (location.locationType === "distribution_center") {
+    const earmarked = await tx.mainStoreAllocation.aggregate({
+      where: { tenantId, productId: product.id, storefrontId: { not: null } },
+      _sum: { quantity: true },
+    });
+    available = Math.max(0, currentQuantity - (earmarked._sum.quantity ?? 0));
+  }
+  if (available - decrease < 0) {
+    throw new HttpError(400, `Insufficient stock for "${product.name}" at ${location.locationName}. Available: ${available}, requested: ${decrease}`);
+  }
+}
+
 export type MobileStockAdjustmentResult = { id: string; previousQuantity: number; newQuantity: number };
 
 /**
@@ -453,22 +482,7 @@ export async function recordStockAdjustment(session: MobileSession, input: unkno
       if (quantityChange === 0) throw new HttpError(400, `Stock at ${location.locationName} is already ${currentQuantity} — nothing to adjust`);
     }
 
-    if (quantityChange < 0 && !product.allowNegativeStock) {
-      let available = currentQuantity;
-      if (location.locationType === "distribution_center") {
-        const earmarked = await tx.mainStoreAllocation.aggregate({
-          where: { tenantId, productId: product.id, storefrontId: { not: null } },
-          _sum: { quantity: true },
-        });
-        available = Math.max(0, currentQuantity - (earmarked._sum.quantity ?? 0));
-      }
-      if (available + quantityChange < 0) {
-        throw new HttpError(
-          400,
-          `Insufficient stock for "${product.name}" at ${location.locationName}. Available: ${available}, requested: ${Math.abs(quantityChange)}`,
-        );
-      }
-    }
+    if (quantityChange < 0) await assertCanDecrease(tx, tenantId, product, location, currentQuantity, -quantityChange);
 
     await writeStockMovement(tx, {
       id: movementId,
@@ -486,5 +500,63 @@ export async function recordStockAdjustment(session: MobileSession, input: unkno
     });
 
     return { id: movementId, previousQuantity: currentQuantity, newQuantity: currentQuantity + quantityChange };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Stock transfers
+// ---------------------------------------------------------------------------------------------
+
+export type MobileStockTransferResult = { transferId: string; lineCount: number };
+
+/**
+ * Moves stock between two locations — DESKTOP's recordStockTransfer, one product per pair of rows
+ * ("transfer_out" at the source, "transfer_in" at the destination, sharing referenceId), several
+ * products per mobile transfer all under one transfer id. Each decrease is validated exactly like a
+ * manual removal (assertCanDecrease). A branch-scoped employee can only send stock FROM their own
+ * storefront or the Main Store (DESKTOP's opening-stock boundary) — never take another branch's.
+ * Idempotent on the client-minted id: a retry finds its rows already written and returns.
+ */
+export async function recordStockTransfer(session: MobileSession, input: unknown): Promise<MobileStockTransferResult> {
+  const parsed = mobileStockTransferSchema.parse(input);
+  const transferId = parsed.id.startsWith("transfer_") ? parsed.id : `transfer_${parsed.id}`;
+  const { tenantId } = session;
+  const now = new Date();
+
+  return withTenantContext(tenantId, async (tx) => {
+    const already = await tx.stockMovement.count({ where: { tenantId, referenceType: "transfer", referenceId: transferId } });
+    if (already > 0) return { transferId, lineCount: already / 2 };
+
+    const actor = await loadActorScope(tx, session);
+    const from = await assertStockLocationAllowed(tx, tenantId, parsed.fromLocationId, actor.branchScope);
+    const to = await assertLocationBelongsToTenant(tx, tenantId, parsed.toLocationId);
+    if (!to) throw new NotFoundError("Destination location not found");
+    if (to.status !== "active") throw new HttpError(400, `"${to.locationName}" is not active`);
+
+    // Same product twice in one transfer = one combined line.
+    const quantities = new Map<string, number>();
+    for (const line of parsed.items) quantities.set(line.productId, (quantities.get(line.productId) ?? 0) + line.quantity);
+
+    const products = await tx.product.findMany({ where: { tenantId, id: { in: [...quantities.keys()] } } });
+    if (products.length !== quantities.size) throw new NotFoundError("One of the selected products was not found");
+    const balances = await tx.inventory.findMany({
+      where: { tenantId, productId: { in: [...quantities.keys()] }, locationId: { in: [from.id, to.id] } },
+      select: { productId: true, locationId: true, quantity: true },
+    });
+    const balanceOf = (productId: string, locationId: string) =>
+      balances.find((b) => b.productId === productId && b.locationId === locationId)?.quantity ?? 0;
+
+    for (const product of products) {
+      if (!product.trackStock) throw new HttpError(400, `"${product.name}" doesn't track stock`);
+      const quantity = quantities.get(product.id)!;
+      const fromQuantity = balanceOf(product.id, from.id);
+      const toQuantity = balanceOf(product.id, to.id);
+      await assertCanDecrease(tx, tenantId, product, from, fromQuantity, quantity);
+
+      const common = { tenantId, productId: product.id, referenceType: "transfer", referenceId: transferId, performedBy: actor.employeeId, notes: parsed.notes, now };
+      await writeStockMovement(tx, { ...common, id: `movement_${randomUUID()}`, locationId: from.id, movementType: "transfer_out", quantityChange: -quantity, previousQuantity: fromQuantity });
+      await writeStockMovement(tx, { ...common, id: `movement_${randomUUID()}`, locationId: to.id, movementType: "transfer_in", quantityChange: quantity, previousQuantity: toQuantity });
+    }
+    return { transferId, lineCount: products.length };
   });
 }

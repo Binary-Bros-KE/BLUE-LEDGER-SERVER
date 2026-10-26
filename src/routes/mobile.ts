@@ -674,6 +674,12 @@ mobileRouter.post("/products/:id/status", requireMobileAuth, requireOwnerAppAcce
   res.json(result);
 });
 
+// DESKTOP's stock_transfers.create — same grant its own Transfer action checks.
+mobileRouter.post("/stock-transfers", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("stock_transfers", "create"), async (req, res) => {
+  const result = await mobileProductsService.recordStockTransfer(req.mobileSession!, req.body);
+  res.status(201).json(result);
+});
+
 mobileRouter.post("/stock-adjustments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("inventory", "edit"), async (req, res) => {
   const result = await mobileProductsService.recordStockAdjustment(req.mobileSession!, req.body);
   res.status(201).json(result);
