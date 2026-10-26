@@ -779,6 +779,7 @@ model Tenant {
   stockMovements           StockMovement[]
   stockRequests            StockRequest[]
   stockReceipts            StockReceipt[]
+  purchaseRequisitions     PurchaseRequisition[]
   mainStoreAllocations     MainStoreAllocation[]
   inventoryBalances        Inventory[]
   mpesaTillSettings        MpesaTillSettings[]
@@ -1865,6 +1866,39 @@ model StockReceipt {
 
   @@index([tenantId])
   @@map("stock_receipts")
+}
+
+/// A request to BUY stock from a supplier (DESKTOP's purchase_requisitions) — anyone raises one, an
+/// approver converts it into exactly one Purchase (purchaseId, set at approval). Same document-with-
+/// nested-line-items shape as StockRequest, last-write-wins on localUpdatedAt. Purely the workflow
+/// record: the Purchase it becomes syncs on its own.
+model PurchaseRequisition {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  requisitionNumber String
+  storefrontId      String
+  /// pending | approved | rejected | cancelled
+  status            String
+  notes             String?
+  rejectionReason   String?
+  purchaseId        String?
+  requestedBy       String
+  requestedAt       DateTime
+  reviewedBy        String?
+  reviewedAt        DateTime?
+  /// purchase_requisition_items rows — {id, productId (null for an unlinked free-text line),
+  /// itemName, quantityRequested, notes, createdAt}[]. Replace-all on pull.
+  items             Json
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@map("purchase_requisitions")
 }
 
 /// Directly synced (its OWN push/pull), NOT reconstructed by replaying StockMovement — unlike

@@ -29,6 +29,7 @@ export const SYNC_ENTITY_NAMES = [
   "stock_movements",
   "stock_requests",
   "stock_receipts",
+  "purchase_requisitions",
   "main_store_allocations",
 ] as const;
 
