@@ -164,6 +164,13 @@ async function assertCategoryBelongsToTenant(tx: Prisma.TransactionClient, tenan
   if (!row || row.tenantId !== tenantId) throw new NotFoundError("Selected category was not found");
 }
 
+/** True when the business has at most one storefront (Main Store/warehouses don't sell). Then
+ * "Sold at" has nothing to choose between, so a product is always stored as All Storefronts (null). */
+async function hasSingleStorefront(tx: Prisma.TransactionClient, tenantId: string): Promise<boolean> {
+  const storefronts = await tx.location.count({ where: { tenantId, locationType: { notIn: ["distribution_center", "warehouse"] } } });
+  return storefronts <= 1;
+}
+
 async function assertLocationBelongsToTenant(tx: Prisma.TransactionClient, tenantId: string, locationId: string | null) {
   if (!locationId) return null;
   const row = await tx.location.findUnique({ where: { id: locationId } });
@@ -246,7 +253,8 @@ export async function createProduct(session: MobileSession, input: unknown): Pro
 
     // DESKTOP's assertProductStorefrontCreateAllowed rejects anything but the caller's own branch;
     // here that's simply applied for them — there's nothing else a scoped caller could pick.
-    const storefrontId = actor.branchScope ?? parsed.storefrontId;
+    // A single-storefront business always gets All Storefronts — see hasSingleStorefront.
+    const storefrontId = (await hasSingleStorefront(tx, tenantId)) ? null : (actor.branchScope ?? parsed.storefrontId);
     await assertCategoryBelongsToTenant(tx, tenantId, parsed.categoryId);
     await assertLocationBelongsToTenant(tx, tenantId, storefrontId);
 
@@ -303,9 +311,11 @@ export async function updateProduct(session: MobileSession, productId: string, i
     if (!existing || existing.tenantId !== tenantId) throw new NotFoundError("Product not found");
 
     const actor = await loadActorScope(tx, session);
+    // A single-storefront business always gets All Storefronts — see hasSingleStorefront.
+    if (await hasSingleStorefront(tx, tenantId)) parsed.storefrontId = null;
     // DESKTOP's assertProductStorefrontUpdateAllowed: leaving it as-is is always fine; changing it is
     // only allowed to the scoped caller's own branch.
-    if (actor.branchScope && parsed.storefrontId !== existing.storefrontId && parsed.storefrontId !== actor.branchScope) {
+    if (actor.branchScope && parsed.storefrontId !== null && parsed.storefrontId !== existing.storefrontId && parsed.storefrontId !== actor.branchScope) {
       throw new HttpError(403, "You can only assign products to your own storefront");
     }
     await assertCategoryBelongsToTenant(tx, tenantId, parsed.categoryId);
