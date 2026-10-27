@@ -20,8 +20,8 @@ type SalePaymentEntry = {
   amountCents: number;
   receivedAt: string;
 };
-type SaleItemEntry = { productId: string; quantity: number; lineTotalCents: number };
-type SaleReturnItemEntry = { productId: string; quantity: number; lineTotalCents: number };
+type SaleItemEntry = { id?: string; productId: string; quantity: number; lineTotalCents: number };
+type SaleReturnItemEntry = { saleItemId?: string; productId: string; quantity: number; lineTotalCents: number };
 type PurchasePaymentEntry = { amountCents: number; paidAt: string };
 type SaleServiceChargeEntry = { feeCents: number; costCents: number };
 type SaleDeliveryEntry = { feeCents: number; costCents: number };
@@ -352,6 +352,28 @@ export async function computeSalesAndProfit(
   // fraction of the sale actually paid so far. Uses each product's CURRENT buying price as a proxy
   // for cost at sale time (no per-line cost snapshot exists in the synced data — same limitation
   // desktop's own report already has). ---
+  // Every sale line is netted of its approved returns first — a returned item is no longer "sold", so
+  // it earns no margin, units or best-seller revenue. DESKTOP's report-repository.ts
+  // findSaleItemRowsInRange does exactly this (RETURN_NETTING_JOIN: any approved return, whenever
+  // approved). Without it, a fully returned sale still showed its whole margin in Net Revenue while
+  // Total Revenue (refunds subtracted above) correctly dropped to zero.
+  const returnedBySaleItem = new Map<string, { quantity: number; lineTotalCents: number }>();
+  if (liveSales.length > 0) {
+    const returnsOnTheseSales = await tx.saleReturn.findMany({
+      where: { tenantId, status: "approved", saleId: { in: liveSales.map((s) => s.id) } },
+      select: { items: true },
+    });
+    for (const ret of returnsOnTheseSales) {
+      for (const item of asArray<SaleReturnItemEntry>(ret.items)) {
+        if (!item.saleItemId) continue;
+        const agg = returnedBySaleItem.get(item.saleItemId) ?? { quantity: 0, lineTotalCents: 0 };
+        agg.quantity += item.quantity;
+        agg.lineTotalCents += item.lineTotalCents;
+        returnedBySaleItem.set(item.saleItemId, agg);
+      }
+    }
+  }
+
   const productMap = new Map<string, SalesTopProduct>();
   let netRevenueCents = 0;
   let transactionCount = 0;
@@ -362,9 +384,12 @@ export async function computeSalesAndProfit(
     let saleRevenue = 0;
     let saleCost = 0;
     for (const item of items) {
-      saleRevenue += item.lineTotalCents;
-      saleCost += item.quantity * (productById.get(item.productId)?.buyingPriceCents ?? 0);
-      itemsSold += item.quantity;
+      const returned = item.id ? returnedBySaleItem.get(item.id) : undefined;
+      const quantity = item.quantity - (returned?.quantity ?? 0);
+      const lineTotalCents = item.lineTotalCents - (returned?.lineTotalCents ?? 0);
+      saleRevenue += lineTotalCents;
+      saleCost += quantity * (productById.get(item.productId)?.buyingPriceCents ?? 0);
+      itemsSold += quantity;
 
       const existing = productMap.get(item.productId) ?? {
         productId: item.productId,
@@ -372,8 +397,8 @@ export async function computeSalesAndProfit(
         quantitySold: 0,
         revenueCents: 0,
       };
-      existing.quantitySold += item.quantity;
-      existing.revenueCents += item.lineTotalCents;
+      existing.quantitySold += quantity;
+      existing.revenueCents += lineTotalCents;
       productMap.set(item.productId, existing);
     }
     grossSalesCents += saleRevenue;
@@ -401,7 +426,11 @@ export async function computeSalesAndProfit(
   }
   netRevenueCents = Math.round(netRevenueCents);
 
-  const topProducts = [...productMap.values()].sort((a, b) => b.revenueCents - a.revenueCents).slice(0, TOP_PRODUCTS_LIMIT);
+  // A product whose every unit was returned nets to nothing — not a "top product".
+  const topProducts = [...productMap.values()]
+    .filter((p) => p.quantitySold > 0)
+    .sort((a, b) => b.revenueCents - a.revenueCents)
+    .slice(0, TOP_PRODUCTS_LIMIT);
 
   // --- Total expenses: general categorized expenses (now including any auto-booked "Delivery
   // Costs" rows) + suppliers paid + salaries paid + hidden service-charge cost on completed sales
