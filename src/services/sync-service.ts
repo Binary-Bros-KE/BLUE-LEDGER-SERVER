@@ -317,6 +317,16 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
               if (existingByNaturalKey && existingByNaturalKey.id !== id) {
                 targetId = existingByNaturalKey.id;
                 aliasedCanonicalId = existingByNaturalKey.id;
+                // An OLDER copy never overwrites the cloud row it gets linked to. A device's untouched
+                // boot seed (DESKTOP dates those as old as possible) must not reset what was set up in
+                // the cloud first — e.g. the System Administrator's PIN or storefront changed from the
+                // phone before any desktop was installed. Link it, keep the cloud content.
+                const pushedAt = typeof row.localUpdatedAt === "string" ? new Date(row.localUpdatedAt).getTime() : Number.NaN;
+                const cloudAt = (existingByNaturalKey as { localUpdatedAt?: Date }).localUpdatedAt?.getTime();
+                if (cloudAt !== undefined && Number.isFinite(pushedAt) && pushedAt < cloudAt) {
+                  results.push({ id, status: "aliased", canonicalId: existingByNaturalKey.id });
+                  continue;
+                }
               }
             }
           }

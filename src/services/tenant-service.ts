@@ -5,6 +5,7 @@ import { computeInitialNextDueDate, resolveBillingAnchorDate } from "../lib/bill
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { tenantCreateSchema, tenantUpdateSchema } from "../schemas/tenant.js";
+import { seedTenantDefaults } from "./tenant-defaults-service.js";
 
 const WITH_RELATIONS = {
   include: { outlet: true, license: true, subscription: { include: { plan: true } } },
@@ -137,6 +138,15 @@ export async function createTenant(input: unknown, actor: AuthenticatedAccount):
 
     return created;
   });
+
+  // Starter roles, System Administrator, Main Store, first storefront, payment methods and expense
+  // categories — so a mobile-only business can sign in without a desktop. Never fails the tenant
+  // creation itself: loginMobile re-runs this (idempotent) if it did not complete here.
+  try {
+    await seedTenantDefaults(tenant.id, tenant.name);
+  } catch (err) {
+    console.error(`[tenants] Seeding defaults for tenant ${tenant.id} failed:`, err);
+  }
 
   return getTenant(tenant.id, actor);
 }

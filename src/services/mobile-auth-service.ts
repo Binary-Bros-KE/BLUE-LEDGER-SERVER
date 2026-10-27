@@ -5,6 +5,7 @@ import { withTenantContext } from "../lib/tenant-context.js";
 import { signMobileToken } from "../middleware/mobile-auth.js";
 import { prisma } from "../prisma.js";
 import { mobileLoginSchema } from "../schemas/mobile.js";
+import { seedTenantDefaults } from "./tenant-defaults-service.js";
 
 /** Mirrors DESKTOP's own auth-service.ts numbers exactly (MAX_FAILED_ATTEMPTS/LOCKOUT_MINUTES) —
  * see MobileLoginAttempt's own schema comment for why this is a dedicated server-side counter
@@ -56,6 +57,15 @@ export async function loginMobile(input: unknown): Promise<MobileLoginResult> {
   }
   assertLicenseUsable(license);
   const { tenantId } = license;
+
+  // A tenant with no employees at all has never been set up (created before tenant creation seeded
+  // its defaults, or that seeding failed) — set it up now so the System Administrator can sign in
+  // without a desktop. Idempotent; a no-op for every tenant that already has anyone.
+  const employeeCount = await withTenantContext(tenantId, (tx) => tx.employee.count({ where: { tenantId } }));
+  if (employeeCount === 0) {
+    const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { name: true } });
+    await seedTenantDefaults(tenantId, tenant.name);
+  }
 
   const lockState = await withTenantContext(tenantId, (tx) =>
     tx.mobileLoginAttempt.findUnique({ where: { tenantId_employeeCode: { tenantId, employeeCode: employeeCodeKey } } }),
