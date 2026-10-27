@@ -113,10 +113,15 @@ export async function getCashUp(tenantId: string, query: unknown, forcedEmployee
     const credit = (methodId: string | null | undefined, fallbackName: string | undefined, cents: number, cashierId: string | null | undefined, countsAsSale: boolean) => {
       const id = methodId ?? "other";
       const method = methodById.get(id);
-      const line = lines.get(id) ?? { paymentMethodId: id, name: method?.name ?? fallbackName ?? "Other", isCash: method?.code === CASH_CODE, amountCents: 0, count: 0 };
+      // One line per method NAME — several desktops can each have seeded their own "Cash" (same
+      // reason as mobile-metrics-service.ts's addToBucket).
+      const name = method?.name ?? fallbackName ?? "Other";
+      const key = name.trim().toLowerCase();
+      const line = lines.get(key) ?? { paymentMethodId: id, name, isCash: false, amountCents: 0, count: 0 };
+      line.isCash = line.isCash || method?.code === CASH_CODE;
       line.amountCents += cents;
       line.count += 1;
-      lines.set(id, line);
+      lines.set(key, line);
       if (cashierId) {
         const c = cashiers.get(cashierId) ?? { employeeId: cashierId, name: employeeName.get(cashierId) ?? "Unknown", amountCents: 0, salesCount: 0 };
         c.amountCents += cents;

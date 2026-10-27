@@ -305,12 +305,18 @@ export async function computeSalesAndProfit(
   // --- Cash revenue: retail/wholesale sales counted by completedAt (already range-bounded above),
   // invoice cash counted by each individual payment's receivedAt, minus approved-return refunds
   // dated by approvedAt (both already range-bounded above). ---
+  // Bucketed by the method's NAME, not its id: each desktop that seeds its defaults before its
+  // first sync mints its own "Cash" (a fresh id), so grouping by id listed Cash several times.
+  // DESKTOP keeps names unique per tenant, so same name = same method. A known id uses the
+  // method's current name (renames apply); the name stored on the payment is the fallback.
   const buckets = new Map<string, { name: string; revenueCents: number; transactionCount: number }>();
-  const addToBucket = (id: string, name: string, cents: number) => {
-    const existing = buckets.get(id) ?? { name, revenueCents: 0, transactionCount: 0 };
+  const addToBucket = (id: string, storedName: string, cents: number) => {
+    const name = paymentMethodNameById.get(id) ?? storedName;
+    const key = name.trim().toLowerCase();
+    const existing = buckets.get(key) ?? { name, revenueCents: 0, transactionCount: 0 };
     existing.revenueCents += cents;
     existing.transactionCount += 1;
-    buckets.set(id, existing);
+    buckets.set(key, existing);
   };
 
   let retailWholesaleCents = 0;
