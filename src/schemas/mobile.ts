@@ -762,3 +762,48 @@ export const mobileSaleVoidRequestSchema = z.object({
     .transform((value) => (value ? value : undefined)),
   approveNow: z.boolean().optional(),
 });
+
+const mobileCreditLimitCents = z.coerce
+  .number()
+  .int()
+  .min(0, "Credit limit can't be negative")
+  .max(100_000_000_000)
+  .nullable()
+  .optional()
+  .transform((value) => (value === undefined ? null : value));
+
+/** Mirrors DESKTOP's customerInputSchema (shared/schemas/customer.ts) — plus status, so deactivating
+ * is the same save. */
+export const mobileUpdateCustomerSchema = z.object({
+  name: z.string().trim().min(1, "Customer name is required").max(150),
+  phone: z.string().trim().min(1, "Phone number is required").max(30),
+  customerType: z.enum(["retail", "wholesale", "corporate", "walk_in", "personal"]),
+  email: mobileOptionalText(150),
+  kraPin: mobileOptionalText(50),
+  physicalAddress: mobileOptionalText(500),
+  creditLimitCents: mobileCreditLimitCents,
+  notes: mobileOptionalText(1000),
+  status: z.enum(["active", "inactive"]),
+});
+
+/** The day-to-day subset of DESKTOP's supplierInputSchema (country/county/website/alternative M-Pesa
+ * number stay DESKTOP-only and are left untouched by a mobile save) — plus status. */
+export const mobileUpdateSupplierSchema = z.object({
+  businessName: z.string().trim().min(1, "Business name is required").max(200),
+  contactPerson: mobileOptionalText(150),
+  phone1: z.string().trim().min(1, "Phone number is required").max(30),
+  phone2: mobileOptionalText(30),
+  email: mobileOptionalText(150),
+  kraPin: mobileOptionalText(50),
+  town: mobileOptionalText(100),
+  physicalAddress: mobileOptionalText(500),
+  paymentOption: z.enum(["cash", "mpesa", "bank_transfer", "other"]),
+  mpesaName: mobileOptionalText(150),
+  mpesaNumber: mobileOptionalText(30),
+  bankName: mobileOptionalText(150),
+  bankAccountName: mobileOptionalText(150),
+  bankAccountNumber: mobileOptionalText(60),
+  creditLimitCents: mobileCreditLimitCents,
+  notes: mobileOptionalText(1000),
+  status: z.enum(["active", "inactive"]),
+});

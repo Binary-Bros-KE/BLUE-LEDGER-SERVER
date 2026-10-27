@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { NotFoundError } from "../lib/http-error.js";
+import { ConflictError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { withTenantContext } from "../lib/tenant-context.js";
-import { type MobileCreateSupplierInput, mobileCreateSupplierSchema, mobileSupplierBalanceAdjustSchema } from "../schemas/mobile.js";
+import { type MobileCreateSupplierInput, mobileCreateSupplierSchema, mobileSupplierBalanceAdjustSchema, mobileUpdateSupplierSchema } from "../schemas/mobile.js";
 
 /** Same synthetic deviceId used by every other Owner-App-originated write — see
  * mobile-checkout-service.ts's own doc comment for why. */
@@ -154,5 +154,79 @@ export async function adjustSupplierBalance(tenantId: string, employeeId: string
     }
     const sum = await tx.supplierBalanceEntry.aggregate({ where: { tenantId, supplierId }, _sum: { amountCents: true } });
     return { id: entryId, balanceCents: sum._sum.amountCents ?? 0 };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Edit — DESKTOP's supplier-service.ts updateSupplier (+ setSupplierStatus via `status`).
+// ---------------------------------------------------------------------------------------------
+
+export type MobileSupplierDetail = {
+  id: string;
+  supplierCode: string;
+  businessName: string;
+  contactPerson: string | null;
+  phone1: string;
+  phone2: string | null;
+  email: string | null;
+  kraPin: string | null;
+  town: string | null;
+  physicalAddress: string | null;
+  paymentOption: string;
+  mpesaName: string | null;
+  mpesaNumber: string | null;
+  bankName: string | null;
+  bankAccountName: string | null;
+  bankAccountNumber: string | null;
+  creditLimitCents: number | null;
+  notes: string | null;
+  status: string;
+};
+
+export async function getSupplierDetail(tenantId: string, supplierId: string): Promise<MobileSupplierDetail> {
+  return withTenantContext(tenantId, async (tx) => {
+    const s = await tx.supplier.findUnique({ where: { id: supplierId } });
+    if (!s || s.tenantId !== tenantId) throw new NotFoundError("Supplier not found");
+    return {
+      id: s.id,
+      supplierCode: s.supplierCode,
+      businessName: s.businessName,
+      contactPerson: s.contactPerson,
+      phone1: s.phone1,
+      phone2: s.phone2,
+      email: s.email,
+      kraPin: s.kraPin,
+      town: s.town,
+      physicalAddress: s.physicalAddress,
+      paymentOption: s.paymentOption,
+      mpesaName: s.mpesaName,
+      mpesaNumber: s.mpesaNumber,
+      bankName: s.bankName,
+      bankAccountName: s.bankAccountName,
+      bankAccountNumber: s.bankAccountNumber,
+      creditLimitCents: s.creditLimitCents,
+      notes: s.notes,
+      status: s.status,
+    };
+  });
+}
+
+/** DESKTOP's assertUniqueBusinessName rule (case-insensitive here), excluding itself. */
+export async function updateSupplier(tenantId: string, supplierId: string, input: unknown): Promise<{ id: string }> {
+  const parsed = mobileUpdateSupplierSchema.parse(input);
+  const now = new Date();
+  return withTenantContext(tenantId, async (tx) => {
+    const existing = await tx.supplier.findUnique({ where: { id: supplierId }, select: { tenantId: true } });
+    if (!existing || existing.tenantId !== tenantId) throw new NotFoundError("Supplier not found");
+    const duplicate = await tx.supplier.findFirst({
+      where: { tenantId, businessName: { equals: parsed.businessName, mode: "insensitive" }, id: { not: supplierId } },
+      select: { id: true },
+    });
+    if (duplicate) throw new ConflictError(`A supplier named "${parsed.businessName}" already exists`);
+    await tx.supplier.update({
+      where: { id: supplierId },
+      data: { ...parsed, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now },
+    });
+    return { id: supplierId };
   });
 }

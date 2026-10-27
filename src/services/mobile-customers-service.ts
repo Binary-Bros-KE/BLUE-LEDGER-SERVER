@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
-import { HttpError, NotFoundError } from "../lib/http-error.js";
+import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { withTenantContext } from "../lib/tenant-context.js";
-import { type MobileCreateCustomerInput, mobileCollectCustomerPaymentSchema, mobileCreateCustomerSchema } from "../schemas/mobile.js";
+import {
+  type MobileCreateCustomerInput,
+  mobileCollectCustomerPaymentSchema,
+  mobileCreateCustomerSchema,
+  mobileUpdateCustomerSchema,
+} from "../schemas/mobile.js";
 import { applyPayment } from "./mobile-invoices-service.js";
 import { buildSharedStatement, type SharedStatementResult } from "./share-service.js";
 
@@ -241,5 +246,60 @@ export async function collectCustomerPayment(tenantId: string, employeeId: strin
       remaining -= slice;
     }
     return { allocations, remainingDueCents: debt.totalDueCents - parsed.amountCents };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Edit — DESKTOP's customer-service.ts updateCustomer (+ setCustomerStatus via `status`).
+// ---------------------------------------------------------------------------------------------
+
+export type MobileCustomerDetail = {
+  id: string;
+  customerCode: string;
+  customerType: string;
+  name: string;
+  phone: string;
+  email: string | null;
+  kraPin: string | null;
+  physicalAddress: string | null;
+  creditLimitCents: number | null;
+  notes: string | null;
+  status: string;
+};
+
+export async function getCustomerDetail(tenantId: string, customerId: string): Promise<MobileCustomerDetail> {
+  return withTenantContext(tenantId, async (tx) => {
+    const c = await tx.customer.findUnique({ where: { id: customerId } });
+    if (!c || c.tenantId !== tenantId) throw new NotFoundError("Customer not found");
+    return {
+      id: c.id,
+      customerCode: c.customerCode,
+      customerType: c.customerType,
+      name: c.name,
+      phone: c.phone,
+      email: c.email,
+      kraPin: c.kraPin,
+      physicalAddress: c.physicalAddress,
+      creditLimitCents: c.creditLimitCents,
+      notes: c.notes,
+      status: c.status,
+    };
+  });
+}
+
+/** Same phone-uniqueness rule DESKTOP's updateCustomer applies (assertUniquePhone, excluding itself). */
+export async function updateCustomer(tenantId: string, customerId: string, input: unknown): Promise<{ id: string }> {
+  const parsed = mobileUpdateCustomerSchema.parse(input);
+  const now = new Date();
+  return withTenantContext(tenantId, async (tx) => {
+    const existing = await tx.customer.findUnique({ where: { id: customerId }, select: { tenantId: true } });
+    if (!existing || existing.tenantId !== tenantId) throw new NotFoundError("Customer not found");
+    const duplicate = await tx.customer.findFirst({ where: { tenantId, phone: parsed.phone, id: { not: customerId } }, select: { name: true } });
+    if (duplicate) throw new ConflictError(`Phone ${parsed.phone} is already used by ${duplicate.name}`);
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { ...parsed, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now },
+    });
+    return { id: customerId };
   });
 }

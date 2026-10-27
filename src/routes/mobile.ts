@@ -985,3 +985,21 @@ mobileRouter.get("/reports/product-performance", requireMobileAuth, requireOwner
   const scope = await reportLocationScope(session.tenantId, session.employeeId, session.isSuperAdmin ?? false);
   res.json(await mobileReportsService.getProductPerformanceReport(session.tenantId, req.query, scope));
 });
+
+// Customer / supplier edit — same customers.edit / suppliers.edit grants DESKTOP checks. Reading the
+// full record needs the matching .view.
+mobileRouter.get("/customers/:id/detail", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("customers", "view"), async (req, res) => {
+  res.json(await mobileCustomersService.getCustomerDetail(req.mobileSession!.tenantId, req.params.id as string));
+});
+
+mobileRouter.put("/customers/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("customers", "edit"), async (req, res) => {
+  res.json(await mobileCustomersService.updateCustomer(req.mobileSession!.tenantId, req.params.id as string, req.body));
+});
+
+mobileRouter.get("/suppliers/:id/detail", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "view"), async (req, res) => {
+  res.json(await mobileSuppliersService.getSupplierDetail(req.mobileSession!.tenantId, req.params.id as string));
+});
+
+mobileRouter.put("/suppliers/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "edit"), async (req, res) => {
+  res.json(await mobileSuppliersService.updateSupplier(req.mobileSession!.tenantId, req.params.id as string, req.body));
+});
