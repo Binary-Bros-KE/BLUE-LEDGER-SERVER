@@ -1,5 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
+import { HttpError } from "../lib/http-error.js";
 import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess, requireSuperAdmin } from "../middleware/mobile-auth.js";
 import {
   mobileBooleanValueSchema,
@@ -29,6 +30,7 @@ import * as mobileProductsService from "../services/mobile-products-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
 import * as mobileReportsService from "../services/mobile-reports-service.js";
 import * as mobileRidersService from "../services/mobile-riders-service.js";
+import * as mobileSaleAdjustmentsService from "../services/mobile-sale-adjustments-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
 import * as mobileSalesService from "../services/mobile-sales-service.js";
 import * as mobileSettingsService from "../services/mobile-settings-service.js";
@@ -228,8 +230,52 @@ mobileRouter.post(
   requireMobilePermission("sales", "edit"),
   async (req, res) => {
     const parsed = mobileSaleReturnRequestSchema.parse(req.body);
-    const result = await mobileSalesService.requestSaleReturn(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, parsed);
+    const approveNow = parsed.approveNow === true && canApprove(req.mobileSession!);
+    if (parsed.approveNow && !approveNow) throw new HttpError(403, "Only someone who can approve returns can return directly — send it as a request instead.");
+    const result = await mobileSalesService.requestSaleReturn(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, parsed, approveNow);
     res.status(201).json(result);
+  },
+);
+
+/** Same rule requireMobilePermission("approvals", "approve") applies, as a yes/no. */
+function canApprove(session: { isSuperAdmin?: boolean; permissions?: Record<string, string[]> }): boolean {
+  return session.isSuperAdmin === true || (session.permissions?.["approvals"] ?? []).includes("approve");
+}
+
+// Sale voids — mobile-sale-adjustments-service.ts. A request needs sales.edit (DESKTOP's own gate);
+// approveNow additionally needs approvals.approve.
+mobileRouter.post("/sales/:id/request-void", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "edit"), async (req, res) => {
+  const approveNow = req.body?.approveNow === true && canApprove(req.mobileSession!);
+  if (req.body?.approveNow === true && !approveNow) {
+    throw new HttpError(403, "Only someone who can approve voids can void directly — send it as a request instead.");
+  }
+  const result = await mobileSaleAdjustmentsService.requestSaleVoid(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string, req.body, approveNow);
+  res.status(201).json(result);
+});
+
+// Approvals queue for voids + returns (invoice cancellations have their own routes below).
+mobileRouter.get("/approvals/sale-adjustments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("approvals", "approve"), async (req, res) => {
+  res.json(await mobileSaleAdjustmentsService.listPendingSaleAdjustments(req.mobileSession!.tenantId));
+});
+
+mobileRouter.post(
+  "/approvals/sale-adjustments/:kind/:id/:decision",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("approvals", "approve"),
+  async (req, res) => {
+    const kind = req.params.kind === "void" ? "void" : req.params.kind === "return" ? "return" : null;
+    const decision = req.params.decision === "approve" ? "approved" : req.params.decision === "reject" ? "rejected" : null;
+    if (!kind || !decision) throw new HttpError(404, "Not found");
+    const result = await mobileSaleAdjustmentsService.decideSaleAdjustment(
+      req.mobileSession!.tenantId,
+      req.mobileSession!.employeeId,
+      kind,
+      req.params.id as string,
+      decision,
+      req.body,
+    );
+    res.json(result);
   },
 );
 

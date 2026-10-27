@@ -4,6 +4,7 @@ import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
+import { restockReturn } from "./mobile-sale-adjustments-service.js";
 import {
   buildSharedDeliveryNote,
   buildSharedDocument,
@@ -320,16 +321,19 @@ export async function getSaleReturnableItems(tenantId: string, saleId: string): 
 
 /** A cashier's request to return some or all of the items on a completed sale — gated by
  * "sales":"edit" (the permission a normal Cashier already has), not "approvals":"approve". The
- * original sale is never modified and NOTHING is restocked here — that only happens once a manager
- * approves the request, and approval only ever happens from DESKTOP (see sale-return-service.ts's
- * approveSaleReturn) — mobile deliberately has no approval UI for returns at all, request-only.
- * Mirrors DESKTOP's own requestSaleReturn exactly, including its per-line eligible-quantity check. */
+ * original sale is never modified and NOTHING is restocked here — that only happens once someone with
+ * approvals.approve approves it (DESKTOP, or the Owner App's Approvals tab — see
+ * mobile-sale-adjustments-service.ts), or straight away with approveNow. Mirrors DESKTOP's own
+ * requestSaleReturn exactly, including its per-line eligible-quantity check. */
 export async function requestSaleReturn(
   tenantId: string,
   employeeId: string,
   saleId: string,
   input: { reason: string; notes?: string; items: Array<{ saleItemId: string; quantity: number }> },
-): Promise<{ id: string }> {
+  /** Request + approve in one step — the route only passes true for someone holding
+   * approvals.approve. Stored approved by them, stock restocked in the same transaction. */
+  approveNow = false,
+): Promise<{ id: string; status: string }> {
   return withTenantContext(tenantId, async (tx) => {
     const sale = await tx.sale.findUnique({ where: { id: saleId } });
     if (!sale || sale.tenantId !== tenantId) throw new NotFoundError("Sale not found");
@@ -373,20 +377,21 @@ export async function requestSaleReturn(
         tenantId,
         deviceId: OWNER_APP_DEVICE_ID,
         saleId,
-        status: "pending_approval",
+        status: approveNow ? "approved" : "pending_approval",
         reason: input.reason.trim(),
         notes: input.notes?.trim() || null,
         requestedBy: employeeId,
         requestedAt: now,
-        approvedBy: null,
-        approvedAt: null,
+        approvedBy: approveNow ? employeeId : null,
+        approvedAt: approveNow ? now : null,
         items: preparedItems,
         localCreatedAt: now,
         localUpdatedAt: now,
       },
     });
+    if (approveNow) await restockReturn(tx, tenantId, employeeId, id, saleId, preparedItems, now);
 
-    return { id };
+    return { id, status: approveNow ? "approved" : "pending_approval" };
   });
 }
 

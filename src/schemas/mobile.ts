@@ -343,6 +343,9 @@ export const mobileBooleanValueSchema = z.object({
 export const mobileSaleReturnRequestSchema = z.object({
   reason: z.string().trim().min(1, "A reason is required").max(500),
   notes: z.string().trim().max(500).optional(),
+  /** Request AND approve in one step — only honoured for someone holding approvals.approve (the route
+   * checks); stored exactly like a request immediately approved by that person. */
+  approveNow: z.boolean().optional(),
   items: z
     .array(
       z.object({
@@ -746,3 +749,16 @@ export const mobileProductPerformanceQuerySchema = z
     locationId: z.string().trim().min(1).optional(),
   })
   .refine((d) => d.startDate <= d.endDate, { message: "Start date must be on or before the end date", path: ["startDate"] });
+
+/** Body for POST /mobile/sales/:id/request-void — DESKTOP's saleVoidRequestSchema (reason + notes),
+ * plus approveNow (see mobileSaleReturnRequestSchema). */
+export const mobileSaleVoidRequestSchema = z.object({
+  reason: z.string().trim().min(1, "A reason is required").max(500),
+  notes: z
+    .string()
+    .trim()
+    .max(500)
+    .optional()
+    .transform((value) => (value ? value : undefined)),
+  approveNow: z.boolean().optional(),
+});
