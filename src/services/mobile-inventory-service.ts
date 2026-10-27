@@ -54,7 +54,7 @@ export type MobileProductListItem = {
   variants: MobileProductVariants | null;
   /** "active" | "inactive" (archived) — only ever "active" unless listProducts' includeAll is set. */
   status: string;
-  /** Only ever true unless includeAll is set (a non-stock item, e.g. a service). */
+  /** False for a non-stock item (e.g. a service) — sellable, never counted or deducted. */
   trackStock: boolean;
 };
 
@@ -80,14 +80,15 @@ export type MobileProductVariants = {
  * computeStockAlerts (quantity <= 0 = out of stock; 0 < reorderLevel and quantity < reorderLevel =
  * low stock) — one source of truth for what "low stock" means across the whole Owner App.
  */
-/** `includeAll` widens this to archived and non-stock products too — only the Products tab's
- * management view asks for that; Checkout and every other picker keep the active, stock-tracked
- * catalog they always had. */
+/** Every ACTIVE product by default — stock-tracked ones and non-stock items (services) alike, since
+ * both can be sold (mobile-cart.ts only checks/deducts stock for trackStock products, exactly like
+ * DESKTOP). `includeAll` adds archived products too — only the Products tab's management view asks
+ * for that. */
 export async function listProducts(tenantId: string, options: { includeAll?: boolean } = {}): Promise<MobileProductListItem[]> {
   return withTenantContext(tenantId, async (tx) => {
     const [products, categories, locations, balances] = await Promise.all([
       tx.product.findMany({
-        where: options.includeAll ? { tenantId } : { tenantId, trackStock: true, status: "active" },
+        where: options.includeAll ? { tenantId } : { tenantId, status: "active" },
         select: {
           id: true,
           status: true,
