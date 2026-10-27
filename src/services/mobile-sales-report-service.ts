@@ -1,6 +1,6 @@
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
-import { computeSalesAndProfit, type PaymentMethodBreakdownEntry, type SalesTopProduct } from "./mobile-metrics-service.js";
+import { computeSalesAndProfit, type PaymentMethodBreakdownEntry, type SalesTopProduct, type SalesProductSold } from "./mobile-metrics-service.js";
 import { computeTaxCategoryTotals, type TaxBreakdownEntry, type TaxType } from "../lib/tax-breakdown.js";
 
 /**
@@ -164,6 +164,8 @@ export type SalesReportOverview = {
   spansMultipleDays: boolean;
   averageDailyRevenueCents: number;
   topProducts: SalesTopProduct[];
+  /** Every distinct product sold in the period, most revenue first (DESKTOP's "Products Sold"). */
+  productsSold: SalesProductSold[];
   paymentSplit: PaymentMethodBreakdownEntry[];
   /** Purchases (goods + shipping) actually paid to suppliers this period — "Total Capital Invested."
    * Informational only, never counted inside totalExpensesCents/netProfitCents — see DESKTOP's
@@ -206,6 +208,7 @@ export async function getSalesReportOverview(tenantId: string, input: SalesRepor
       spansMultipleDays: spanDays > 1,
       averageDailyRevenueCents,
       topProducts: current.sales.topProducts,
+      productsSold: current.productsSold,
       paymentSplit: current.sales.paymentMethodBreakdown,
       purchasesPaidCents: current.profit.purchasesPaidCents,
     };

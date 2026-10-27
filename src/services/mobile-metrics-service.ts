@@ -92,6 +92,16 @@ export type SalesTopProduct = {
   revenueCents: number;
 };
 
+/** One row of the Sales Report's "Products Sold" list — same shape as DESKTOP's SalesProductSold
+ * (shared/types/report.ts). Net of approved returns, like every other figure here. */
+export type SalesProductSold = SalesTopProduct & {
+  costCents: number;
+  marginCents: number;
+  /** Gross margin as a % of this product's revenue; 0 when revenue is 0. */
+  marginPercent: number;
+  percentOfRevenue: number;
+};
+
 export type SalesSnapshot = {
   revenueCents: number;
   transactionCount: number;
@@ -186,7 +196,7 @@ export async function computeSalesAndProfit(
    * inconsistent) reimplementation. Sale.employeeId is "who owns/created the sale", same semantics
    * DESKTOP's own CashierDashboard filters salesByEmployee by. */
   employeeId?: string | null,
-): Promise<{ sales: SalesSnapshot; profit: ExpensesAndProfit }> {
+): Promise<{ sales: SalesSnapshot; profit: ExpensesAndProfit; productsSold: SalesProductSold[] }> {
   const { start, endExclusive } = range;
   const locationWhere = locationId ? { locationId } : {};
   const employeeWhere = employeeId ? { employeeId } : {};
@@ -374,7 +384,7 @@ export async function computeSalesAndProfit(
     }
   }
 
-  const productMap = new Map<string, SalesTopProduct>();
+  const productMap = new Map<string, SalesTopProduct & { costCents: number }>();
   let netRevenueCents = 0;
   let transactionCount = 0;
   let grossSalesCents = 0;
@@ -388,7 +398,8 @@ export async function computeSalesAndProfit(
       const quantity = item.quantity - (returned?.quantity ?? 0);
       const lineTotalCents = item.lineTotalCents - (returned?.lineTotalCents ?? 0);
       saleRevenue += lineTotalCents;
-      saleCost += quantity * (productById.get(item.productId)?.buyingPriceCents ?? 0);
+      const lineCost = quantity * (productById.get(item.productId)?.buyingPriceCents ?? 0);
+      saleCost += lineCost;
       itemsSold += quantity;
 
       const existing = productMap.get(item.productId) ?? {
@@ -396,9 +407,11 @@ export async function computeSalesAndProfit(
         productName: productById.get(item.productId)?.name ?? "Unknown product",
         quantitySold: 0,
         revenueCents: 0,
+        costCents: 0,
       };
       existing.quantitySold += quantity;
       existing.revenueCents += lineTotalCents;
+      existing.costCents += lineCost;
       productMap.set(item.productId, existing);
     }
     grossSalesCents += saleRevenue;
@@ -427,10 +440,23 @@ export async function computeSalesAndProfit(
   netRevenueCents = Math.round(netRevenueCents);
 
   // A product whose every unit was returned nets to nothing — not a "top product".
-  const topProducts = [...productMap.values()]
+  const productsByRevenueDesc = [...productMap.values()]
     .filter((p) => p.quantitySold > 0)
-    .sort((a, b) => b.revenueCents - a.revenueCents)
-    .slice(0, TOP_PRODUCTS_LIMIT);
+    .sort((a, b) => b.revenueCents - a.revenueCents);
+  const topProducts: SalesTopProduct[] = productsByRevenueDesc
+    .slice(0, TOP_PRODUCTS_LIMIT)
+    .map(({ productId, productName, quantitySold, revenueCents }) => ({ productId, productName, quantitySold, revenueCents }));
+  // Every distinct product sold, most revenue first — DESKTOP report-service.ts productsSold.
+  const totalProductRevenueCents = productsByRevenueDesc.reduce((sum, p) => sum + p.revenueCents, 0);
+  const productsSold: SalesProductSold[] = productsByRevenueDesc.map((product) => {
+    const marginCents = product.revenueCents - product.costCents;
+    return {
+      ...product,
+      marginCents,
+      marginPercent: product.revenueCents > 0 ? (marginCents / product.revenueCents) * 100 : 0,
+      percentOfRevenue: totalProductRevenueCents > 0 ? (product.revenueCents / totalProductRevenueCents) * 100 : 0,
+    };
+  });
 
   // --- Total expenses: general categorized expenses (now including any auto-booked "Delivery
   // Costs" rows) + suppliers paid + salaries paid + hidden service-charge cost on completed sales
@@ -463,6 +489,7 @@ export async function computeSalesAndProfit(
   const netProfitCents = netRevenueCents - totalExpensesCents;
 
   return {
+    productsSold,
     sales: { revenueCents, transactionCount, grossSalesCents, itemsSold, paymentMethodBreakdown, topProducts },
     profit: {
       expensesCents,
