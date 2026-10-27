@@ -95,6 +95,8 @@ export type SalesTopProduct = {
 /** One row of the Sales Report's "Products Sold" list — same shape as DESKTOP's SalesProductSold
  * (shared/types/report.ts). Net of approved returns, like every other figure here. */
 export type SalesProductSold = SalesTopProduct & {
+  /** Product.unitOfMeasure (e.g. "piece", "kg") — null when the product has none set. */
+  unitOfMeasure: string | null;
   costCents: number;
   marginCents: number;
   /** Gross margin as a % of this product's revenue; 0 when revenue is 0. */
@@ -272,7 +274,7 @@ export async function computeSalesAndProfit(
       where: { tenantId, status: "active", localCreatedAt: { gte: start, lt: endExclusive } },
       _sum: { netPayCents: true },
     }),
-    tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true } }),
+    tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true, unitOfMeasure: true } }),
     tx.paymentMethod.findMany({ where: { tenantId }, select: { id: true, name: true } }),
   ]);
 
@@ -452,6 +454,7 @@ export async function computeSalesAndProfit(
     const marginCents = product.revenueCents - product.costCents;
     return {
       ...product,
+      unitOfMeasure: productById.get(product.productId)?.unitOfMeasure ?? null,
       marginCents,
       marginPercent: product.revenueCents > 0 ? (marginCents / product.revenueCents) * 100 : 0,
       percentOfRevenue: totalProductRevenueCents > 0 ? (product.revenueCents / totalProductRevenueCents) * 100 : 0,
