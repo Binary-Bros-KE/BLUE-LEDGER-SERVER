@@ -597,6 +597,9 @@ export const mobileCreatePurchaseSchema = z.object({
 
 export type MobileCreatePurchaseInput = z.infer<typeof mobileCreatePurchaseSchema>;
 
+/** Rewriting a draft: the same body minus the client id (the purchase already has one). */
+export const mobileUpdatePurchaseSchema = mobileCreatePurchaseSchema.omit({ id: true });
+
 export const mobileReceivePurchaseSchema = z.object({
   items: z
     .array(

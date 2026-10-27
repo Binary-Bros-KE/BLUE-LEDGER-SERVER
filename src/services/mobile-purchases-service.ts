@@ -6,7 +6,13 @@ import { withTenantContext } from "../lib/tenant-context.js";
 import type { MobileSession } from "../middleware/mobile-auth.js";
 import { prisma } from "../prisma.js";
 import { computeLineTax, computeTaxBreakdown, resolveProductTaxConfig, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
-import { type MobileCreatePurchaseInput, mobileCreatePurchaseSchema, mobilePurchasePaymentSchema, mobileReceivePurchaseSchema } from "../schemas/mobile.js";
+import {
+  type MobileCreatePurchaseInput,
+  mobileCreatePurchaseSchema,
+  mobilePurchasePaymentSchema,
+  mobileReceivePurchaseSchema,
+  mobileUpdatePurchaseSchema,
+} from "../schemas/mobile.js";
 import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
 
 export type MobilePurchaseListItem = {
@@ -28,6 +34,7 @@ export type MobilePurchaseListItem = {
 type RawPurchaseItem = {
   id: string;
   productId: string;
+  sellingPriceCents?: number | null;
   orderedQuantity: number;
   receivedQuantity: number;
   unitCostCents: number;
@@ -50,6 +57,9 @@ export type MobilePurchaseItem = {
   id: string;
   productId: string;
   productName: string;
+  /** Re-opening a draft for editing needs these two back. */
+  taxType: string;
+  sellingPriceCents: number | null;
   sku: string | null;
   orderedQuantity: number;
   receivedQuantity: number;
@@ -188,6 +198,8 @@ export async function getPurchase(tenantId: string, purchaseId: string): Promise
       items: items.map((item) => ({
         id: item.id,
         productId: item.productId,
+        taxType: item.taxType,
+        sellingPriceCents: item.sellingPriceCents ?? null,
         productName: productById.get(item.productId)?.name ?? "Unknown product",
         sku: productById.get(item.productId)?.sku ?? null,
         orderedQuantity: item.orderedQuantity,
@@ -413,6 +425,85 @@ async function recordSupplierBalanceEntry(
   });
 }
 
+type PurchaseHeaderInput = { supplierId: string; locationId: string; supplierInvoiceNumber: string | null };
+type PurchaseLineInput = MobileCreatePurchaseInput["items"][number];
+
+/** The header checks DESKTOP's createPurchase/updatePurchase share: supplier + destination belong to
+ * the tenant, the branch-scope boundary, and the supplier invoice number is unique per supplier
+ * (ignoring the purchase being edited). */
+async function validatePurchaseHeader(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  branchScope: string | null,
+  header: PurchaseHeaderInput,
+  excludePurchaseId?: string,
+) {
+  const [supplier, location] = await Promise.all([
+    tx.supplier.findUnique({ where: { id: header.supplierId } }),
+    tx.location.findUnique({ where: { id: header.locationId } }),
+  ]);
+  if (!supplier || supplier.tenantId !== tenantId) throw new NotFoundError("Supplier not found");
+  if (!location || location.tenantId !== tenantId) throw new NotFoundError("Destination location not found");
+  // Same boundary as mobile stock changes: a branch-scoped employee receives into their own
+  // storefront or the Main Store only.
+  if (branchScope && location.id !== branchScope && location.locationType !== "distribution_center") {
+    throw new HttpError(403, "You can only receive purchases into your own storefront or the Main Store");
+  }
+  if (header.supplierInvoiceNumber) {
+    const duplicate = await tx.purchase.findFirst({
+      where: {
+        tenantId,
+        supplierId: supplier.id,
+        supplierInvoiceNumber: header.supplierInvoiceNumber,
+        ...(excludePurchaseId ? { id: { not: excludePurchaseId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (duplicate) throw new ConflictError(`Supplier invoice number "${header.supplierInvoiceNumber}" is already recorded for this supplier`);
+  }
+  return { supplier, location };
+}
+
+/** DESKTOP's prepareCart, line for line — tax computed here from each line's own taxType + the
+ * product's inclusive/exclusive setting, never taken from the client. */
+async function preparePurchaseLines(tx: Prisma.TransactionClient, tenantId: string, lines: PurchaseLineInput[], shippingCostCents: number, now: Date) {
+  const [products, tenant] = await Promise.all([
+    tx.product.findMany({ where: { tenantId, id: { in: lines.map((i) => i.productId) } }, select: { id: true, pricesTaxInclusive: true } }),
+    tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true, pricesTaxInclusive: true } }),
+  ]);
+  const productById = new Map(products.map((p) => [p.id, p]));
+  const tenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
+  const nowIso = now.toISOString();
+
+  const items: StoredPurchaseItem[] = lines.map((item) => {
+    const product = productById.get(item.productId);
+    if (!product) throw new NotFoundError("One of the selected products was not found");
+    const taxableCents = item.orderedQuantity * item.unitCostCents - item.discountAmountCents;
+    const { grossCents, taxCents } = computeLineTax(taxableCents, item.taxType, resolveProductTaxConfig(product, tenantTaxConfig));
+    return {
+      id: `purchase_item_${randomUUID()}`,
+      productId: product.id,
+      orderedQuantity: item.orderedQuantity,
+      receivedQuantity: 0,
+      unitCostCents: item.unitCostCents,
+      sellingPriceCents: item.sellingPriceCents,
+      discountAmountCents: item.discountAmountCents,
+      taxType: item.taxType,
+      taxAmountCents: taxCents,
+      lineTotalCents: grossCents,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+  });
+  return {
+    items,
+    subtotalCents: items.reduce((sum, i) => sum + i.orderedQuantity * i.unitCostCents, 0),
+    discountAmountCents: items.reduce((sum, i) => sum + i.discountAmountCents, 0),
+    taxAmountCents: items.reduce((sum, i) => sum + i.taxAmountCents, 0),
+    grandTotalCents: items.reduce((sum, i) => sum + i.lineTotalCents, 0) + shippingCostCents,
+  };
+}
+
 export async function createPurchase(session: MobileSession, input: unknown): Promise<{ id: string; purchaseNumber: string }> {
   const parsed: MobileCreatePurchaseInput = mobileCreatePurchaseSchema.parse(input);
   const purchaseId = parsed.id.startsWith("purchase_") ? parsed.id : `purchase_${parsed.id}`;
@@ -424,59 +515,8 @@ export async function createPurchase(session: MobileSession, input: unknown): Pr
     if (existing) return existing;
 
     const actor = await loadActor(tx, session);
-    const [supplier, location, tenant] = await Promise.all([
-      tx.supplier.findUnique({ where: { id: parsed.supplierId } }),
-      tx.location.findUnique({ where: { id: parsed.locationId } }),
-      tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true, pricesTaxInclusive: true } }),
-    ]);
-    if (!supplier || supplier.tenantId !== tenantId) throw new NotFoundError("Supplier not found");
-    if (!location || location.tenantId !== tenantId) throw new NotFoundError("Destination location not found");
-    // Same boundary as mobile stock changes: a branch-scoped employee receives into their own
-    // storefront or the Main Store only.
-    if (actor.branchScope && location.id !== actor.branchScope && location.locationType !== "distribution_center") {
-      throw new HttpError(403, "You can only receive purchases into your own storefront or the Main Store");
-    }
-    if (parsed.supplierInvoiceNumber) {
-      const duplicate = await tx.purchase.findFirst({
-        where: { tenantId, supplierId: supplier.id, supplierInvoiceNumber: parsed.supplierInvoiceNumber },
-        select: { id: true },
-      });
-      if (duplicate) throw new ConflictError(`Supplier invoice number "${parsed.supplierInvoiceNumber}" is already recorded for this supplier`);
-    }
-
-    const products = await tx.product.findMany({
-      where: { tenantId, id: { in: parsed.items.map((i) => i.productId) } },
-      select: { id: true, pricesTaxInclusive: true },
-    });
-    const productById = new Map(products.map((p) => [p.id, p]));
-    const tenantTaxConfig = { vatRatePercent: tenant.vatRatePercent, pricesTaxInclusive: tenant.pricesTaxInclusive };
-    const nowIso = now.toISOString();
-
-    // DESKTOP's prepareCart, line for line.
-    const items: StoredPurchaseItem[] = parsed.items.map((item) => {
-      const product = productById.get(item.productId);
-      if (!product) throw new NotFoundError("One of the selected products was not found");
-      const taxableCents = item.orderedQuantity * item.unitCostCents - item.discountAmountCents;
-      const { grossCents, taxCents } = computeLineTax(taxableCents, item.taxType, resolveProductTaxConfig(product, tenantTaxConfig));
-      return {
-        id: `purchase_item_${randomUUID()}`,
-        productId: product.id,
-        orderedQuantity: item.orderedQuantity,
-        receivedQuantity: 0,
-        unitCostCents: item.unitCostCents,
-        sellingPriceCents: item.sellingPriceCents,
-        discountAmountCents: item.discountAmountCents,
-        taxType: item.taxType,
-        taxAmountCents: taxCents,
-        lineTotalCents: grossCents,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-    });
-    const subtotalCents = items.reduce((sum, i) => sum + i.orderedQuantity * i.unitCostCents, 0);
-    const discountAmountCents = items.reduce((sum, i) => sum + i.discountAmountCents, 0);
-    const taxAmountCents = items.reduce((sum, i) => sum + i.taxAmountCents, 0);
-    const grandTotalCents = items.reduce((sum, i) => sum + i.lineTotalCents, 0) + parsed.shippingCostCents;
+    const { supplier, location } = await validatePurchaseHeader(tx, tenantId, actor.branchScope, parsed);
+    const cart = await preparePurchaseLines(tx, tenantId, parsed.items, parsed.shippingCostCents, now);
 
     const sequence = await ensureEmployeeMobileSequence(tx, tenantId, actor.id, actor.mobileDeviceSequence);
     const purchaseNumber = await mintMobileDocumentNumber(tx, tenantId, sequence, PURCHASE_PREFIX, PURCHASE_DIGITS);
@@ -493,12 +533,12 @@ export async function createPurchase(session: MobileSession, input: unknown): Pr
         locationId: location.id,
         status: parsed.intent,
         taxType: LEGACY_PURCHASE_TAX_TYPE,
-        subtotalCents,
-        discountAmountCents,
-        taxAmountCents,
+        subtotalCents: cart.subtotalCents,
+        discountAmountCents: cart.discountAmountCents,
+        taxAmountCents: cart.taxAmountCents,
         shippingCostCents: parsed.shippingCostCents,
         shippingExpenseCents: parsed.shippingExpenseCents,
-        grandTotalCents,
+        grandTotalCents: cart.grandTotalCents,
         receivedValueCents: 0,
         paymentStatus: "unpaid",
         amountPaidCents: 0,
@@ -506,14 +546,14 @@ export async function createPurchase(session: MobileSession, input: unknown): Pr
         receivingEvents: [],
         notes: parsed.notes,
         orderedAt: ordered ? now : null,
-        items: items as unknown as Prisma.InputJsonValue,
+        items: cart.items as unknown as Prisma.InputJsonValue,
         localCreatedAt: now,
         localUpdatedAt: now,
       },
     });
 
     if (ordered) {
-      await syncProductPricingFromOrder(tx, items, now);
+      await syncProductPricingFromOrder(tx, cart.items, now);
       await createShippingCostExpense(
         tx,
         tenantId,
@@ -523,6 +563,75 @@ export async function createPurchase(session: MobileSession, input: unknown): Pr
       );
     }
     return { id: purchaseId, purchaseNumber };
+  });
+}
+
+/**
+ * Rewrites a DRAFT purchase — supplier, destination, lines, shipping, notes — and optionally places
+ * it in the same save (intent "ordered": then exactly markPurchaseOrdered's side effects run —
+ * product re-pricing and the shipping-cost expense). Draft-only on purpose: a draft has had no side
+ * effects yet, so a rewrite can't leave anything stale behind. DESKTOP also lets an ordered purchase
+ * with nothing received or paid be edited; that path (undoing/redoing its re-pricing and expense)
+ * stays DESKTOP-only.
+ */
+export async function updateDraftPurchase(session: MobileSession, purchaseId: string, input: unknown): Promise<{ id: string; status: string }> {
+  const parsed = mobileUpdatePurchaseSchema.parse(input);
+  const { tenantId } = session;
+  const now = new Date();
+
+  return withTenantContext(tenantId, async (tx) => {
+    const purchase = await loadPurchase(tx, tenantId, purchaseId);
+    if (purchase.status !== "draft") throw new HttpError(400, "Only a draft purchase can be edited here — this one has already been placed");
+
+    const actor = await loadActor(tx, session);
+    const { supplier, location } = await validatePurchaseHeader(tx, tenantId, actor.branchScope, parsed, purchaseId);
+    const cart = await preparePurchaseLines(tx, tenantId, parsed.items, parsed.shippingCostCents, now);
+    const ordered = parsed.intent === "ordered";
+
+    await tx.purchase.update({
+      where: { id: purchaseId },
+      data: {
+        supplierId: supplier.id,
+        supplierInvoiceNumber: parsed.supplierInvoiceNumber,
+        locationId: location.id,
+        status: parsed.intent,
+        subtotalCents: cart.subtotalCents,
+        discountAmountCents: cart.discountAmountCents,
+        taxAmountCents: cart.taxAmountCents,
+        shippingCostCents: parsed.shippingCostCents,
+        shippingExpenseCents: parsed.shippingExpenseCents,
+        grandTotalCents: cart.grandTotalCents,
+        notes: parsed.notes,
+        orderedAt: ordered ? now : null,
+        items: cart.items as unknown as Prisma.InputJsonValue,
+        deviceId: OWNER_APP_DEVICE_ID,
+        localUpdatedAt: now,
+        syncedAt: now,
+      },
+    });
+
+    if (ordered) {
+      await syncProductPricingFromOrder(tx, cart.items, now);
+      const sequence = await ensureEmployeeMobileSequence(tx, tenantId, actor.id, actor.mobileDeviceSequence);
+      await createShippingCostExpense(
+        tx,
+        tenantId,
+        sequence,
+        { id: purchaseId, purchaseNumber: purchase.purchaseNumber, supplierName: supplier.businessName, locationId: location.id, shippingExpenseCents: parsed.shippingExpenseCents },
+        now,
+      );
+    }
+    return { id: purchaseId, status: parsed.intent };
+  });
+}
+
+/** Last buying price per product — pre-fills a new purchase line's unit cost. A separate lookup (not
+ * part of the product list every cashier loads) so cost prices only reach people who buy stock or
+ * manage products. */
+export async function listProductCosts(tenantId: string): Promise<Record<string, number>> {
+  return withTenantContext(tenantId, async (tx) => {
+    const rows = await tx.product.findMany({ where: { tenantId, status: "active", trackStock: true }, select: { id: true, buyingPriceCents: true } });
+    return Object.fromEntries(rows.map((r) => [r.id, r.buyingPriceCents]));
   });
 }
 

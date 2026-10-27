@@ -1003,3 +1003,17 @@ mobileRouter.get("/suppliers/:id/detail", requireMobileAuth, requireOwnerAppAcce
 mobileRouter.put("/suppliers/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "edit"), async (req, res) => {
   res.json(await mobileSuppliersService.updateSupplier(req.mobileSession!.tenantId, req.params.id as string, req.body));
 });
+
+// Draft purchase edit (purchases.edit) and the cost lookup that pre-fills purchase lines — buying
+// prices only for people who buy stock (purchases.create) or manage products (products.edit).
+mobileRouter.put("/purchases/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "edit"), async (req, res) => {
+  res.json(await mobilePurchasesService.updateDraftPurchase(req.mobileSession!, req.params.id as string, req.body));
+});
+
+mobileRouter.get("/products/costs", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const session = req.mobileSession!;
+  const perms = session.permissions ?? {};
+  const allowed = session.isSuperAdmin || (perms["purchases"] ?? []).includes("create") || (perms["products"] ?? []).includes("edit");
+  if (!allowed) throw new HttpError(403, "You don't have access to buying prices.");
+  res.json(await mobilePurchasesService.listProductCosts(session.tenantId));
+});
