@@ -11,6 +11,7 @@ import {
   mobileSaleReturnRequestSchema,
   mobileRequestCancelSchema,
   mobileSalesQuerySchema,
+  mobileStockLedgerQuerySchema,
   mobileShareLinkSchema,
   mobileStkPushSchema,
   salesReportPeriodQuerySchema,
@@ -819,8 +820,8 @@ mobileRouter.post("/expenses/:id/archive", requireMobileAuth, requireOwnerAppAcc
 });
 
 mobileRouter.get("/stock-ledger", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
-  const parsed = mobileSalesQuerySchema.parse(req.query);
-  const result = await mobileStockLedgerService.listStockMovements(req.mobileSession!.tenantId, parsed.locationId ?? null);
+  const parsed = mobileStockLedgerQuerySchema.parse(req.query);
+  const result = await mobileStockLedgerService.listStockMovements(req.mobileSession!.tenantId, parsed.locationId ?? null, parsed.productId ?? null);
   res.json(result);
 });
 

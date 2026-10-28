@@ -35,6 +35,11 @@ export const mobileSalesQuerySchema = z.object({
 
 export type MobileSalesQueryInput = z.infer<typeof mobileSalesQuerySchema>;
 
+/** Stock Ledger — the storefront filter, plus an optional single product to track. */
+export const mobileStockLedgerQuerySchema = mobileSalesQuerySchema.extend({
+  productId: z.string().trim().min(1).optional(),
+});
+
 /** Mints a share link from inside the Owner App — same underlying createShareLink (share-service.ts)
  * DESKTOP's ShareModal calls, just reached via mobile auth instead of device auth, since the owner's
  * phone isn't a registered sync device. */

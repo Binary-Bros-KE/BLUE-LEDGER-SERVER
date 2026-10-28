@@ -12,6 +12,8 @@ export type MobileStockMovement = {
   locationName: string;
   movementType: MobileStockMovementType;
   quantityChange: number;
+  /** That location's stock right after this movement — null on rows recorded before it was kept. */
+  balanceAfter: number | null;
   /** Quantity moved x the product's CURRENT buying price — a live snapshot, not a price frozen at
    * the time of the movement, matching DESKTOP's own mapStockMovementFeedRow exactly. */
   valueCents: number;
@@ -26,14 +28,15 @@ export type MobileStockMovement = {
  * list (200 most recent rows, not real pagination) rather than DESKTOP's year-filterable 300/5000
  * cap — no other Owner App tab has a Year filter either.
  */
-export async function listStockMovements(tenantId: string, locationId: string | null): Promise<MobileStockMovement[]> {
+export async function listStockMovements(tenantId: string, locationId: string | null, productId: string | null = null): Promise<MobileStockMovement[]> {
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
 
   return withTenantContext(tenantId, async (tx) => {
     const movements = await tx.stockMovement.findMany({
-      where: { tenantId, ...(locationId ? { locationId } : {}) },
+      where: { tenantId, ...(locationId ? { locationId } : {}), ...(productId ? { productId } : {}) },
       orderBy: { localCreatedAt: "desc" },
-      take: 200,
+      // One product's own history is far shorter than the whole feed — show more of it.
+      take: productId ? 1000 : 200,
     });
 
     const productIds = [...new Set(movements.map((m) => m.productId))];
@@ -56,6 +59,7 @@ export async function listStockMovements(tenantId: string, locationId: string | 
         locationName: locationNameById.get(movement.locationId) ?? "—",
         movementType: movement.movementType as MobileStockMovementType,
         quantityChange: movement.quantityChange,
+        balanceAfter: movement.newQuantity,
         valueCents: Math.abs(movement.quantityChange) * (product?.buyingPriceCents ?? 0),
         notes: movement.notes,
         createdAt: movement.localCreatedAt.toISOString(),
