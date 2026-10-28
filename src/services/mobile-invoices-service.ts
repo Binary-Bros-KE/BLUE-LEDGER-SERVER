@@ -444,6 +444,16 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
   );
 }
 
+/** The storefront an employee may take invoice payments for — their own branch, unless they're a
+ * Super Admin (null = any). Same scope rule as everywhere else (session.isSuperAdmin ? null :
+ * branchId), resolved from the employee's role so every payment path shares it. */
+export async function paymentStorefrontScope(tx: Prisma.TransactionClient, employeeId: string): Promise<string | null> {
+  const employee = await tx.employee.findUniqueOrThrow({ where: { id: employeeId }, select: { branchId: true, roleId: true } });
+  if (!employee.branchId) return null;
+  const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId }, select: { isSuperAdmin: true } }) : null;
+  return role?.isSuperAdmin ? null : employee.branchId;
+}
+
 /** Exported for mobile-customers-service.ts's collectCustomerPayment, which spreads one customer
  * payment across several invoices through this same path. `payment.id` lets that caller fix the
  * payment entry's id so a retried request can recognise what it already applied. */
@@ -455,6 +465,10 @@ export async function applyPayment(
   payment: { id?: string; paymentMethodId: string; amountCents: number; reference: string | null; notes: string | null },
 ): Promise<MobileInvoiceResult> {
   const row = await requireInvoiceRow(tx, tenantId, saleId);
+  // Branch staff only complete their own storefront's invoices — every payment path (record
+  // payment, mark paid, customer collect) comes through here.
+  const scope = await paymentStorefrontScope(tx, employeeId);
+  if (scope && row.locationId !== scope) throw new HttpError(403, "You can only take payments for your own storefront's invoices");
   if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice has been cancelled");
   if (row.balanceDueCents <= 0) throw new HttpError(400, "This invoice is already fully paid");
   if (payment.amountCents > row.balanceDueCents) {

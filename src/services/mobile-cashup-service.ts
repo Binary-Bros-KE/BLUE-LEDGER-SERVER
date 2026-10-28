@@ -83,13 +83,13 @@ export async function getCashUp(tenantId: string, query: unknown, forcedEmployee
         },
         select: { id: true, employeeId: true, grandTotalCents: true, paymentMethodId: true, payments: true },
       }),
-      // Any invoice that could hold a payment received today — narrowed per payment below. One
-      // cashier's own till counts every payment THEY received, whichever storefront the invoice
-      // belongs to (the money is in their drawer); the storefront filter applies to "everyone" views.
+      // Any invoice that could hold a payment received today — narrowed per payment below. Branch
+      // staff can only take payments on their own storefront's invoices (applyPayment), so the
+      // storefront filter never hides money a cashier actually received.
       tx.sale.findMany({
         where: {
           tenantId,
-          ...(employeeId ? {} : locationWhere),
+          ...locationWhere,
           saleStatus: "completed",
           invoiceNumber: { not: null },
           paymentStatus: { not: "cancelled" },

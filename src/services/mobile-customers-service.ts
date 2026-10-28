@@ -9,7 +9,7 @@ import {
   mobileCreateCustomerSchema,
   mobileUpdateCustomerSchema,
 } from "../schemas/mobile.js";
-import { applyPayment } from "./mobile-invoices-service.js";
+import { applyPayment, paymentStorefrontScope } from "./mobile-invoices-service.js";
 import { buildSharedStatement, type SharedStatementResult } from "./share-service.js";
 
 /** Same synthetic deviceId used by every other Owner-App-originated write — see
@@ -101,6 +101,8 @@ export type MobileOutstandingInvoice = {
   /** total − paid − approved returns, never below 0 — what's actually still owed on it. */
   outstandingCents: number;
   paymentStatus: string;
+  /** The invoice's storefront — branch staff can only collect on their own (applyPayment). */
+  locationId: string;
 };
 
 export type MobileCustomerDebt = {
@@ -181,6 +183,7 @@ async function loadCustomerDebt(tx: Prisma.TransactionClient, tenantId: string, 
       amountPaidCents: sale.amountPaidCents,
       outstandingCents,
       paymentStatus: sale.paymentStatus,
+      locationId: sale.locationId,
     })),
   };
 }
@@ -226,13 +229,23 @@ export async function collectCustomerPayment(tenantId: string, employeeId: strin
 
     const debt = await loadCustomerDebt(tx, tenantId, customerId);
     if (debt.totalDueCents <= 0) throw new HttpError(400, "This customer doesn't owe anything right now");
-    if (parsed.amountCents > debt.totalDueCents) {
-      throw new HttpError(400, `That's more than the ${(debt.totalDueCents / 100).toFixed(2)} this customer owes`);
+    // Branch staff collect only against their own storefront's invoices.
+    const scope = await paymentStorefrontScope(tx, employeeId);
+    const payable = scope ? debt.invoices.filter((invoice) => invoice.locationId === scope) : debt.invoices;
+    const payableCents = payable.reduce((sum, invoice) => sum + invoice.outstandingCents, 0);
+    if (payableCents <= 0) throw new HttpError(400, "This customer doesn't owe anything at your storefront");
+    if (parsed.amountCents > payableCents) {
+      throw new HttpError(
+        400,
+        scope
+          ? `That's more than the ${(payableCents / 100).toFixed(2)} this customer owes at your storefront`
+          : `That's more than the ${(payableCents / 100).toFixed(2)} this customer owes`,
+      );
     }
 
     let remaining = parsed.amountCents;
     const allocations: MobileCollectPaymentResult["allocations"] = [];
-    for (const invoice of debt.invoices) {
+    for (const invoice of payable) {
       if (remaining <= 0) break;
       const slice = Math.min(remaining, invoice.outstandingCents);
       await applyPayment(tx, tenantId, employeeId, invoice.id, {
