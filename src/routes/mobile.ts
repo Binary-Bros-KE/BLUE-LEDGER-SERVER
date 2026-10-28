@@ -293,9 +293,13 @@ mobileRouter.post(
   },
 );
 
+/** Branch staff see only their own storefront's invoices (they can only take payments on those —
+ * applyPayment); a Super Admin or an unassigned employee sees every storefront's. */
 mobileRouter.get("/invoices", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const session = req.mobileSession!;
   const parsed = mobileSalesQuerySchema.parse(req.query);
-  const result = await mobileSalesService.listInvoices(req.mobileSession!.tenantId, parsed.locationId ?? null);
+  const scope = await reportLocationScope(session.tenantId, session.employeeId, session.isSuperAdmin ?? false);
+  const result = await mobileSalesService.listInvoices(session.tenantId, scope ?? parsed.locationId ?? null);
   res.json(result);
 });
 
