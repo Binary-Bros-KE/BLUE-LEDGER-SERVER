@@ -245,7 +245,8 @@ export async function computeSalesAndProfit(
         invoiceNumber: { not: null },
         paymentStatus: { not: "cancelled" },
         amountPaidCents: { gt: 0 },
-        completedAt: { lt: endExclusive },
+        // An invoice missing completedAt (created on the phone before that was set) still counts.
+        OR: [{ completedAt: { lt: endExclusive } }, { completedAt: null }],
       },
       select: { id: true, payments: true },
     }),

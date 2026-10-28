@@ -83,16 +83,19 @@ export async function getCashUp(tenantId: string, query: unknown, forcedEmployee
         },
         select: { id: true, employeeId: true, grandTotalCents: true, paymentMethodId: true, payments: true },
       }),
-      // Any invoice that could hold a payment received today — narrowed per payment below.
+      // Any invoice that could hold a payment received today — narrowed per payment below. One
+      // cashier's own till counts every payment THEY received, whichever storefront the invoice
+      // belongs to (the money is in their drawer); the storefront filter applies to "everyone" views.
       tx.sale.findMany({
         where: {
           tenantId,
-          ...locationWhere,
+          ...(employeeId ? {} : locationWhere),
           saleStatus: "completed",
           invoiceNumber: { not: null },
           paymentStatus: { not: "cancelled" },
           amountPaidCents: { gt: 0 },
-          completedAt: { lt: endExclusive },
+          // An invoice missing completedAt (created on the phone before that was set) still counts.
+          OR: [{ completedAt: { lt: endExclusive } }, { completedAt: null }],
         },
         select: { id: true, payments: true },
       }),

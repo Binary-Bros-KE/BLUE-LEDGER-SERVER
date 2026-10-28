@@ -179,7 +179,10 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
           amountReceivedCents: null,
           changeGivenCents: null,
           notes: null,
-          completedAt: null,
+          // DESKTOP stamps an invoice's completed_at with its creation time — every report finds
+          // invoices (and payments later received on them) by it. See the
+          // 20261028120000_backfill_mobile_invoice_completed_at migration.
+          completedAt: now,
           transactionType: parsed.transactionType,
           paymentStatus,
           invoiceNumber,
