@@ -242,3 +242,68 @@ export async function decideSaleAdjustment(
     { timeoutMs: 15_000 },
   );
 }
+
+export type MobileRecentDecision = {
+  kind: "void" | "return" | "invoice_cancellation";
+  id: string;
+  saleId: string;
+  /** The receipt or invoice number. */
+  documentNumber: string | null;
+  locationName: string | null;
+  reason: string;
+  status: "approved" | "rejected";
+  decidedByName: string | null;
+  decidedAt: string | null;
+};
+
+const RECENT_DECISIONS_LIMIT = 20;
+
+/** The 20 most recent approved/rejected voids, returns and invoice cancellations, newest first —
+ * DESKTOP's Approvals "Recent Decisions". Tenant-wide, like the pending queue. */
+export async function listRecentDecisions(tenantId: string): Promise<MobileRecentDecision[]> {
+  return withTenantContext(tenantId, async (tx) => {
+    const decided = { tenantId, status: { in: ["approved", "rejected"] } };
+    const pick = { id: true, saleId: true, reason: true, status: true, approvedBy: true, approvedAt: true } as const;
+    const query = { where: decided, orderBy: { approvedAt: "desc" as const }, take: RECENT_DECISIONS_LIMIT, select: pick };
+    const [voids, returns, cancellations] = await Promise.all([
+      tx.saleVoid.findMany(query),
+      tx.saleReturn.findMany(query),
+      tx.invoiceCancellation.findMany(query),
+    ]);
+
+    const entries = [
+      ...voids.map((row) => ({ kind: "void" as const, row })),
+      ...returns.map((row) => ({ kind: "return" as const, row })),
+      ...cancellations.map((row) => ({ kind: "invoice_cancellation" as const, row })),
+    ]
+      .sort((a, b) => (b.row.approvedAt?.getTime() ?? 0) - (a.row.approvedAt?.getTime() ?? 0))
+      .slice(0, RECENT_DECISIONS_LIMIT);
+
+    const [sales, employees] = await Promise.all([
+      tx.sale.findMany({ where: { id: { in: [...new Set(entries.map((e) => e.row.saleId))] } }, select: { id: true, receiptNumber: true, invoiceNumber: true, locationId: true } }),
+      tx.employee.findMany({
+        where: { id: { in: [...new Set(entries.map((e) => e.row.approvedBy).filter((id): id is string => !!id))] } },
+        select: { id: true, firstName: true, lastName: true },
+      }),
+    ]);
+    const saleById = new Map(sales.map((s) => [s.id, s]));
+    const locations = await tx.location.findMany({ where: { id: { in: [...new Set(sales.map((s) => s.locationId))] } }, select: { id: true, locationName: true } });
+    const locationName = new Map(locations.map((l) => [l.id, l.locationName]));
+    const employeeName = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
+
+    return entries.map(({ kind, row }) => {
+      const sale = saleById.get(row.saleId);
+      return {
+        kind,
+        id: row.id,
+        saleId: row.saleId,
+        documentNumber: sale?.invoiceNumber ?? sale?.receiptNumber ?? null,
+        locationName: sale ? (locationName.get(sale.locationId) ?? null) : null,
+        reason: row.reason,
+        status: row.status as "approved" | "rejected",
+        decidedByName: row.approvedBy ? (employeeName.get(row.approvedBy) ?? null) : null,
+        decidedAt: row.approvedAt?.toISOString() ?? null,
+      };
+    });
+  });
+}

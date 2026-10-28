@@ -267,6 +267,12 @@ mobileRouter.post("/sales/:id/request-void", requireMobileAuth, requireOwnerAppA
   res.status(201).json(result);
 });
 
+/** Approvals tab "Recent Decisions" — the last 20 approved/rejected voids, returns and invoice
+ * cancellations (DESKTOP Approvals). */
+mobileRouter.get("/approvals/recent", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("approvals", "approve"), async (req, res) => {
+  res.json(await mobileSaleAdjustmentsService.listRecentDecisions(req.mobileSession!.tenantId));
+});
+
 // Approvals queue for voids + returns (invoice cancellations have their own routes below).
 mobileRouter.get("/approvals/sale-adjustments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("approvals", "approve"), async (req, res) => {
   res.json(await mobileSaleAdjustmentsService.listPendingSaleAdjustments(req.mobileSession!.tenantId));
