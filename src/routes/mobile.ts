@@ -119,6 +119,17 @@ mobileRouter.patch(
   },
 );
 
+mobileRouter.patch(
+  "/employees/:id/details",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("employees", "edit"),
+  async (req, res) => {
+    const result = await mobileEmployeesService.updateEmployeeDetails(req.mobileSession!, req.params.id as string, req.body);
+    res.json(result);
+  },
+);
+
 /** Changing your OWN PIN needs no employees.edit grant (any employee can do that, same as on the
  * POS itself); resetting anyone else's does. */
 mobileRouter.post(

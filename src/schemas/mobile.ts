@@ -427,7 +427,35 @@ export const mobileEmployeeStatusSchema = z.enum(["active", "suspended", "termin
  * are, which role/storefront, their login PIN). Everything HR-shaped (DOB, department, default
  * salary, photo, …) stays on DESKTOP's full Employee form. employeeCode is uppercased exactly like
  * DESKTOP's own employeeBaseFields.employeeCode, so uniqueness is compared on the same value. */
+/** Optional profile text — "" and missing both become null (DESKTOP's optionalText). */
+const employeeOptionalText = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .nullable()
+    .optional()
+    .transform((value) => (value ? value : null));
+
+/** The profile fields DESKTOP's Employee form has beyond name/code (same limits as its
+ * employeeBaseFields) — everything except photo and salary defaults, which stay on DESKTOP. */
+const employeeProfileFields = {
+  middleName: employeeOptionalText(80),
+  gender: z
+    .enum(["female", "male", "other"])
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  dateOfBirth: employeeOptionalText(20),
+  alternativePhone: employeeOptionalText(50),
+  email: employeeOptionalText(150),
+  department: employeeOptionalText(100),
+  jobTitle: employeeOptionalText(100),
+  hireDate: employeeOptionalText(20),
+};
+
 export const mobileCreateEmployeeSchema = z.object({
+  ...employeeProfileFields,
   employeeCode: z
     .string()
     .trim()
@@ -462,6 +490,22 @@ export const mobileEmployeeAccessSchema = z
   });
 
 export type MobileEmployeeAccessInput = z.infer<typeof mobileEmployeeAccessSchema>;
+
+/** Body for PATCH /mobile/employees/:id/details — the whole profile, sent together (DESKTOP's form). */
+export const mobileEmployeeDetailsSchema = z.object({
+  employeeCode: z
+    .string()
+    .trim()
+    .min(1, "Employee code is required")
+    .max(30)
+    .transform((value) => value.toUpperCase()),
+  firstName: z.string().trim().min(1, "First name is required").max(80),
+  lastName: z.string().trim().min(1, "Last name is required").max(80),
+  phone: employeeOptionalText(50),
+  ...employeeProfileFields,
+});
+
+export type MobileEmployeeDetailsInput = z.infer<typeof mobileEmployeeDetailsSchema>;
 
 export const mobileEmployeePinResetSchema = z.object({
   pin: employeePinSchema,

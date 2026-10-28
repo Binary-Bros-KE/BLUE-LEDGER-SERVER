@@ -7,15 +7,19 @@ import type { MobileSession } from "../middleware/mobile-auth.js";
 import {
   type MobileCreateEmployeeInput,
   type MobileEmployeeAccessInput,
+  type MobileEmployeeDetailsInput,
   mobileCreateEmployeeSchema,
   mobileEmployeeAccessSchema,
+  mobileEmployeeDetailsSchema,
   mobileEmployeePinResetSchema,
 } from "../schemas/mobile.js";
 import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
 
-/** System-access management for the Owner App's Employees tab — add a staff member, change their
- * PIN, suspend/reactivate/terminate them, move them to another role or storefront. Everything
- * HR-shaped (DOB, department, salary defaults, photo) deliberately stays on DESKTOP's full form.
+/** Employee management for the Owner App's Employees tab — add a staff member, edit their details
+ * (name, code, contacts, job, dates), change their PIN, suspend/reactivate/terminate them, move them
+ * to another role or storefront. Salary defaults and photo stay on DESKTOP's full form. There is no
+ * delete: DESKTOP refuses to delete an employee once synced (every phone-created one is) — Terminated
+ * is the equivalent, and keeps their sales/salary history linked.
  *
  * Every write here lands in the EXACT shape DESKTOP's own employees push already produces (same
  * `employee_` id prefix, same uppercased employeeCode, same `cost:salt:derived` pinHash), stamped
@@ -93,6 +97,16 @@ async function loadManageableEmployee(
   return target;
 }
 
+/** Codes are unique per tenant, case-insensitively — login treats "emp-001" and "EMP-001" as the
+ * same person (DESKTOP's findEmployeeByCodeRow, mobile-auth-service.ts's loginMobile). */
+async function assertEmployeeCodeFree(tx: Prisma.TransactionClient, tenantId: string, employeeCode: string, excludeId?: string): Promise<void> {
+  const duplicate = await tx.employee.findFirst({
+    where: { tenantId, employeeCode: { equals: employeeCode, mode: "insensitive" }, ...(excludeId ? { id: { not: excludeId } } : {}) },
+    select: { id: true },
+  });
+  if (duplicate) throw new ConflictError(`Employee code "${employeeCode}" is already in use`);
+}
+
 export async function createEmployee(session: MobileSession, input: unknown): Promise<{ id: string }> {
   const parsed: MobileCreateEmployeeInput = mobileCreateEmployeeSchema.parse(input);
   // Hashed before opening the transaction — scrypt at cost 32768 takes ~150ms, no reason to hold a
@@ -107,11 +121,7 @@ export async function createEmployee(session: MobileSession, input: unknown): Pr
     await assertBranchBelongsToTenant(tx, session.tenantId, parsed.branchId);
     assertBranchAssignmentAllowed(parsed.branchId, branchScopeOf(actor, session.isSuperAdmin ?? false));
 
-    const duplicate = await tx.employee.findFirst({
-      where: { tenantId: session.tenantId, employeeCode: parsed.employeeCode },
-      select: { id: true },
-    });
-    if (duplicate) throw new ConflictError(`Employee code "${parsed.employeeCode}" is already in use`);
+    await assertEmployeeCodeFree(tx, session.tenantId, parsed.employeeCode);
 
     const created = await tx.employee.create({
       data: {
@@ -120,8 +130,16 @@ export async function createEmployee(session: MobileSession, input: unknown): Pr
         deviceId: OWNER_APP_DEVICE_ID,
         employeeCode: parsed.employeeCode,
         firstName: parsed.firstName,
+        middleName: parsed.middleName,
         lastName: parsed.lastName,
+        gender: parsed.gender,
+        dateOfBirth: parsed.dateOfBirth,
         phone: parsed.phone,
+        alternativePhone: parsed.alternativePhone,
+        email: parsed.email,
+        department: parsed.department,
+        jobTitle: parsed.jobTitle,
+        hireDate: parsed.hireDate,
         roleId: parsed.roleId,
         branchId: parsed.branchId,
         status: "active",
@@ -166,6 +184,43 @@ export async function updateEmployeeAccess(session: MobileSession, targetId: str
         ...(parsed.roleId !== undefined ? { roleId: parsed.roleId } : {}),
         ...(parsed.branchId !== undefined ? { branchId: parsed.branchId } : {}),
         ...(parsed.status !== undefined ? { status: parsed.status } : {}),
+        deviceId: OWNER_APP_DEVICE_ID,
+        localUpdatedAt: now,
+        syncedAt: now,
+      },
+    });
+    return { id: target.id };
+  });
+}
+
+/** Edits an employee's profile — DESKTOP's updateEmployee minus photo/salary defaults (and minus
+ * role/branch/status/PIN, which have their own guarded routes above/below). Same manage rules as
+ * access changes: same tenant, inside the actor's branch scope, a Super Admin only by a Super Admin.
+ * A changed code is the new login code immediately (on the phone and, after the next pull, DESKTOP). */
+export async function updateEmployeeDetails(session: MobileSession, targetId: string, input: unknown): Promise<{ id: string }> {
+  const parsed: MobileEmployeeDetailsInput = mobileEmployeeDetailsSchema.parse(input);
+  const now = new Date();
+
+  return withTenantContext(session.tenantId, async (tx) => {
+    const actor = await tx.employee.findUniqueOrThrow({ where: { id: session.employeeId } });
+    const target = await loadManageableEmployee(tx, session, actor, targetId);
+    if (parsed.employeeCode !== target.employeeCode) await assertEmployeeCodeFree(tx, session.tenantId, parsed.employeeCode, target.id);
+
+    await tx.employee.update({
+      where: { id: target.id },
+      data: {
+        employeeCode: parsed.employeeCode,
+        firstName: parsed.firstName,
+        middleName: parsed.middleName,
+        lastName: parsed.lastName,
+        gender: parsed.gender,
+        dateOfBirth: parsed.dateOfBirth,
+        phone: parsed.phone,
+        alternativePhone: parsed.alternativePhone,
+        email: parsed.email,
+        department: parsed.department,
+        jobTitle: parsed.jobTitle,
+        hireDate: parsed.hireDate,
         deviceId: OWNER_APP_DEVICE_ID,
         localUpdatedAt: now,
         syncedAt: now,
