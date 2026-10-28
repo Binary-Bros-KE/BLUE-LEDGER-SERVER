@@ -161,8 +161,20 @@ async function loadActorScope(tx: Prisma.TransactionClient, session: MobileSessi
     // Same "First Last" DESKTOP's ExpenseFormModal records as Paid By.
     fullName: `${actor.firstName} ${actor.lastName}`.trim(),
     branchScope: session.isSuperAdmin ? null : actor.branchId,
+    /** Assigned location, Super Admins included — they work AT it, like Checkout. */
+    assignedLocationId: actor.branchId,
     mobileDeviceSequence: actor.mobileDeviceSequence,
   };
+}
+
+/** Someone assigned to a STOREFRONT (Super Admins included) books expenses there only — the same
+ * fixed Storefront the app shows. Assigned to the Main Store (expenses never go there) = no limit. */
+async function assertAssignedStorefront(tx: Prisma.TransactionClient, assignedLocationId: string | null, storefrontId: string): Promise<void> {
+  if (!assignedLocationId || assignedLocationId === storefrontId) return;
+  const assigned = await tx.location.findUnique({ where: { id: assignedLocationId }, select: { locationType: true } });
+  if (assigned && assigned.locationType !== "distribution_center" && assigned.locationType !== "warehouse") {
+    throw new HttpError(403, "Expenses can only be recorded for your own storefront");
+  }
 }
 
 async function loadExpense(tx: Prisma.TransactionClient, tenantId: string, expenseId: string, branchScope: string | null) {
@@ -184,6 +196,7 @@ export async function createExpense(session: MobileSession, input: unknown): Pro
 
     const actor = await loadActorScope(tx, session);
     await validateExpenseInput(tx, tenantId, parsed, actor.branchScope);
+    await assertAssignedStorefront(tx, actor.assignedLocationId, parsed.storefrontId);
     const sequence = await ensureEmployeeMobileSequence(tx, tenantId, actor.id, actor.mobileDeviceSequence);
     const expenseNumber = await mintMobileDocumentNumber(tx, tenantId, sequence, EXPENSE_PREFIX, EXPENSE_DIGITS);
 
@@ -223,6 +236,8 @@ export async function updateExpense(session: MobileSession, expenseId: string, i
     const existing = await loadExpense(tx, tenantId, expenseId, actor.branchScope);
     if (existing.status === "archived") throw new HttpError(400, "Archived expenses can't be edited — restore it first");
     await validateExpenseInput(tx, tenantId, parsed, actor.branchScope);
+    // An expense never moves storefront when the editor works at a fixed one.
+    if (parsed.storefrontId !== existing.storefrontId) await assertAssignedStorefront(tx, actor.assignedLocationId, parsed.storefrontId);
 
     await tx.expense.update({
       where: { id: expenseId },
