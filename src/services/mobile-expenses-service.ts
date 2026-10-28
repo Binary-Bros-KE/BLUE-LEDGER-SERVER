@@ -156,7 +156,13 @@ async function validateExpenseInput(
 
 async function loadActorScope(tx: Prisma.TransactionClient, session: MobileSession) {
   const actor = await tx.employee.findUniqueOrThrow({ where: { id: session.employeeId } });
-  return { id: actor.id, branchScope: session.isSuperAdmin ? null : actor.branchId, mobileDeviceSequence: actor.mobileDeviceSequence };
+  return {
+    id: actor.id,
+    // Same "First Last" DESKTOP's ExpenseFormModal records as Paid By.
+    fullName: `${actor.firstName} ${actor.lastName}`.trim(),
+    branchScope: session.isSuperAdmin ? null : actor.branchId,
+    mobileDeviceSequence: actor.mobileDeviceSequence,
+  };
 }
 
 async function loadExpense(tx: Prisma.TransactionClient, tenantId: string, expenseId: string, branchScope: string | null) {
@@ -191,7 +197,8 @@ export async function createExpense(session: MobileSession, input: unknown): Pro
         expenseDate: parsed.expenseDate,
         categoryId: parsed.categoryId,
         amountCents: parsed.amountCents,
-        paidBy: parsed.paidBy,
+        // Always whoever records it — never typed, same as DESKTOP (whatever the client sends is ignored).
+        paidBy: actor.fullName || null,
         paymentMethodId: parsed.paymentMethodId,
         storefrontId: parsed.storefrontId,
         reference: parsed.reference,
@@ -223,7 +230,7 @@ export async function updateExpense(session: MobileSession, expenseId: string, i
         expenseDate: parsed.expenseDate,
         categoryId: parsed.categoryId,
         amountCents: parsed.amountCents,
-        paidBy: parsed.paidBy,
+        // Paid By is left as originally recorded — editing later isn't making the payment (DESKTOP).
         paymentMethodId: parsed.paymentMethodId,
         storefrontId: parsed.storefrontId,
         reference: parsed.reference,
