@@ -56,8 +56,12 @@ export type MobileStockValueReport = {
   totalUnits: number;
   costValueCents: number;
   retailValueCents: number;
+  /** Distinct active, stock-tracked products with at least one unit on hand (in the selected scope). */
+  productsInStock: number;
+  /** Active, stock-tracked products with nothing on hand (in the selected scope). */
+  productsOutOfStock: number;
   locations: StockValueLocation[];
-  /** Highest cost value first — where the money is sitting. */
+  /** Highest cost value first — where the money is sitting (top 15, only products actually in stock). */
   topProducts: StockValueProduct[];
 };
 
@@ -113,13 +117,17 @@ export async function getStockValueReport(tenantId: string, query: unknown, forc
       };
     });
 
+    const inStock = [...byProduct.values()].filter((p) => p.units > 0);
+
     return {
       currency: tenant.currency,
+      productsInStock: inStock.length,
+      productsOutOfStock: products.length - inStock.length,
       totalUnits: locationRows.reduce((s, l) => s + l.totalUnits, 0),
       costValueCents: locationRows.reduce((s, l) => s + l.costValueCents, 0),
       retailValueCents: locationRows.reduce((s, l) => s + l.retailValueCents, 0),
       locations: locationRows.sort((a, b) => Number(b.isMainStore) - Number(a.isMainStore) || b.costValueCents - a.costValueCents),
-      topProducts: [...byProduct.values()].sort((a, b) => b.costValueCents - a.costValueCents).slice(0, 15),
+      topProducts: inStock.sort((a, b) => b.costValueCents - a.costValueCents).slice(0, 15),
     };
   });
 }
