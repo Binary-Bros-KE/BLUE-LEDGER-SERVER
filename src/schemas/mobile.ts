@@ -51,6 +51,11 @@ export const mobileShareLinkSchema = z.object({
 
 export type MobileShareLinkInput = z.infer<typeof mobileShareLinkSchema>;
 
+/** Who a document is shared to — see mobile-share-recipient-service.ts. */
+export const mobileShareRecipientQuerySchema = mobileShareLinkSchema.pick({ entity: true, entityId: true });
+
+export type MobileShareRecipientQueryInput = z.infer<typeof mobileShareRecipientQuerySchema>;
+
 /** Same grain-based period model as DESKTOP's Sales Report (SalesReportMode) — Daily/Weekly/
  * Monthly/Yearly are fixed calendar periods stepped via `anchor` (computed client-side, see
  * APP/src/lib/period.ts), Custom is a plain date range. */

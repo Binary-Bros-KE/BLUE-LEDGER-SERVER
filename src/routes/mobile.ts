@@ -13,6 +13,7 @@ import {
   mobileSalesQuerySchema,
   mobileStockLedgerQuerySchema,
   mobileShareLinkSchema,
+  mobileShareRecipientQuerySchema,
   mobileStkPushSchema,
   salesReportPeriodQuerySchema,
 } from "../schemas/mobile.js";
@@ -36,6 +37,7 @@ import * as mobileSalesReportService from "../services/mobile-sales-report-servi
 import * as mobileSalesService from "../services/mobile-sales-service.js";
 import * as mobileSettingsService from "../services/mobile-settings-service.js";
 import * as mobileStockLedgerService from "../services/mobile-stock-ledger-service.js";
+import * as mobileShareRecipientService from "../services/mobile-share-recipient-service.js";
 import * as mobileSuppliersService from "../services/mobile-suppliers-service.js";
 import * as mobileTransactionsService from "../services/mobile-transactions-service.js";
 import * as mobileWorkingHoursService from "../services/mobile-working-hours-service.js";
@@ -828,6 +830,13 @@ mobileRouter.get("/stock-ledger", requireMobileAuth, requireOwnerAppAccess, asyn
 /** Same createShareLink DESKTOP's ShareModal calls (share-service.ts) — deviceId is a required field
  * on that schema only because requireDevice's own auth check needs it; createShareLink itself never
  * reads it, so a constant placeholder is fine here where requireMobileAuth is the real gate instead. */
+/** The customer's phone/email for the Share sheet to pre-fill — never part of the public share page. */
+mobileRouter.get("/share-recipient", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  const parsed = mobileShareRecipientQuerySchema.parse(req.query);
+  const result = await mobileShareRecipientService.getShareRecipient(req.mobileSession!.tenantId, parsed);
+  res.json(result);
+});
+
 mobileRouter.post("/share-links", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileShareLinkSchema.parse(req.body);
   const result = await createShareLink({
