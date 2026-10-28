@@ -739,6 +739,12 @@ model Tenant {
   /// grants the storefront if EITHER is true. Flipped by the admin dashboard's Online Store panel.
   ecommerceEnabled  Boolean @default(false)
 
+  /// Admin-dashboard-controlled ONLY (never pushed by a device): this tenant resells another
+  /// tenant's products and its stock is a read-only reflection of that supplier's live stock — see
+  /// DropshipConnection. Default false, and nothing dropship-related ever runs for a tenant with
+  /// this off (lib/dropship-scheduler.ts only ever looks at connections whose reseller has it on).
+  dropshippingEnabled Boolean @default(false)
+
   /// Internal notes for the Blue Ledger team; never shown to the tenant.
   notes String?
 
@@ -749,6 +755,8 @@ model Tenant {
   devices             Device[]
   mobileLoginAttempts MobileLoginAttempt[]
   shareLinks          ShareLink[]
+  dropshipSuppliers   DropshipConnection[] @relation("DropshipReseller")
+  dropshipResellers   DropshipConnection[] @relation("DropshipSupplier")
 
   // Synced business-data entities (Phase 1) — see the sync-model block at the end of this file.
   categories     Category[]
@@ -1093,6 +1101,60 @@ model MobileLoginAttempt {
 
   @@unique([tenantId, employeeCode])
   @@map("mobile_login_attempts")
+}
+
+/// Server-native, admin-dashboard-managed — NOT a synced entity and deliberately NOT RLS-protected
+/// (same as License/Device: a registry fact spanning two tenants, only ever reached through
+/// SUPER_ADMIN routes and the dropship worker). "Reseller reflects Supplier's stock": the supplier's
+/// own stock is ONLY EVER READ, never written — the reseller's stock for each linked product is kept
+/// equal to the supplier's live total across ALL of the supplier's locations by writing plain
+/// `adjustment` stock movements into the RESELLER's own ledger at targetLocationId (see
+/// services/dropship-service.ts mirrorConnection). Everything else (sales, customers, prices) stays
+/// the reseller's own.
+model DropshipConnection {
+  id               String @id @default(uuid())
+  resellerTenantId String
+  reseller         Tenant @relation("DropshipReseller", fields: [resellerTenantId], references: [id], onDelete: Cascade)
+  supplierTenantId String
+  supplier         Tenant @relation("DropshipSupplier", fields: [supplierTenantId], references: [id], onDelete: Cascade)
+
+  /// The reseller's own location (opaque id, same FK-avoidance convention as every synced
+  /// reference) that holds the mirrored quantity — normally the storefront it sells from.
+  targetLocationId String
+  /// "active" | "paused" — paused keeps the links but stops mirroring.
+  status           String  @default("active")
+  /// When true the worker periodically imports supplier products the reseller doesn't have yet.
+  autoImport       Boolean @default(true)
+
+  lastMirroredAt   DateTime?
+  lastCatalogSyncAt DateTime?
+  lastError        String?
+
+  links DropshipProductLink[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([resellerTenantId, supplierTenantId])
+  @@index([supplierTenantId])
+  @@map("dropship_connections")
+}
+
+/// One reseller product reflecting one supplier product. Product ids are opaque strings (they live
+/// in two different tenants' RLS-protected rows).
+model DropshipProductLink {
+  id                String             @id @default(uuid())
+  connectionId      String
+  connection        DropshipConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  resellerProductId String             @unique
+  supplierProductId String
+
+  lastMirroredQty Int?
+  lastMirroredAt  DateTime?
+  createdAt       DateTime @default(now())
+
+  @@unique([connectionId, supplierProductId])
+  @@map("dropship_product_links")
 }
 
 /// Server-native — backs the Share button (receipts/invoices/quotations via WhatsApp/Email). `id`

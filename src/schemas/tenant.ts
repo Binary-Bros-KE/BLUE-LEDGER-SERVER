@@ -130,6 +130,9 @@ export const tenantUpdateSchema = z.object({
   // Same admin-only treatment as invoiceEditsDisabled: when true, invoices may draw stock straight
   // from the Main Store instead of the selling storefront (chosen per invoice).
   invoiceStockFromMainStore: z.boolean().optional(),
+  // Same admin-only treatment: this tenant's stock reflects its dropship suppliers' (see
+  // DropshipConnection). Off = the dropship worker ignores this tenant entirely.
+  dropshippingEnabled: z.boolean().optional(),
 });
 
 export type TenantUpdateInput = z.infer<typeof tenantUpdateSchema>;

@@ -3,6 +3,7 @@ import { HttpError } from "../lib/http-error.js";
 import { requireAuth, requireSuperAdmin, type AuthenticatedAccount } from "../middleware/auth.js";
 import { shopDomainSchema, shopProvisionSchema, shopUpdateSchema } from "../schemas/shop.js";
 import * as deviceService from "../services/device-service.js";
+import * as dropshipService from "../services/dropship-service.js";
 import * as licenseService from "../services/license-service.js";
 import * as shopAdminService from "../services/shop-admin-service.js";
 import * as subscriptionPaymentService from "../services/subscription-payment-service.js";
@@ -138,6 +139,41 @@ tenantsRouter.post("/:id/shop/hosting/sync", requireSuperAdmin, async (req, res)
 
 tenantsRouter.post("/:id/shop/domain/verify", requireSuperAdmin, async (req, res) => {
   res.json(await shopAdminService.verifyDomain(req.params.id as string));
+});
+
+// --- Dropshipping --- this tenant (the reseller) reflects other tenants' stock. Read follows the
+// tenant's own visibility; every mutation is SUPER_ADMIN only, same tier as the Online Store.
+tenantsRouter.get("/:id/dropship", async (req, res) => {
+  requireAccount(req);
+  await tenantService.getTenant(req.params.id as string, req.account); // 404s a MARKETER probing another outlet
+  res.json(await dropshipService.getOverview(req.params.id as string));
+});
+
+tenantsRouter.post("/:id/dropship/connections", requireSuperAdmin, async (req, res) => {
+  res.status(201).json(await dropshipService.createConnection(req.params.id as string, req.body));
+});
+
+tenantsRouter.patch("/:id/dropship/connections/:connectionId", requireSuperAdmin, async (req, res) => {
+  res.json(await dropshipService.updateConnection(req.params.id as string, req.params.connectionId as string, req.body));
+});
+
+tenantsRouter.delete("/:id/dropship/connections/:connectionId", requireSuperAdmin, async (req, res) => {
+  res.json(await dropshipService.deleteConnection(req.params.id as string, req.params.connectionId as string));
+});
+
+tenantsRouter.get("/:id/dropship/connections/:connectionId/links", async (req, res) => {
+  requireAccount(req);
+  await tenantService.getTenant(req.params.id as string, req.account);
+  res.json(await dropshipService.listLinks(req.params.id as string, req.params.connectionId as string));
+});
+
+tenantsRouter.delete("/:id/dropship/connections/:connectionId/links/:linkId", requireSuperAdmin, async (req, res) => {
+  await dropshipService.deleteLink(req.params.id as string, req.params.connectionId as string, req.params.linkId as string);
+  res.status(204).send();
+});
+
+tenantsRouter.post("/:id/dropship/connections/:connectionId/resync", requireSuperAdmin, async (req, res) => {
+  res.json(await dropshipService.resyncConnection(req.params.id as string, req.params.connectionId as string, req.body));
 });
 
 // NOTE: publishing products and setting online price/description/photos is done by the shop owner
