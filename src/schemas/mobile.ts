@@ -864,3 +864,42 @@ export const mobileUpdateSupplierSchema = z.object({
   notes: mobileOptionalText(1000),
   status: z.enum(["active", "inactive"]),
 });
+
+/** Purchase requisitions (DESKTOP's purchaseRequisitionCreateSchema): each line is EITHER a catalog
+ * product (productId) OR a free-text item (itemName only) an approver links later. `id` is minted by
+ * the phone once per form, so a retried submit can't create it twice. A branch-scoped requester always
+ * requisitions for their own storefront (enforced in the service); only an unassigned one names it. */
+export const mobileCreateRequisitionSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  storefrontId: z.string().trim().min(1).nullable().optional(),
+  notes: mobileOptionalText(1000),
+  items: z
+    .array(
+      z
+        .object({
+          productId: z.string().trim().min(1).nullable().optional(),
+          itemName: z.string().trim().max(200).optional().default(""),
+          quantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+          notes: mobileOptionalText(300),
+        })
+        .refine((item) => Boolean(item.productId) || item.itemName.length > 0, { message: "Pick a product or describe the item" }),
+    )
+    .min(1, "Add at least one item"),
+});
+
+export type MobileCreateRequisitionInput = z.infer<typeof mobileCreateRequisitionSchema>;
+
+export const mobileRejectRequisitionSchema = z.object({
+  reason: z.string().trim().min(1, "A reason is required").max(500),
+});
+
+export const mobileLinkRequisitionItemSchema = z.object({
+  itemId: z.string().trim().min(1),
+  productId: z.string().trim().min(1),
+});
+
+/** Approving = creating the purchase it becomes: exactly mobileCreatePurchaseSchema's body; the
+ * service overrides locationId with the requisition's own storefront. */
+export const mobileApproveRequisitionSchema = mobileCreatePurchaseSchema.extend({
+  locationId: z.string().trim().optional().default(""),
+});

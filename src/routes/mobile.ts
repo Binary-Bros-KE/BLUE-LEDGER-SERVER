@@ -28,6 +28,7 @@ import * as mobileInventoryService from "../services/mobile-inventory-service.js
 import * as mobileInvoicesService from "../services/mobile-invoices-service.js";
 import * as mobileMetricsService from "../services/mobile-metrics-service.js";
 import * as mobilePurchasesService from "../services/mobile-purchases-service.js";
+import * as mobileRequisitionsService from "../services/mobile-requisitions-service.js";
 import * as mobileProductsService from "../services/mobile-products-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
 import * as mobileReportsService from "../services/mobile-reports-service.js";
@@ -802,6 +803,57 @@ mobileRouter.post("/purchases/:id/payments", requireMobileAuth, requireOwnerAppA
   const result = await mobilePurchasesService.recordPurchasePayment(req.mobileSession!, req.params.id as string, req.body);
   res.json(result);
 });
+
+// Purchase requisitions — same permission module as DESKTOP's Requisitions screen. "/pending-count"
+// is declared before "/:id" so it isn't swallowed as an id.
+const requisitionView = requireMobilePermission("purchase_requisitions", "view");
+const requisitionApprove = requireMobilePermission("purchase_requisitions", "approve");
+
+mobileRouter.get("/requisitions", requireMobileAuth, requireOwnerAppAccess, requisitionView, async (req, res) => {
+  res.json(await mobileRequisitionsService.listRequisitions(req.mobileSession!));
+});
+
+mobileRouter.get("/requisitions/pending-count", requireMobileAuth, requireOwnerAppAccess, requisitionApprove, async (req, res) => {
+  res.json(await mobileRequisitionsService.countPendingRequisitions(req.mobileSession!));
+});
+
+mobileRouter.get("/requisitions/:id", requireMobileAuth, requireOwnerAppAccess, requisitionView, async (req, res) => {
+  res.json(await mobileRequisitionsService.getRequisition(req.mobileSession!, req.params.id as string));
+});
+
+mobileRouter.post(
+  "/requisitions",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requireMobilePermission("purchase_requisitions", "create"),
+  async (req, res) => {
+    res.status(201).json(await mobileRequisitionsService.createRequisition(req.mobileSession!, req.body));
+  },
+);
+
+mobileRouter.post("/requisitions/:id/cancel", requireMobileAuth, requireOwnerAppAccess, requisitionView, async (req, res) => {
+  res.json(await mobileRequisitionsService.cancelRequisition(req.mobileSession!, req.params.id as string));
+});
+
+mobileRouter.post("/requisitions/:id/reject", requireMobileAuth, requireOwnerAppAccess, requisitionApprove, async (req, res) => {
+  res.json(await mobileRequisitionsService.rejectRequisition(req.mobileSession!, req.params.id as string, req.body));
+});
+
+mobileRouter.post("/requisitions/:id/link-item", requireMobileAuth, requireOwnerAppAccess, requisitionApprove, async (req, res) => {
+  res.json(await mobileRequisitionsService.linkRequisitionItem(req.mobileSession!, req.params.id as string, req.body));
+});
+
+// Approving creates a purchase, so it needs purchases.create as well — same as DESKTOP.
+mobileRouter.post(
+  "/requisitions/:id/approve",
+  requireMobileAuth,
+  requireOwnerAppAccess,
+  requisitionApprove,
+  requireMobilePermission("purchases", "create"),
+  async (req, res) => {
+    res.json(await mobileRequisitionsService.approveRequisition(req.mobileSession!, req.params.id as string, req.body));
+  },
+);
 
 mobileRouter.get("/expenses", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);

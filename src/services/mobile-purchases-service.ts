@@ -506,11 +506,21 @@ async function preparePurchaseLines(tx: Prisma.TransactionClient, tenantId: stri
 
 export async function createPurchase(session: MobileSession, input: unknown): Promise<{ id: string; purchaseNumber: string }> {
   const parsed: MobileCreatePurchaseInput = mobileCreatePurchaseSchema.parse(input);
+  return withTenantContext(session.tenantId, (tx) => createPurchaseInTx(tx, session, parsed));
+}
+
+/** createPurchase's body against an already-open tenant transaction — so a caller (approving a
+ * purchase requisition, see mobile-requisitions-service.ts) can create the purchase and record its
+ * own state change in ONE transaction. Idempotent on the client-minted id, like createPurchase. */
+export async function createPurchaseInTx(
+  tx: Prisma.TransactionClient,
+  session: MobileSession,
+  parsed: MobileCreatePurchaseInput,
+): Promise<{ id: string; purchaseNumber: string }> {
   const purchaseId = parsed.id.startsWith("purchase_") ? parsed.id : `purchase_${parsed.id}`;
   const { tenantId } = session;
   const now = new Date();
-
-  return withTenantContext(tenantId, async (tx) => {
+  {
     const existing = await tx.purchase.findUnique({ where: { id: purchaseId }, select: { id: true, purchaseNumber: true } });
     if (existing) return existing;
 
@@ -563,7 +573,7 @@ export async function createPurchase(session: MobileSession, input: unknown): Pr
       );
     }
     return { id: purchaseId, purchaseNumber };
-  });
+  }
 }
 
 /**
