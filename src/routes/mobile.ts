@@ -831,6 +831,11 @@ mobileRouter.post(
   },
 );
 
+// Edit / cancel: the requester or a Super Admin only (enforced in the service).
+mobileRouter.put("/requisitions/:id", requireMobileAuth, requireOwnerAppAccess, requisitionView, async (req, res) => {
+  res.json(await mobileRequisitionsService.updateRequisition(req.mobileSession!, req.params.id as string, req.body));
+});
+
 mobileRouter.post("/requisitions/:id/cancel", requireMobileAuth, requireOwnerAppAccess, requisitionView, async (req, res) => {
   res.json(await mobileRequisitionsService.cancelRequisition(req.mobileSession!, req.params.id as string));
 });

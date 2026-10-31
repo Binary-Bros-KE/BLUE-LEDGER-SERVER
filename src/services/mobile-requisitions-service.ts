@@ -9,6 +9,7 @@ import {
   mobileCreateRequisitionSchema,
   mobileLinkRequisitionItemSchema,
   mobileRejectRequisitionSchema,
+  mobileUpdateRequisitionSchema,
 } from "../schemas/mobile.js";
 import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
 import { createPurchaseInTx } from "./mobile-purchases-service.js";
@@ -88,10 +89,6 @@ async function loadActor(tx: Prisma.TransactionClient, session: MobileSession) {
     branchScope: session.isSuperAdmin ? null : actor.branchId,
     mobileDeviceSequence: actor.mobileDeviceSequence,
   };
-}
-
-function can(session: MobileSession, action: string): boolean {
-  return Boolean(session.isSuperAdmin) || (session.permissions?.purchase_requisitions?.includes(action) ?? false);
 }
 
 /** "Not found" (not 403) for another storefront's requisition, so ids can't be probed. */
@@ -257,16 +254,66 @@ export async function createRequisition(session: MobileSession, input: unknown):
   });
 }
 
-/** The requester can withdraw their own pending requisition; an approver can withdraw anyone's. */
+/** Client rule: a requisition belongs to whoever raised it — only they (or a Super Admin) may edit or
+ * withdraw it. Approvers act on it through Approve/Reject instead. */
+function requireOwnerOrSuperAdmin(session: MobileSession, row: RequisitionRow, actorId: string, verb: string): void {
+  if (row.requestedBy !== actorId && !session.isSuperAdmin) {
+    throw new HttpError(403, `Only the person who raised this requisition (or a Super Admin) can ${verb} it`);
+  }
+}
+
+/** Rewrites a PENDING requisition's notes and lines (requester or Super Admin). A line sent back with
+ * its existing id keeps that id — and its product link if the product didn't change. */
+export async function updateRequisition(session: MobileSession, id: string, input: unknown): Promise<MobileRequisitionDetail> {
+  const parsed = mobileUpdateRequisitionSchema.parse(input);
+  const now = new Date();
+  return withTenantContext(session.tenantId, async (tx) => {
+    const actor = await loadActor(tx, session);
+    const row = await loadVisible(tx, session, id, actor.branchScope);
+    requirePending(row);
+    requireOwnerOrSuperAdmin(session, row, actor.id, "edit");
+
+    const existingById = new Map(asItems(row.items).map((i) => [i.id, i]));
+    const productIds = parsed.items.map((i) => i.productId).filter((v): v is string => Boolean(v));
+    const products = productIds.length
+      ? await tx.product.findMany({ where: { tenantId: session.tenantId, id: { in: productIds } }, select: { id: true, name: true } })
+      : [];
+    const productName = new Map(products.map((p) => [p.id, p.name]));
+    const nowIso = now.toISOString();
+    const items: StoredRequisitionItem[] = parsed.items.map((item) => {
+      if (item.productId && !productName.has(item.productId)) throw new NotFoundError("One of the selected products was not found");
+      const existing = item.id ? existingById.get(item.id) : undefined;
+      return {
+        id: existing?.id ?? `preqi_${randomUUID()}`,
+        productId: item.productId ?? null,
+        itemName: item.productId ? productName.get(item.productId)! : item.itemName,
+        quantityRequested: item.quantity,
+        notes: item.notes,
+        createdAt: existing?.createdAt ?? nowIso,
+      };
+    });
+
+    const updated = await tx.purchaseRequisition.update({
+      where: { id },
+      data: {
+        notes: parsed.notes,
+        items: items as unknown as Prisma.InputJsonValue,
+        deviceId: OWNER_APP_DEVICE_ID,
+        localUpdatedAt: now,
+        syncedAt: now,
+      },
+    });
+    return buildDetail(tx, updated);
+  });
+}
+
 export async function cancelRequisition(session: MobileSession, id: string): Promise<{ id: string }> {
   const now = new Date();
   return withTenantContext(session.tenantId, async (tx) => {
     const actor = await loadActor(tx, session);
     const row = await loadVisible(tx, session, id, actor.branchScope);
     requirePending(row);
-    if (row.requestedBy !== actor.id && !can(session, "approve")) {
-      throw new HttpError(403, "Only the person who raised this requisition (or an approver) can cancel it");
-    }
+    requireOwnerOrSuperAdmin(session, row, actor.id, "cancel");
     await tx.purchaseRequisition.update({
       where: { id },
       data: { status: "cancelled", reviewedBy: actor.id, reviewedAt: now, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now },

@@ -889,6 +889,26 @@ export const mobileCreateRequisitionSchema = z.object({
 
 export type MobileCreateRequisitionInput = z.infer<typeof mobileCreateRequisitionSchema>;
 
+/** Editing a PENDING requisition (requester or Super Admin only): the full line list again. A line
+ * carrying an existing `id` keeps it (and any product link an approver already made, if the product
+ * is unchanged); lines left out are removed. */
+export const mobileUpdateRequisitionSchema = z.object({
+  notes: mobileOptionalText(1000),
+  items: z
+    .array(
+      z
+        .object({
+          id: z.string().trim().min(1).nullable().optional(),
+          productId: z.string().trim().min(1).nullable().optional(),
+          itemName: z.string().trim().max(200).optional().default(""),
+          quantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+          notes: mobileOptionalText(300),
+        })
+        .refine((item) => Boolean(item.productId) || item.itemName.length > 0, { message: "Pick a product or describe the item" }),
+    )
+    .min(1, "Add at least one item"),
+});
+
 export const mobileRejectRequisitionSchema = z.object({
   reason: z.string().trim().min(1, "A reason is required").max(500),
 });

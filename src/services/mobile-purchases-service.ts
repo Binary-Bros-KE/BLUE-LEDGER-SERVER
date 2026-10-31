@@ -29,6 +29,19 @@ export type MobilePurchaseListItem = {
   receivedAt: string | null;
   createdAt: string;
   currency: string;
+  /** The requisition this purchase was approved from — shown as "from REQ-…" so the merged Purchases
+   * tab reads as one document moving through its stages. Null for a purchase raised directly. */
+  requisitionNumber: string | null;
+};
+
+/** Where a purchase came from, for its detail timeline (Requested → Approved → Ordered → Received). */
+export type MobilePurchaseOrigin = {
+  requisitionId: string;
+  requisitionNumber: string;
+  requestedByName: string;
+  requestedAt: string;
+  approvedByName: string | null;
+  approvedAt: string | null;
 };
 
 type RawPurchaseItem = {
@@ -110,6 +123,7 @@ export type MobilePurchaseDetail = {
   amountPaidCents: number;
   payments: MobilePurchasePayment[];
   currency: string;
+  origin: MobilePurchaseOrigin | null;
 };
 
 function asArray<T>(value: unknown): T[] {
@@ -142,6 +156,11 @@ export async function listPurchases(tenantId: string, locationId: string | null)
     ]);
     const locationNameById = new Map(locations.map((l) => [l.id, l.locationName]));
     const supplierNameById = new Map(suppliers.map((s) => [s.id, s.businessName]));
+    const origins = await tx.purchaseRequisition.findMany({
+      where: { tenantId, purchaseId: { in: purchases.map((p) => p.id) } },
+      select: { purchaseId: true, requisitionNumber: true },
+    });
+    const requisitionNumberByPurchaseId = new Map(origins.map((o) => [o.purchaseId, o.requisitionNumber]));
 
     return purchases.map((purchase) => ({
       id: purchase.id,
@@ -157,8 +176,30 @@ export async function listPurchases(tenantId: string, locationId: string | null)
       receivedAt: purchase.receivedAt ? purchase.receivedAt.toISOString() : null,
       createdAt: purchase.localCreatedAt.toISOString(),
       currency: tenant.currency,
+      requisitionNumber: requisitionNumberByPurchaseId.get(purchase.id) ?? null,
     }));
   });
+}
+
+async function loadPurchaseOrigin(tx: Prisma.TransactionClient, tenantId: string, purchaseId: string): Promise<MobilePurchaseOrigin | null> {
+  const requisition = await tx.purchaseRequisition.findFirst({ where: { tenantId, purchaseId } });
+  if (!requisition) return null;
+  const people = await tx.employee.findMany({
+    where: { id: { in: [requisition.requestedBy, requisition.reviewedBy].filter((v): v is string => Boolean(v)) } },
+    select: { id: true, firstName: true, lastName: true },
+  });
+  const nameOf = (id: string | null) => {
+    const person = people.find((p) => p.id === id);
+    return person ? `${person.firstName} ${person.lastName}`.trim() : null;
+  };
+  return {
+    requisitionId: requisition.id,
+    requisitionNumber: requisition.requisitionNumber,
+    requestedByName: nameOf(requisition.requestedBy) ?? "—",
+    requestedAt: requisition.requestedAt.toISOString(),
+    approvedByName: nameOf(requisition.reviewedBy),
+    approvedAt: requisition.reviewedAt?.toISOString() ?? null,
+  };
 }
 
 export async function getPurchase(tenantId: string, purchaseId: string): Promise<MobilePurchaseDetail | null> {
@@ -175,8 +216,10 @@ export async function getPurchase(tenantId: string, purchaseId: string): Promise
       tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
+    const origin = await loadPurchaseOrigin(tx, tenantId, purchase.id);
 
     return {
+      origin,
       id: purchase.id,
       purchaseNumber: purchase.purchaseNumber,
       supplierId: purchase.supplierId,
