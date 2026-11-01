@@ -133,6 +133,8 @@ export const mobileCheckoutDeliverySchema = z.object({
  * mobile-checkout-service.ts): a retry of an id that already succeeded is treated as a no-op success
  * rather than re-running stock deduction a second time. */
 export const mobileCheckoutSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   id: z.string().trim().min(1, "id is required"),
   locationId: z.string().trim().min(1, "locationId is required"),
   items: z.array(mobileCheckoutItemSchema).min(1, "At least one item is required"),
@@ -240,6 +242,8 @@ export const mobileInvoiceSchema = z.object({
   includeBusinessInfo: z.coerce.boolean().optional().default(true),
   items: z.array(mobileInvoiceItemSchema).min(1, "At least one item is required"),
   initialPayment: mobileInitialPaymentSchema.nullable().optional(),
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   delivery: mobileCheckoutDeliverySchema.optional(),
   serviceCharges: mobileServiceChargesFieldSchema,
   /** Legacy whole-invoice default for lines that don't carry their own stockSource. */
@@ -252,6 +256,8 @@ export const mobileInvoiceSchema = z.object({
 export type MobileInvoiceInput = z.infer<typeof mobileInvoiceSchema>;
 
 export const mobileRecordPaymentSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   paymentMethodId: z.string().trim().min(1, "Select a payment method"),
   amountCents: z.coerce.number().int().positive("Amount must be greater than 0"),
   reference: z.string().trim().optional(),
@@ -261,6 +267,8 @@ export const mobileRecordPaymentSchema = z.object({
 export type MobileRecordPaymentInput = z.infer<typeof mobileRecordPaymentSchema>;
 
 export const mobileMarkPaidSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   paymentMethodId: z.string().trim().min(1, "Select a payment method"),
   reference: z.string().trim().optional(),
   notes: z.string().trim().optional(),

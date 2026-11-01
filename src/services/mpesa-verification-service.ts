@@ -350,19 +350,6 @@ export async function attachClaim(tenantId: string, input: unknown): Promise<{ a
   return { attached: result.count };
 }
 
-/** True when `code` is reserved or claimed for this checkout — SERVER's own strict-mode check for
- * mobile checkout, so a client can't simply claim a code verified. */
-export async function isCodeClaimedBy(
-  tx: Prisma.TransactionClient,
-  tenantId: string,
-  code: string,
-  claimKey: string,
-  saleId: string,
-): Promise<boolean> {
-  const payment = await tx.mpesaPayment.findUnique({ where: { tenantId_code: { tenantId, code: normalizeCode(code) } } });
-  return Boolean(payment && (payment.claimKey === claimKey || payment.claimedSaleId === saleId));
-}
-
 /** After a sale exists: verify its recorded code, or (`replacesCode`) try a corrected one. The claim
  * only moves once the new code verified; on any failure nothing changes and the old code stays. The
  * old code is released so it isn't stranded on a payment that was never really this sale's. */
@@ -449,10 +436,69 @@ export async function verifySaleCodeOnServer(
               ) as unknown as Prisma.InputJsonValue,
             }
           : {}),
+        // deviceId too: a till holding a stale copy must not treat this as its own version and
+        // overwrite it, same rule as every mobile update to a sale.
+        deviceId: actor.deviceId,
         localUpdatedAt: now,
         syncedAt: now,
       },
     });
     return result;
   });
+}
+
+/** What a mobile sale/invoice records for its M-Pesa codes, and SERVER's own strict enforcement: a
+ * code counts as verified only if THIS checkout really reserved it. `enforce` is off for a queued
+ * offline sale (it already happened; it's recorded unverified) and for customer debt collection,
+ * which has no verify step yet. Returns the existing value when verification isn't in play. */
+export async function buildSaleVerifications(
+  tx: Prisma.TransactionClient,
+  params: {
+    tenantId: string;
+    locationId: string;
+    saleId: string;
+    claimKey: string | null | undefined;
+    entries: Array<{ paymentMethodId: string | null; reference: string | null }>;
+    existing: unknown;
+    enforce: boolean;
+  },
+): Promise<Record<string, MpesaVerificationRecord> | null> {
+  const existing = (params.existing ?? null) as Record<string, MpesaVerificationRecord> | null;
+  const till = await tx.mpesaTillSettings.findUnique({ where: { locationId: params.locationId }, select: { tenantId: true, verificationMode: true } });
+  if (!till || till.tenantId !== params.tenantId || till.verificationMode === "off") return existing;
+
+  const methodIds = params.entries.map((e) => e.paymentMethodId).filter((v): v is string => Boolean(v));
+  const mpesaMethods = await tx.paymentMethod.findMany({ where: { id: { in: methodIds }, code: "MPESA" }, select: { id: true } });
+  const mpesaIds = new Set(mpesaMethods.map((m) => m.id));
+  const strict = till.verificationMode === "strict" && params.enforce;
+
+  const records: Record<string, MpesaVerificationRecord> = { ...(existing ?? {}) };
+  const now = new Date();
+  for (const entry of params.entries) {
+    if (!entry.paymentMethodId || !mpesaIds.has(entry.paymentMethodId)) continue;
+    const code = entry.reference ? normalizeCode(entry.reference) : "";
+    const payment = code ? await tx.mpesaPayment.findUnique({ where: { tenantId_code: { tenantId: params.tenantId, code } } }) : null;
+    if (payment && params.claimKey && payment.claimKey === params.claimKey) {
+      await tx.mpesaPayment.update({ where: { id: payment.id }, data: { claimedSaleId: params.saleId, claimedAt: now } });
+      records[code] = { status: "verified", verifiedAt: now.toISOString(), payerName: payment.payerName, amountCents: payment.amountCents };
+    } else if (strict) {
+      throw new HttpError(400, "This storefront requires verified M-Pesa payments. Verify the M-Pesa code before completing.");
+    } else if (code && !records[code]) {
+      records[code] = { status: "unverified", verifiedAt: null, payerName: null, amountCents: null };
+    }
+  }
+  return Object.keys(records).length > 0 ? records : existing;
+}
+
+/** One code's indicator for a row; null shows nothing. */
+export function mpesaStatusOf(verifications: unknown, code: string | null | undefined): "verified" | "unverified" | null {
+  if (!verifications || !code) return null;
+  return (verifications as Record<string, MpesaVerificationRecord>)[normalizeCode(code)]?.status ?? null;
+}
+
+/** A sale's overall indicator: any unverified code makes the sale unverified. */
+export function mpesaStatusOfSale(verifications: unknown): "verified" | "unverified" | null {
+  const records = Object.values((verifications ?? {}) as Record<string, MpesaVerificationRecord>);
+  if (records.length === 0) return null;
+  return records.every((r) => r.status === "verified") ? "verified" : "unverified";
 }

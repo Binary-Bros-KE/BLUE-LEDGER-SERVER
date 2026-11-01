@@ -1,3 +1,4 @@
+import { buildSaleVerifications } from "./mpesa-verification-service.js";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
@@ -159,12 +160,24 @@ export async function createInvoice(tenantId: string, employeeId: string, input:
       const invoiceNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, INVOICE_PREFIX, INVOICE_DIGITS);
       const { json: deliveryJson, riderName } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
       const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
+      const mpesaVerifications = parsed.initialPayment
+        ? await buildSaleVerifications(tx, {
+            tenantId,
+            locationId,
+            saleId,
+            claimKey: parsed.mpesaClaimKey,
+            entries: [{ paymentMethodId: parsed.initialPayment.paymentMethodId, reference: parsed.initialPayment.reference?.trim() || null }],
+            existing: null,
+            enforce: true,
+          })
+        : null;
 
       await tx.sale.create({
         data: {
           id: saleId,
           tenantId,
           deviceId: OWNER_APP_DEVICE_ID,
+          ...(mpesaVerifications ? { mpesaVerifications: mpesaVerifications as unknown as Prisma.InputJsonValue } : {}),
           receiptNumber: null,
           locationId,
           employeeId,
@@ -463,6 +476,8 @@ export async function applyPayment(
   employeeId: string,
   saleId: string,
   payment: { id?: string; paymentMethodId: string; amountCents: number; reference: string | null; notes: string | null },
+  /** Set by the forms that have a verify step; without it (customer collect) strict isn't enforced. */
+  mpesa?: { claimKey: string | undefined },
 ): Promise<MobileInvoiceResult> {
   const row = await requireInvoiceRow(tx, tenantId, saleId);
   // Branch staff only complete their own storefront's invoices — every payment path (record
@@ -499,6 +514,15 @@ export async function applyPayment(
   const amountPaidCents = payments.reduce((sum, entry) => sum + entry.amountCents, 0);
   const balanceDueCents = row.grandTotalCents - amountPaidCents;
   const paymentStatus = computePaymentStatus({ balanceDueCents, amountPaidCents, dueDate: row.dueDate, cancelled: false });
+  const mpesaVerifications = await buildSaleVerifications(tx, {
+    tenantId,
+    locationId: row.locationId,
+    saleId,
+    claimKey: mpesa?.claimKey,
+    entries: [{ paymentMethodId: method.id, reference: payment.reference }],
+    existing: row.mpesaVerifications,
+    enforce: mpesa !== undefined,
+  });
 
   await tx.sale.update({
     where: { id: saleId },
@@ -507,7 +531,16 @@ export async function applyPayment(
     // deviceId too: DESKTOP's push treats a row still stamped with ITS OWN deviceId as "my own
     // version" and skips the conflict check, so a desktop holding a stale copy of this invoice could
     // otherwise silently overwrite the payment just recorded here.
-    data: { payments, amountPaidCents, balanceDueCents, paymentStatus, deviceId: OWNER_APP_DEVICE_ID, localUpdatedAt: now, syncedAt: now },
+    data: {
+      payments,
+      amountPaidCents,
+      balanceDueCents,
+      paymentStatus,
+      ...(mpesaVerifications ? { mpesaVerifications: mpesaVerifications as unknown as Prisma.InputJsonValue } : {}),
+      deviceId: OWNER_APP_DEVICE_ID,
+      localUpdatedAt: now,
+      syncedAt: now,
+    },
   });
 
   return { id: saleId };
@@ -522,7 +555,7 @@ export async function recordPayment(tenantId: string, employeeId: string, saleId
       amountCents: parsed.amountCents,
       reference: parsed.reference?.trim() || null,
       notes: parsed.notes?.trim() || null,
-    }),
+    }, { claimKey: parsed.mpesaClaimKey }),
   );
 }
 
@@ -536,7 +569,7 @@ export async function markPaid(tenantId: string, employeeId: string, saleId: str
       amountCents: row.balanceDueCents,
       reference: parsed.reference?.trim() || null,
       notes: parsed.notes?.trim() || null,
-    });
+    }, { claimKey: parsed.mpesaClaimKey });
   });
 }
 

@@ -1,3 +1,4 @@
+import { mpesaStatusOfSale } from "./mpesa-verification-service.js";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
@@ -109,6 +110,8 @@ async function getSaleStatusFlagsMap(
 }
 
 export type MobileSaleListItem = SaleStatusFlags & {
+  /** Null (verification wasn't in play) shows nothing. */
+  mpesaVerification: "verified" | "unverified" | null;
   id: string;
   receiptNumber: string | null;
   customerName: string | null;
@@ -162,6 +165,7 @@ export async function listSales(tenantId: string, locationId: string | null): Pr
 
     return sales.map((sale) => ({
       id: sale.id,
+      mpesaVerification: mpesaStatusOfSale(sale.mpesaVerifications),
       receiptNumber: sale.receiptNumber,
       customerName: walkInAwareCustomerName(
         sale.customerId ? (customerNameById.get(sale.customerId) ?? null) : null,
@@ -188,11 +192,24 @@ export async function listSales(tenantId: string, locationId: string | null): Pr
  * view-model the Share feature renders (buildSharedDocument), not a public-token lookup. Merges in
  * the same void/return status flags listSales exposes (mobile-only concern — kept off
  * SharedDocumentResult itself since SHARE/document-html.ts have no use for it). */
-export async function getSale(tenantId: string, saleId: string): Promise<(SharedDocumentResult & SaleStatusFlags) | null> {
+export async function getSale(
+  tenantId: string,
+  saleId: string,
+): Promise<(SharedDocumentResult & SaleStatusFlags & { mpesaVerifications: unknown; locationId: string | null }) | null> {
   const doc = await buildSharedDocument(tenantId, "sale", saleId);
   if (!doc) return null;
-  const flags = await withTenantContext(tenantId, (tx) => getSaleStatusFlagsMap(tx, tenantId, [saleId]));
-  return { ...doc, ...(flags.get(saleId) ?? emptyStatusFlags()) };
+  const [flags, row] = await withTenantContext(tenantId, (tx) =>
+    Promise.all([
+      getSaleStatusFlagsMap(tx, tenantId, [saleId]),
+      tx.sale.findUnique({ where: { id: saleId }, select: { mpesaVerifications: true, locationId: true } }),
+    ]),
+  );
+  return {
+    ...doc,
+    ...(flags.get(saleId) ?? emptyStatusFlags()),
+    mpesaVerifications: row?.mpesaVerifications ?? null,
+    locationId: row?.locationId ?? null,
+  };
 }
 
 /** Same non-pricing view-model DESKTOP's own DeliveryNotePreview and the public SHARE page render —
