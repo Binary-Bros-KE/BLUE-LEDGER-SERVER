@@ -479,7 +479,8 @@ export async function buildSaleVerifications(
     const code = entry.reference ? normalizeCode(entry.reference) : "";
     const payment = code ? await tx.mpesaPayment.findUnique({ where: { tenantId_code: { tenantId: params.tenantId, code } } }) : null;
     if (payment && params.claimKey && payment.claimKey === params.claimKey) {
-      await tx.mpesaPayment.update({ where: { id: payment.id }, data: { claimedSaleId: params.saleId, claimedAt: now } });
+      // The key is spent here: replaying it can't mark the same code verified on another payment.
+      await tx.mpesaPayment.update({ where: { id: payment.id }, data: { claimedSaleId: params.saleId, claimedAt: now, claimKey: null } });
       records[code] = { status: "verified", verifiedAt: now.toISOString(), payerName: payment.payerName, amountCents: payment.amountCents };
     } else if (strict) {
       throw new HttpError(400, "This storefront requires verified M-Pesa payments. Verify the M-Pesa code before completing.");

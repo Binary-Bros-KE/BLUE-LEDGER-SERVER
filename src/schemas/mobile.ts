@@ -318,6 +318,8 @@ const mobileConvertSourcedLinesSchema = z
   .default([]);
 
 export const mobileConvertToSaleSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   paymentMethodId: z.string().trim().min(1, "Select a payment method"),
   paymentReference: z.string().trim().optional(),
   amountReceivedCents: z.coerce.number().int().min(0).nullable().optional(),
