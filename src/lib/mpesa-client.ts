@@ -73,6 +73,46 @@ export async function getAccessToken(credentials: Pick<TillCredentials, "environ
   return body.access_token;
 }
 
+/** Registers a till's C2B confirmation/validation URLs. "Completed" = if our validation URL is ever
+ * unreachable, M-Pesa still takes the customer's money (we never want a shop's till blocked by our
+ * outage). Docs and libraries disagree on v1 vs v2 of this endpoint, so v2 falls back to v1 on a 404. */
+export async function registerC2bUrls(params: {
+  credentials: Pick<TillCredentials, "environment" | "shortcode">;
+  accessToken: string;
+  confirmationUrl: string;
+  validationUrl: string;
+}): Promise<void> {
+  const { credentials, accessToken, confirmationUrl, validationUrl } = params;
+  const body = JSON.stringify({
+    ShortCode: credentials.shortcode,
+    ResponseType: "Completed",
+    ConfirmationURL: confirmationUrl,
+    ValidationURL: validationUrl,
+  });
+
+  for (const version of ["v2", "v1"]) {
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrlFor(credentials.environment)}/mpesa/c2b/${version}/registerurl`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body,
+      });
+    } catch (err) {
+      throw new MpesaApiError("Could not reach Safaricom to register payment notifications", err);
+    }
+    if (response.status === 404 && version === "v2") continue;
+
+    const responseBody = (await response.json().catch(() => ({}))) as {
+      ResponseCode?: string;
+      ResponseDescription?: string;
+      errorMessage?: string;
+    };
+    if (response.ok && (responseBody.ResponseCode === undefined || Number(responseBody.ResponseCode) === 0)) return;
+    throw new MpesaApiError(responseBody.errorMessage ?? responseBody.ResponseDescription ?? `Safaricom rejected the registration (${response.status})`);
+  }
+}
+
 export type StkPushResult = { merchantRequestId: string; checkoutRequestId: string };
 
 /** Initiates one STK Push prompt on the customer's phone. Amount is passed in whole KES (Safaricom

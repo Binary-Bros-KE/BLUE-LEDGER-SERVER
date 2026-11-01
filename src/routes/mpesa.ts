@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireDevice } from "../middleware/device-auth.js";
 import * as mpesaService from "../services/mpesa-service.js";
+import * as verification from "../services/mpesa-verification-service.js";
 
 export const mpesaRouter = Router();
 
@@ -27,6 +28,40 @@ mpesaRouter.post("/settings/save", async (req, res) => {
 mpesaRouter.post("/configured", async (req, res) => {
   const result = await mpesaService.isMpesaConfigured(req.body);
   res.json(result);
+});
+
+/** requireDevice has already proven tenantId + deviceId in the body. */
+function deviceActor(body: { tenantId: string; deviceId: string; employeeId?: string }): verification.MpesaActor {
+  return { tenantId: body.tenantId, deviceId: body.deviceId, employeeId: body.employeeId ?? null };
+}
+
+mpesaRouter.post("/verification/state", async (req, res) => {
+  res.json(await verification.getVerificationState(req.body.tenantId, req.body.locationId));
+});
+
+mpesaRouter.post("/verification/mode", async (req, res) => {
+  res.json(await verification.saveVerificationMode(req.body.tenantId, req.body));
+});
+
+mpesaRouter.post("/verification/connect", async (req, res) => {
+  res.json(await verification.connectC2b(req.body.tenantId, req.body.locationId));
+});
+
+mpesaRouter.post("/verification/check-payment", async (req, res) => {
+  res.json(await verification.checkPayment(req.body.tenantId, req.body));
+});
+
+mpesaRouter.post("/verification/verify", async (req, res) => {
+  res.json(await verification.verifyCode(deviceActor(req.body), req.body));
+});
+
+mpesaRouter.post("/verification/attach", async (req, res) => {
+  res.json(await verification.attachClaim(req.body.tenantId, req.body));
+});
+
+// Admin-only correction is enforced on the till (DESKTOP's permission system lives there).
+mpesaRouter.post("/verification/verify-sale", async (req, res) => {
+  res.json(await verification.verifySaleCodeForDevice(deviceActor(req.body), req.body));
 });
 
 mpesaRouter.post("/stk-push", async (req, res) => {

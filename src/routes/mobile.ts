@@ -43,6 +43,7 @@ import * as mobileSuppliersService from "../services/mobile-suppliers-service.js
 import * as mobileTransactionsService from "../services/mobile-transactions-service.js";
 import * as mobileWorkingHoursService from "../services/mobile-working-hours-service.js";
 import * as mpesaService from "../services/mpesa-service.js";
+import * as mpesaVerification from "../services/mpesa-verification-service.js";
 import { createShareLink } from "../services/share-service.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { OWNER_APP_DEVICE_ID, resolveMobileLocation } from "../services/mobile-checkout-service.js";
@@ -1007,6 +1008,42 @@ mobileRouter.get("/mpesa/configured", requireMobileAuth, requireOwnerAppAccess, 
   const locationId = await resolveStkLocation(session.tenantId, session.employeeId, requested);
   const result = await mpesaService.isMpesaConfigured({ tenantId: session.tenantId, deviceId: OWNER_APP_DEVICE_ID, locationId });
   res.json(result);
+});
+
+// M-Pesa verification — same service as DESKTOP's /mpesa/verification routes.
+function mobileMpesaActor(session: { tenantId: string; employeeId: string }): mpesaVerification.MpesaActor {
+  return { tenantId: session.tenantId, employeeId: session.employeeId, deviceId: OWNER_APP_DEVICE_ID };
+}
+
+mobileRouter.get("/mpesa/verification/:locationId", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
+  res.json(await mpesaVerification.getVerificationState(req.mobileSession!.tenantId, req.params.locationId as string));
+});
+
+mobileRouter.put("/mpesa/verification/:locationId", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("locations", "edit"), async (req, res) => {
+  res.json(await mpesaVerification.saveVerificationMode(req.mobileSession!.tenantId, { ...req.body, locationId: req.params.locationId }));
+});
+
+mobileRouter.post("/mpesa/verification/:locationId/connect", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("locations", "edit"), async (req, res) => {
+  res.json(await mpesaVerification.connectC2b(req.mobileSession!.tenantId, req.params.locationId as string));
+});
+
+mobileRouter.post("/mpesa/check-payment", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  res.json(await mpesaVerification.checkPayment(req.mobileSession!.tenantId, req.body));
+});
+
+mobileRouter.post("/mpesa/verify", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  res.json(await mpesaVerification.verifyCode(mobileMpesaActor(req.mobileSession!), req.body));
+});
+
+mobileRouter.post("/mpesa/attach", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {
+  res.json(await mpesaVerification.attachClaim(req.mobileSession!.tenantId, req.body));
+});
+
+// Verifying a sale's recorded code is open to anyone who can see sales; trying a DIFFERENT code is admin only.
+mobileRouter.post("/mpesa/verify-sale", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "view"), async (req, res) => {
+  const session = req.mobileSession!;
+  const canReplaceCode = Boolean(session.isSuperAdmin) || (session.permissions?.approvals?.includes("approve") ?? false);
+  res.json(await mpesaVerification.verifySaleCodeOnServer(mobileMpesaActor(session), req.body, { canReplaceCode }));
 });
 
 mobileRouter.post("/mpesa/stk-push", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "create"), async (req, res) => {

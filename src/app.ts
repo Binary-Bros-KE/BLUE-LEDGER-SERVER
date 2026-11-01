@@ -12,6 +12,7 @@ import { authRouter } from "./routes/auth.js";
 import { billingMpesaRouter } from "./routes/billing-mpesa.js";
 import { billingPesapalRouter } from "./routes/billing-pesapal.js";
 import { mobileRouter } from "./routes/mobile.js";
+import { lipaRouter } from "./routes/lipa.js";
 import { mpesaRouter } from "./routes/mpesa.js";
 import { outletsRouter } from "./routes/outlets.js";
 import { plansRouter } from "./routes/plans.js";
@@ -258,6 +259,7 @@ app.use("/shop", shopRouter);
 app.use("/shop-admin", shopAdminRouter);
 app.use("/share", shareRouter);
 app.use("/mpesa", mpesaRouter);
+app.use("/lipa", lipaRouter);
 app.use("/billing-mpesa", billingMpesaRouter);
 app.use("/billing-pesapal", billingPesapalRouter);
 

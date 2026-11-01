@@ -44,3 +44,39 @@ export const mpesaStatusSchema = z.object({
   checkoutRequestId: z.string().trim().min(1),
 });
 export type MpesaStatusInput = z.infer<typeof mpesaStatusSchema>;
+
+export const mpesaSaveModeSchema = z.object({
+  locationId: z.string().trim().min(1),
+  mode: z.enum(["off", "loose", "strict"]),
+});
+
+const mpesaCode = z.string().trim().min(6, "Enter the M-Pesa code").max(20);
+
+export const mpesaCheckPaymentSchema = z.object({
+  locationId: z.string().trim().min(1),
+  amountCents: z.coerce.number().int().positive(),
+  /** Stable per sale being rung up, so its own reservation still shows when checking again. */
+  claimKey: z.string().trim().min(1).max(120),
+});
+
+export const mpesaVerifyCodeSchema = z.object({
+  locationId: z.string().trim().min(1),
+  code: mpesaCode,
+  /** What this payment should be for — omitted skips the amount check (e.g. split still being entered). */
+  amountCents: z.coerce.number().int().positive().nullable().optional(),
+  claimKey: z.string().trim().min(1).max(120),
+});
+
+export const mpesaAttachClaimSchema = z.object({
+  claimKey: z.string().trim().min(1).max(120),
+  saleId: z.string().trim().min(1),
+});
+
+export const mpesaVerifySaleCodeSchema = z.object({
+  saleId: z.string().trim().min(1),
+  locationId: z.string().trim().min(1),
+  code: mpesaCode,
+  /** Set when an admin is correcting a wrong code: the code being replaced. */
+  replacesCode: z.string().trim().min(1).nullable().optional(),
+  amountCents: z.coerce.number().int().positive().nullable().optional(),
+});
