@@ -1,3 +1,4 @@
+import { findDropshipLinks } from "../lib/dropship-links.js";
 import { activeSharedVariants, parseVariantConfig, parseVariantOptions, variantLabel, type VariantOption } from "../lib/variants.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -56,6 +57,9 @@ export type MobileProductListItem = {
   status: string;
   /** False for a non-stock item (e.g. a service) — sellable, never counted or deducted. */
   trackStock: boolean;
+  /** Set when this product's stock follows a dropship supplier (lib/dropship-links.ts): manual stock
+   * changes are refused and asOf is when that supplier's devices last reached the server. */
+  stockSource: { supplierName: string; asOf: string | null } | null;
 };
 
 export type MobileProductVariants = {
@@ -86,7 +90,7 @@ export type MobileProductVariants = {
  * for that. */
 export async function listProducts(tenantId: string, options: { includeAll?: boolean } = {}): Promise<MobileProductListItem[]> {
   return withTenantContext(tenantId, async (tx) => {
-    const [products, categories, locations, balances] = await Promise.all([
+    const [products, categories, locations, balances, dropshipLinks] = await Promise.all([
       tx.product.findMany({
         where: options.includeAll ? { tenantId } : { tenantId, status: "active" },
         select: {
@@ -113,6 +117,7 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
       tx.category.findMany({ where: { tenantId }, select: { id: true, name: true } }),
       tx.location.findMany({ where: { tenantId }, select: { id: true, locationName: true, locationType: true } }),
       tx.inventory.findMany({ where: { tenantId }, select: { productId: true, locationId: true, quantity: true } }),
+      findDropshipLinks(tx, tenantId),
     ]);
 
     const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
@@ -179,6 +184,7 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
       }));
       const storefrontQuantity = storefrontBreakdown.reduce((sum, entry) => sum + entry.quantity, 0);
       const totalQuantity = (mainStoreQuantity ?? 0) + storefrontQuantity;
+      const dropshipLink = dropshipLinks.get(product.id);
 
       return {
         id: product.id,
@@ -202,6 +208,7 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
         variants: variantsOf(product),
         status: product.status,
         trackStock: product.trackStock,
+        stockSource: dropshipLink ? { supplierName: dropshipLink.supplierName, asOf: dropshipLink.asOf?.toISOString() ?? null } : null,
       };
     });
   });

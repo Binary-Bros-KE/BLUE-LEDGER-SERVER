@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { findDropshipLinks } from "./dropship-links.js";
 import { HttpError } from "./http-error.js";
 
 /** Same id as mobile-checkout-service.ts's OWNER_APP_DEVICE_ID — duplicated (not imported) so this
@@ -247,8 +248,10 @@ export async function restockInvoiceStock(
     select: { id: true },
   });
   const trackedIds = new Set(trackedProducts.map((p) => p.id));
+  // Never deducted (see prepareMobileCart), so nothing to credit back.
+  const dropshipLinks = await findDropshipLinks(tx, tenantId, [...trackedIds]);
   const restockLines = restockRows
-    .filter((item) => trackedIds.has(item.productId))
+    .filter((item) => trackedIds.has(item.productId) && !dropshipLinks.has(item.productId))
     .map((item) => ({ ...item, from: lineStockLocationId(item, sale) }));
   if (restockLines.length === 0) return;
 

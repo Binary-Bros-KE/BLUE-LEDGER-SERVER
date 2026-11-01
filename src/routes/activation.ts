@@ -15,6 +15,10 @@ activationRouter.post("/heartbeat", async (req, res) => {
   res.json(result);
 });
 
+activationRouter.post("/dropship-links", async (req, res) => {
+  res.json(await activationService.dropshipLinks(req.body));
+});
+
 activationRouter.post("/profile", async (req, res) => {
   const result = await activationService.updateProfile(req.body);
   res.json(result);

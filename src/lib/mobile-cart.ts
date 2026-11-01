@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { findDropshipLinks } from "./dropship-links.js";
 import { HttpError, NotFoundError } from "./http-error.js";
 import { computeLineTax, resolveProductTaxConfig, type TenantTaxConfig } from "./tax-breakdown.js";
 import { activeSharedVariants, parseVariantConfig, variantLabel } from "./variants.js";
@@ -132,6 +133,9 @@ export async function prepareMobileCart(
   // Keyed by location too — a mixed invoice checks its storefront lines against the storefront and
   // its Main Store lines against the Main Store (deductInvoiceStock then applies the earmark rule).
   const stockByLocationProduct = new Map(balances.map((b) => [`${b.locationId}:${b.productId}`, b.quantity]));
+  // A dropship-linked product's stock IS its supplier's number: still checked above/below like any
+  // other, but a sale never moves it — the supplier records the sale of its own stock itself.
+  const dropshipLinks = options.checkStock ? await findDropshipLinks(tx, tenantId, items.map((i) => i.productId)) : new Map();
 
   // Batch-validate every distinct local supplier referenced across the cart in one query.
   const localSupplierIds = [
@@ -232,7 +236,7 @@ export async function prepareMobileCart(
       createdAt: now.toISOString(),
     });
 
-    if (options.checkStock && product.trackStock && !item.isLocallySourced) {
+    if (options.checkStock && product.trackStock && !item.isLocallySourced && !dropshipLinks.has(product.id)) {
       stockMovementRows.push({
         id: randomUUID(),
         productId: product.id,

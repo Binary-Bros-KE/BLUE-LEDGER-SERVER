@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { findDropshipLinks } from "../lib/dropship-links.js";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { withTenantContext } from "../lib/tenant-context.js";
@@ -727,6 +728,8 @@ export async function receivePurchaseGoods(session: MobileSession, purchaseId: s
     const nowIso = now.toISOString();
     const eventItems: ReceivingEventItem[] = [];
     let batchValueCents = 0;
+    // The purchase itself is still recorded; a dropship-linked product's stock just stays the supplier's.
+    const dropshipLinks = await findDropshipLinks(tx, tenantId, items.map((i) => i.productId));
 
     for (const entry of parsed.items) {
       const item = itemById.get(entry.purchaseItemId)!;
@@ -735,32 +738,35 @@ export async function receivePurchaseGoods(session: MobileSession, purchaseId: s
         select: { quantity: true },
       });
       const previousQuantity = balance?.quantity ?? 0;
-      const newQuantity = previousQuantity + entry.receivingQuantity;
+      const movesStock = !dropshipLinks.has(item.productId);
+      const newQuantity = movesStock ? previousQuantity + entry.receivingQuantity : previousQuantity;
 
       item.receivedQuantity += entry.receivingQuantity;
       item.updatedAt = nowIso;
       batchValueCents += Math.round((item.lineTotalCents * entry.receivingQuantity) / item.orderedQuantity);
 
-      await tx.stockMovement.create({
-        data: {
-          id: `movement_${randomUUID()}`,
-          tenantId,
-          deviceId: OWNER_APP_DEVICE_ID,
-          productId: item.productId,
-          locationId: purchase.locationId,
-          movementType: "purchase",
-          quantityChange: entry.receivingQuantity,
-          referenceType: "purchase",
-          referenceId: purchase.id,
-          performedBy: actor.id,
-          notes: null,
-          allocationExplicit: false,
-          previousQuantity,
-          newQuantity,
-          localCreatedAt: now,
-          localUpdatedAt: now,
-        },
-      });
+      if (movesStock) {
+        await tx.stockMovement.create({
+          data: {
+            id: `movement_${randomUUID()}`,
+            tenantId,
+            deviceId: OWNER_APP_DEVICE_ID,
+            productId: item.productId,
+            locationId: purchase.locationId,
+            movementType: "purchase",
+            quantityChange: entry.receivingQuantity,
+            referenceType: "purchase",
+            referenceId: purchase.id,
+            performedBy: actor.id,
+            notes: null,
+            allocationExplicit: false,
+            previousQuantity,
+            newQuantity,
+            localCreatedAt: now,
+            localUpdatedAt: now,
+          },
+        });
+      }
 
       const product = productById.get(item.productId);
       eventItems.push({

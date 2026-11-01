@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
+import { assertNotDropshipLinked } from "../lib/dropship-links.js";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { withTenantContext } from "../lib/tenant-context.js";
@@ -470,6 +471,7 @@ export async function recordStockAdjustment(session: MobileSession, input: unkno
     const product = await tx.product.findUnique({ where: { id: parsed.productId } });
     if (!product || product.tenantId !== tenantId) throw new NotFoundError("Product not found");
     if (!product.trackStock) throw new HttpError(400, `"${product.name}" doesn't track stock`);
+    await assertNotDropshipLinked(tx, tenantId, [product.id]);
     const location = await assertStockLocationAllowed(tx, tenantId, parsed.locationId, actor.branchScope);
 
     const balance = await tx.inventory.findUnique({
@@ -546,6 +548,7 @@ export async function recordStockTransfer(session: MobileSession, input: unknown
     // Same product twice in one transfer = one combined line.
     const quantities = new Map<string, number>();
     for (const line of parsed.items) quantities.set(line.productId, (quantities.get(line.productId) ?? 0) + line.quantity);
+    await assertNotDropshipLinked(tx, tenantId, [...quantities.keys()]);
 
     const products = await tx.product.findMany({ where: { tenantId, id: { in: [...quantities.keys()] } } });
     if (products.length !== quantities.size) throw new NotFoundError("One of the selected products was not found");

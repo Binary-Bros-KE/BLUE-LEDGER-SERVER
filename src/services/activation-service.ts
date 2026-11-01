@@ -1,6 +1,7 @@
 import type { Device, License, Plan, Subscription, Tenant } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { assertLicenseUsable } from "../lib/license-guard.js";
+import { type DropshipHeartbeat, type DropshipLinkList, getDropshipHeartbeat, getDropshipLinkList } from "../lib/dropship-links.js";
 import { type BillingPeriodEntry, computePaymentSchedule, resolveBillingAnchorDate } from "../lib/billing-periods.js";
 import { prisma } from "../prisma.js";
 import {
@@ -196,6 +197,8 @@ export type HeartbeatResult = BusinessProfileFields & {
   maxDevices: number;
   ecommerceEnabled: boolean;
   businessProfileUpdatedAt: string | null;
+  /** Null for every tenant without dropshipping — see lib/dropship-links.ts. */
+  dropship: DropshipHeartbeat | null;
 };
 
 /** Called periodically by an already-registered install — the ongoing "is this license still
@@ -243,8 +246,25 @@ export async function heartbeat(input: unknown): Promise<HeartbeatResult> {
     maxUsers: subscription?.plan.maxUsers ?? 1,
     maxDevices: license.tenant.maxDevicesOverride ?? subscription?.plan.maxDevices ?? 1,
     ecommerceEnabled: license.tenant.ecommerceEnabled || (subscription?.plan.featureEcommerce ?? false),
+    dropship: license.tenant.dropshippingEnabled ? await getDropshipHeartbeat(license.tenant.id) : null,
     ...extractBusinessProfileFields(license.tenant),
   };
+}
+
+/** The full linked-product list — a device only asks when the heartbeat's dropship.version differs
+ * from what it already holds, since a reseller's list can be thousands of rows and the heartbeat runs
+ * every 20s. Same license-key + device check as the heartbeat itself. */
+export async function dropshipLinks(input: unknown): Promise<DropshipLinkList> {
+  const parsed = activationHeartbeatSchema.parse(input);
+  const license = await findLicenseWithContext(parsed.licenseKey);
+  if (!license) {
+    throw new NotFoundError("Invalid license key");
+  }
+  if (!license.tenant.devices.some((d) => d.id === parsed.deviceId)) {
+    throw new NotFoundError("Device not recognized for this license — re-activate this installation.");
+  }
+  assertLicenseUsable(license);
+  return getDropshipLinkList(license.tenant.id);
 }
 
 /** The desktop app's own Business Profile screen is the real source of truth for these fields —
