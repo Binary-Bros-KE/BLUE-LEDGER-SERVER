@@ -379,7 +379,8 @@ function computePurchaseReceivingStatus(items: Array<{ orderedQuantity: number; 
 
 /** Who may do what to purchases. "all" is the full purchases module. "local" is local_credit_purchases
  * (goods taken on credit, e.g. by a Cashier): only local suppliers, only their own storefront, and only
- * create and receive. Never drafts, cancelling, paying or re-pricing products, and no payment figures. */
+ * create and receive. They set the buying price but never the selling price. No drafts, cancelling or
+ * paying, and no payment figures. */
 export function mobilePurchaseAccess(session: MobileSession, action: "view" | "create" | "edit"): "all" | "local" | null {
   if (session.isSuperAdmin || session.permissions?.purchases?.includes(action)) return "all";
   return session.permissions?.local_credit_purchases?.includes(action) ? "local" : null;
@@ -650,7 +651,7 @@ export async function createPurchaseInTx(
     });
 
     if (ordered) {
-      if (!localOnly) await syncProductPricingFromOrder(tx, cart.items, now);
+      await syncProductPricingFromOrder(tx, cart.items, now);
       await createShippingCostExpense(
         tx,
         tenantId,
