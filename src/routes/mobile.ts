@@ -1,7 +1,7 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { HttpError } from "../lib/http-error.js";
-import { requireMobileAuth, requireMobilePermission, requireOwnerAppAccess, requireSuperAdmin } from "../middleware/mobile-auth.js";
+import { requireMobileAuth, requireMobilePermission, requireMobilePermissionAnyOf, requireOwnerAppAccess, requireSuperAdmin } from "../middleware/mobile-auth.js";
 import {
   mobileBooleanValueSchema,
   mobileCancellationDecisionSchema,
@@ -491,7 +491,10 @@ mobileRouter.post(
 );
 
 mobileRouter.get("/suppliers", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
-  const result = await mobileSuppliersService.listSuppliers(req.mobileSession!.tenantId);
+  const session = req.mobileSession!;
+  const perms = session.permissions ?? {};
+  const seesInternational = session.isSuperAdmin || perms.suppliers?.includes("view") || perms.purchases?.includes("view");
+  const result = await mobileSuppliersService.listSuppliers(session.tenantId, !seesInternational);
   res.json(result);
 });
 
@@ -499,9 +502,14 @@ mobileRouter.post(
   "/suppliers",
   requireMobileAuth,
   requireOwnerAppAccess,
-  requireMobilePermission("suppliers", "create"),
+  requireMobilePermissionAnyOf([
+    ["suppliers", "create"],
+    ["local_credit_purchases", "create"],
+  ]),
   async (req, res) => {
-    const result = await mobileSuppliersService.createSupplier(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.body);
+    const session = req.mobileSession!;
+    const forceLocal = !session.isSuperAdmin && !session.permissions?.suppliers?.includes("create");
+    const result = await mobileSuppliersService.createSupplier(session.tenantId, session.employeeId, req.body, { forceLocal });
     res.status(201).json(result);
   },
 );
@@ -765,12 +773,12 @@ mobileRouter.get("/payment-methods", requireMobileAuth, requireOwnerAppAccess, a
 
 mobileRouter.get("/purchases", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const parsed = mobileSalesQuerySchema.parse(req.query);
-  const result = await mobilePurchasesService.listPurchases(req.mobileSession!.tenantId, parsed.locationId ?? null);
+  const result = await mobilePurchasesService.listPurchases(req.mobileSession!, parsed.locationId ?? null);
   res.json(result);
 });
 
 mobileRouter.get("/purchases/:id", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
-  const result = await mobilePurchasesService.getPurchase(req.mobileSession!.tenantId, req.params.id as string);
+  const result = await mobilePurchasesService.getPurchase(req.mobileSession!, req.params.id as string);
   if (!result) {
     res.status(404).json({ error: "Purchase not found" });
     return;
@@ -779,8 +787,9 @@ mobileRouter.get("/purchases/:id", requireMobileAuth, requireOwnerAppAccess, asy
 });
 
 // Purchase lifecycle — see mobile-purchases-service.ts's write-actions section. Same
-// purchases.create / purchases.edit grants DESKTOP's own purchase-service.ts checks.
-mobileRouter.post("/purchases", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "create"), async (req, res) => {
+// purchases.create / purchases.edit grants DESKTOP's own purchase-service.ts checks. A
+// local_credit_purchases role may only create and receive, and only local: the service enforces that.
+mobileRouter.post("/purchases", requireMobileAuth, requireOwnerAppAccess, requireMobilePermissionAnyOf([["purchases", "create"], ["local_credit_purchases", "create"]]), async (req, res) => {
   const result = await mobilePurchasesService.createPurchase(req.mobileSession!, req.body);
   res.status(201).json(result);
 });
@@ -795,7 +804,7 @@ mobileRouter.post("/purchases/:id/cancel", requireMobileAuth, requireOwnerAppAcc
   res.json(result);
 });
 
-mobileRouter.post("/purchases/:id/receive", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("purchases", "edit"), async (req, res) => {
+mobileRouter.post("/purchases/:id/receive", requireMobileAuth, requireOwnerAppAccess, requireMobilePermissionAnyOf([["purchases", "edit"], ["local_credit_purchases", "edit"]]), async (req, res) => {
   const result = await mobilePurchasesService.receivePurchaseGoods(req.mobileSession!, req.params.id as string, req.body);
   res.json(result);
 });

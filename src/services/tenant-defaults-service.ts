@@ -48,6 +48,7 @@ const PERMISSION_MODULE_ACTIONS: Record<string, string[]> = {
   expenses: ["view", "create", "edit", "delete", "export"],
   expense_categories: ["view", "create", "edit", "delete"],
   local_purchases: ["view", "create", "edit", "delete", "export"],
+  local_credit_purchases: ["view", "create", "edit"],
   borrows: ["view", "create", "edit", "export"],
   employees: ["view", "create", "edit", "delete", "export"],
   salaries: ["view", "create", "edit", "delete", "export"],
@@ -123,6 +124,8 @@ const DEFAULT_ROLES: Array<{ roleName: string; description: string; permissions:
       salaries: ["view"],
       stock_requests: ["view", "create"],
       local_purchases: ["view", "create", "edit", "delete"],
+      // Goods taken on credit: local suppliers only, see mobile-purchases-service.ts mobilePurchaseAccess.
+      local_credit_purchases: ["view", "create", "edit"],
     },
     isSuperAdmin: false,
   },

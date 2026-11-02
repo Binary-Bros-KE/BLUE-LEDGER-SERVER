@@ -17,6 +17,7 @@ import { OWNER_APP_DEVICE_ID } from "./mobile-checkout-service.js";
 
 export type MobilePurchaseListItem = {
   id: string;
+  supplierType: string;
   purchaseNumber: string;
   supplierName: string;
   locationName: string;
@@ -91,6 +92,7 @@ export type MobilePurchasePayment = {
 };
 
 export type MobilePurchaseDetail = {
+  supplierType: string;
   id: string;
   purchaseNumber: string;
   supplierId: string;
@@ -140,22 +142,35 @@ function computePurchasePayableCents(receivedValueCents: number, shippingFeeCent
  * DESKTOP — a Purchase Order's only "document" is a locally-attached file, not a generated one), so
  * unlike Sales/Invoices/Quotations this is view-only: a lightweight list plus a full-detail fetch on
  * tap, no share-link minting. */
-export async function listPurchases(tenantId: string, locationId: string | null): Promise<MobilePurchaseListItem[]> {
+export async function listPurchases(session: MobileSession, locationId: string | null): Promise<MobilePurchaseListItem[]> {
+  const access = mobilePurchaseAccess(session, "view");
+  if (!access) return [];
+  const localOnly = access === "local";
+  const { tenantId } = session;
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true } });
 
   return withTenantContext(tenantId, async (tx) => {
+    const localBranch = localOnly ? (await loadActor(tx, session)).branchScope : null;
+    const localSuppliers = localOnly ? await tx.supplier.findMany({ where: { tenantId, supplierType: "local" }, select: { id: true } }) : [];
     const purchases = await tx.purchase.findMany({
-      where: { tenantId, ...(locationId ? { locationId } : {}) },
+      where: {
+        tenantId,
+        ...(locationId ? { locationId } : {}),
+        ...(localOnly
+          ? { status: { not: "draft" }, supplierId: { in: localSuppliers.map((s) => s.id) }, ...(localBranch ? { locationId: localBranch } : {}) }
+          : {}),
+      },
       orderBy: { localCreatedAt: "desc" },
       take: 200,
     });
 
     const [locations, suppliers] = await Promise.all([
       tx.location.findMany({ where: { tenantId }, select: { id: true, locationName: true } }),
-      tx.supplier.findMany({ where: { tenantId }, select: { id: true, businessName: true } }),
+      tx.supplier.findMany({ where: { tenantId }, select: { id: true, businessName: true, supplierType: true } }),
     ]);
     const locationNameById = new Map(locations.map((l) => [l.id, l.locationName]));
     const supplierNameById = new Map(suppliers.map((s) => [s.id, s.businessName]));
+    const supplierTypeById = new Map(suppliers.map((s) => [s.id, s.supplierType]));
     const origins = await tx.purchaseRequisition.findMany({
       where: { tenantId, purchaseId: { in: purchases.map((p) => p.id) } },
       select: { purchaseId: true, requisitionNumber: true },
@@ -166,12 +181,14 @@ export async function listPurchases(tenantId: string, locationId: string | null)
       id: purchase.id,
       purchaseNumber: purchase.purchaseNumber,
       supplierName: supplierNameById.get(purchase.supplierId) ?? "—",
+      supplierType: supplierTypeById.get(purchase.supplierId) ?? "local",
       locationName: locationNameById.get(purchase.locationId) ?? "—",
       locationId: purchase.locationId,
       status: purchase.status,
-      paymentStatus: purchase.paymentStatus,
+      // What's been paid is the owner's business, not a local-credit role's.
+      paymentStatus: localOnly ? "" : purchase.paymentStatus,
       grandTotalCents: purchase.grandTotalCents,
-      amountPaidCents: purchase.amountPaidCents,
+      amountPaidCents: localOnly ? 0 : purchase.amountPaidCents,
       orderedAt: purchase.orderedAt ? purchase.orderedAt.toISOString() : null,
       receivedAt: purchase.receivedAt ? purchase.receivedAt.toISOString() : null,
       createdAt: purchase.localCreatedAt.toISOString(),
@@ -202,7 +219,17 @@ async function loadPurchaseOrigin(tx: Prisma.TransactionClient, tenantId: string
   };
 }
 
-export async function getPurchase(tenantId: string, purchaseId: string): Promise<MobilePurchaseDetail | null> {
+export async function getPurchase(session: MobileSession, purchaseId: string): Promise<MobilePurchaseDetail | null> {
+  const access = mobilePurchaseAccess(session, "view");
+  if (!access) return null;
+  const detail = await loadPurchaseDetail(session.tenantId, purchaseId);
+  if (!detail || access === "all") return detail;
+  const branchScope = await withTenantContext(session.tenantId, async (tx) => (await loadActor(tx, session)).branchScope);
+  if (detail.supplierType !== "local" || detail.status === "draft" || (branchScope && detail.locationId !== branchScope)) return null;
+  return { ...detail, paymentStatus: "", amountPaidCents: 0, balanceDueCents: 0, payments: [] };
+}
+
+async function loadPurchaseDetail(tenantId: string, purchaseId: string): Promise<MobilePurchaseDetail | null> {
   const tenant = await prisma.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { currency: true, vatRatePercent: true } });
 
   return withTenantContext(tenantId, async (tx) => {
@@ -212,7 +239,7 @@ export async function getPurchase(tenantId: string, purchaseId: string): Promise
     const items = asArray<RawPurchaseItem>(purchase.items);
     const [location, supplier, products] = await Promise.all([
       tx.location.findUnique({ where: { id: purchase.locationId }, select: { locationName: true } }),
-      tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { businessName: true, phone1: true } }),
+      tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { businessName: true, phone1: true, supplierType: true } }),
       tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
@@ -228,6 +255,7 @@ export async function getPurchase(tenantId: string, purchaseId: string): Promise
       shippingExpenseCents: purchase.shippingExpenseCents,
       receivedValueCents: purchase.receivedValueCents,
       balanceDueCents: Math.max(0, computePurchasePayableCents(purchase.receivedValueCents, purchase.shippingCostCents) - purchase.amountPaidCents),
+      supplierType: supplier?.supplierType ?? "local",
       supplierName: supplier?.businessName ?? "—",
       supplierPhone: supplier?.phone1 ?? null,
       locationName: location?.locationName ?? "—",
@@ -347,6 +375,14 @@ function computePurchaseReceivingStatus(items: Array<{ orderedQuantity: number; 
   if (received <= 0) return "ordered";
   if (received >= ordered) return "received";
   return "partially_received";
+}
+
+/** Who may do what to purchases. "all" is the full purchases module. "local" is local_credit_purchases
+ * (goods taken on credit, e.g. by a Cashier): only local suppliers, only their own storefront, and only
+ * create and receive. Never drafts, cancelling, paying or re-pricing products, and no payment figures. */
+export function mobilePurchaseAccess(session: MobileSession, action: "view" | "create" | "edit"): "all" | "local" | null {
+  if (session.isSuperAdmin || session.permissions?.purchases?.includes(action)) return "all";
+  return session.permissions?.local_credit_purchases?.includes(action) ? "local" : null;
 }
 
 async function loadActor(tx: Prisma.TransactionClient, session: MobileSession) {
@@ -569,7 +605,15 @@ export async function createPurchaseInTx(
 
     const actor = await loadActor(tx, session);
     const { supplier, location } = await validatePurchaseHeader(tx, tenantId, actor.branchScope, parsed);
-    const cart = await preparePurchaseLines(tx, tenantId, parsed.items, parsed.shippingCostCents, now);
+    const localOnly = mobilePurchaseAccess(session, "create") === "local";
+    if (localOnly) {
+      if (supplier.supplierType !== "local") throw new HttpError(403, "You can only record purchases from local suppliers");
+      if (parsed.intent !== "ordered") throw new HttpError(400, "Place the order rather than saving a draft");
+      if (parsed.shippingExpenseCents > 0) throw new HttpError(403, "You can't book a shipping cost as an expense");
+      if (actor.branchScope && location.id !== actor.branchScope) throw new HttpError(403, "You can only receive purchases into your own storefront");
+    }
+    const lines = localOnly ? parsed.items.map((item) => ({ ...item, sellingPriceCents: null })) : parsed.items;
+    const cart = await preparePurchaseLines(tx, tenantId, lines, parsed.shippingCostCents, now);
 
     const sequence = await ensureEmployeeMobileSequence(tx, tenantId, actor.id, actor.mobileDeviceSequence);
     const purchaseNumber = await mintMobileDocumentNumber(tx, tenantId, sequence, PURCHASE_PREFIX, PURCHASE_DIGITS);
@@ -606,7 +650,7 @@ export async function createPurchaseInTx(
     });
 
     if (ordered) {
-      await syncProductPricingFromOrder(tx, cart.items, now);
+      if (!localOnly) await syncProductPricingFromOrder(tx, cart.items, now);
       await createShippingCostExpense(
         tx,
         tenantId,
@@ -760,6 +804,10 @@ export async function receivePurchaseGoods(session: MobileSession, purchaseId: s
       throw new HttpError(400, "Only ordered or partially received purchases can receive stock");
     }
     const actor = await loadActor(tx, session);
+    if (mobilePurchaseAccess(session, "edit") === "local") {
+      const supplier = await tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { supplierType: true } });
+      if (supplier?.supplierType !== "local" || (actor.branchScope && purchase.locationId !== actor.branchScope)) throw new NotFoundError("Purchase not found");
+    }
 
     const items = asArray<StoredPurchaseItem>(purchase.items);
     const itemById = new Map(items.map((i) => [i.id, i]));

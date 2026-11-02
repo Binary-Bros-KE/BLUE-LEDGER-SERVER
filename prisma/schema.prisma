@@ -897,6 +897,8 @@ model Supplier {
   bankName               String?
   bankAccountName        String?
   bankAccountNumber      String?
+  /// "local" | "international". What a local-credit-purchases role may see, and the split in "what we owe".
+  supplierType           String  @default("local")
   creditLimitCents       Int?
   status                 String
   notes                  String?

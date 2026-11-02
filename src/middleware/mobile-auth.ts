@@ -151,3 +151,18 @@ export function requireSuperAdmin(req: Request, _res: Response, next: NextFuncti
   }
   next();
 }
+
+/** requireMobilePermission for a route two grants can open. Must run after requireOwnerAppAccess, which
+ * is what loads session.permissions. */
+export function requireMobilePermissionAnyOf(checks: Array<[string, string]>) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const session = req.mobileSession;
+    if (!session) {
+      throw new HttpError(401, "Not authenticated");
+    }
+    if (!session.isSuperAdmin && !checks.some(([module, action]) => session.permissions?.[module]?.includes(action))) {
+      throw new HttpError(403, "Your account doesn't have access to this — ask your Super Admin to grant it.");
+    }
+    next();
+  };
+}

@@ -196,7 +196,10 @@ export type MobileCreateRiderInput = z.infer<typeof mobileCreateRiderSchema>;
 /** Mirrors DESKTOP's own QuickCreateSupplierModal — businessName + phone1 required, contactPerson
  * optional, paymentOption hardcoded to "cash" (everything else editable later from DESKTOP's
  * Suppliers screen). Backs Checkout's "Sourced from another shop" supplier picker. */
+const mobileSupplierType = z.enum(["local", "international"]);
+
 export const mobileCreateSupplierSchema = z.object({
+  supplierType: mobileSupplierType.optional(),
   businessName: z.string().trim().min(1, "Business name is required"),
   contactPerson: z.string().trim().optional(),
   phone1: z.string().trim().min(1, "Phone is required"),
@@ -856,6 +859,8 @@ export const mobileUpdateCustomerSchema = z.object({
 /** The day-to-day subset of DESKTOP's supplierInputSchema (country/county/website/alternative M-Pesa
  * number stay DESKTOP-only and are left untouched by a mobile save) — plus status. */
 export const mobileUpdateSupplierSchema = z.object({
+  /** Optional: an older app version's save leaves it untouched. */
+  supplierType: mobileSupplierType.optional(),
   businessName: z.string().trim().min(1, "Business name is required").max(200),
   contactPerson: mobileOptionalText(150),
   phone1: z.string().trim().min(1, "Phone number is required").max(30),
