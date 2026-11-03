@@ -569,8 +569,8 @@ const mobileUnitConfigSchema = z
       .max(5),
   })
   .nullable()
-  .optional()
-  .transform((value) => value ?? null);
+  // Absent means "leave as is" on an update, so an older cached app can't wipe a product's units.
+  .optional();
 
 const mobileProductFields = z.object({
   name: z.string().trim().min(1, "Product name is required").max(200),

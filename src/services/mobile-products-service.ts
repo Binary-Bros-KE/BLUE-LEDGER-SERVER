@@ -231,7 +231,7 @@ function productWriteFields(parsed: MobileUpdateProductInput, vatRatePercent: nu
     categoryId: parsed.categoryId,
     storefrontId: parsed.storefrontId,
     unitOfMeasure: parsed.unitOfMeasure,
-    unitConfigJson: parsed.unitConfig === null ? Prisma.JsonNull : parsed.unitConfig,
+    ...(parsed.unitConfig === undefined ? {} : { unitConfigJson: parsed.unitConfig === null ? Prisma.JsonNull : parsed.unitConfig }),
     description: parsed.description,
     buyingPriceCents: parsed.buyingPriceCents,
     sellingPriceCents: parsed.sellingPriceCents,
@@ -332,6 +332,7 @@ export async function updateProduct(session: MobileSession, productId: string, i
       // Stock is counted in the base unit: "2" would silently go from 2 kg to 2 g. A new base unit is
       // only safe before any stock has moved.
       if (parsed.unitOfMeasure !== existing.unitOfMeasure) {
+        // (The same check DESKTOP's updateProduct makes.)
         const moved = await tx.stockMovement.findFirst({ where: { tenantId, productId }, select: { id: true } });
         if (moved) {
           throw new HttpError(
