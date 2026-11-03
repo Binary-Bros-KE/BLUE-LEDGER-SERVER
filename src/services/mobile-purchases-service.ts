@@ -1,3 +1,4 @@
+import { seesInternationalSuppliers } from "./mobile-suppliers-service.js";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
@@ -151,14 +152,14 @@ export async function listPurchases(session: MobileSession, locationId: string |
 
   return withTenantContext(tenantId, async (tx) => {
     const localBranch = localOnly ? (await loadActor(tx, session)).branchScope : null;
-    const localSuppliers = localOnly ? await tx.supplier.findMany({ where: { tenantId, supplierType: "local" }, select: { id: true } }) : [];
+    const localSuppliersOnly = localOnly || !seesInternationalSuppliers(session);
+    const localSuppliers = localSuppliersOnly ? await tx.supplier.findMany({ where: { tenantId, supplierType: "local" }, select: { id: true } }) : [];
     const purchases = await tx.purchase.findMany({
       where: {
         tenantId,
         ...(locationId ? { locationId } : {}),
-        ...(localOnly
-          ? { status: { not: "draft" }, supplierId: { in: localSuppliers.map((s) => s.id) }, ...(localBranch ? { locationId: localBranch } : {}) }
-          : {}),
+        ...(localSuppliersOnly ? { supplierId: { in: localSuppliers.map((s) => s.id) } } : {}),
+        ...(localOnly ? { status: { not: "draft" }, ...(localBranch ? { locationId: localBranch } : {}) } : {}),
       },
       orderBy: { localCreatedAt: "desc" },
       take: 200,
@@ -223,7 +224,9 @@ export async function getPurchase(session: MobileSession, purchaseId: string): P
   const access = mobilePurchaseAccess(session, "view");
   if (!access) return null;
   const detail = await loadPurchaseDetail(session.tenantId, purchaseId);
-  if (!detail || access === "all") return detail;
+  if (!detail) return null;
+  if (detail.supplierType !== "local" && !seesInternationalSuppliers(session)) return null;
+  if (access === "all") return detail;
   const branchScope = await withTenantContext(session.tenantId, async (tx) => (await loadActor(tx, session)).branchScope);
   if (detail.supplierType !== "local" || detail.status === "draft" || (branchScope && detail.locationId !== branchScope)) return null;
   return { ...detail, paymentStatus: "", amountPaidCents: 0, balanceDueCents: 0, payments: [] };
@@ -394,6 +397,17 @@ async function loadActor(tx: Prisma.TransactionClient, session: MobileSession) {
     branchScope: session.isSuperAdmin ? null : actor.branchId,
     mobileDeviceSequence: actor.mobileDeviceSequence,
   };
+}
+
+/** loadPurchase for an action someone asked for: international purchases read as not existing to a role
+ * that can't see international suppliers. */
+async function loadVisiblePurchase(tx: Prisma.TransactionClient, session: MobileSession, purchaseId: string) {
+  const purchase = await loadPurchase(tx, session.tenantId, purchaseId);
+  if (!seesInternationalSuppliers(session)) {
+    const supplier = await tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { supplierType: true } });
+    if (supplier?.supplierType !== "local") throw new NotFoundError("Purchase not found");
+  }
+  return purchase;
 }
 
 async function loadPurchase(tx: Prisma.TransactionClient, tenantId: string, purchaseId: string) {
@@ -606,6 +620,7 @@ export async function createPurchaseInTx(
 
     const actor = await loadActor(tx, session);
     const { supplier, location } = await validatePurchaseHeader(tx, tenantId, actor.branchScope, parsed);
+    if (supplier.supplierType !== "local" && !seesInternationalSuppliers(session)) throw new HttpError(403, "You can only record purchases from local suppliers");
     const localOnly = mobilePurchaseAccess(session, "create") === "local";
     if (localOnly) {
       if (supplier.supplierType !== "local") throw new HttpError(403, "You can only record purchases from local suppliers");
@@ -678,11 +693,12 @@ export async function updateDraftPurchase(session: MobileSession, purchaseId: st
   const now = new Date();
 
   return withTenantContext(tenantId, async (tx) => {
-    const purchase = await loadPurchase(tx, tenantId, purchaseId);
+    const purchase = await loadVisiblePurchase(tx, session, purchaseId);
     if (purchase.status !== "draft") throw new HttpError(400, "Only a draft purchase can be edited here — this one has already been placed");
 
     const actor = await loadActor(tx, session);
     const { supplier, location } = await validatePurchaseHeader(tx, tenantId, actor.branchScope, parsed, purchaseId);
+    if (supplier.supplierType !== "local" && !seesInternationalSuppliers(session)) throw new HttpError(403, "You can only record purchases from local suppliers");
     const cart = await preparePurchaseLines(tx, tenantId, parsed.items, parsed.shippingCostCents, now);
     const ordered = parsed.intent === "ordered";
 
@@ -737,7 +753,7 @@ export async function listProductCosts(tenantId: string): Promise<Record<string,
 export async function markPurchaseOrdered(session: MobileSession, purchaseId: string): Promise<{ id: string }> {
   const now = new Date();
   return withTenantContext(session.tenantId, async (tx) => {
-    const purchase = await loadPurchase(tx, session.tenantId, purchaseId);
+    const purchase = await loadVisiblePurchase(tx, session, purchaseId);
     if (purchase.status !== "draft") throw new HttpError(400, "Only draft purchases can be marked as ordered");
     const actor = await loadActor(tx, session);
 
@@ -775,7 +791,7 @@ export async function markPurchaseOrdered(session: MobileSession, purchaseId: st
 export async function cancelPurchase(session: MobileSession, purchaseId: string): Promise<{ id: string }> {
   const now = new Date();
   return withTenantContext(session.tenantId, async (tx) => {
-    const purchase = await loadPurchase(tx, session.tenantId, purchaseId);
+    const purchase = await loadVisiblePurchase(tx, session, purchaseId);
     if (purchase.status === "cancelled") throw new HttpError(400, "This purchase is already cancelled");
     if (purchase.status === "partially_received" || purchase.status === "received") {
       throw new HttpError(400, "This purchase already has received stock and can't be cancelled");
@@ -800,7 +816,7 @@ export async function receivePurchaseGoods(session: MobileSession, purchaseId: s
   const { tenantId } = session;
 
   return withTenantContext(tenantId, async (tx) => {
-    const purchase = await loadPurchase(tx, tenantId, purchaseId);
+    const purchase = await loadVisiblePurchase(tx, session, purchaseId);
     if (purchase.status !== "ordered" && purchase.status !== "partially_received") {
       throw new HttpError(400, "Only ordered or partially received purchases can receive stock");
     }
@@ -927,7 +943,7 @@ export async function recordPurchasePayment(
   const { tenantId } = session;
 
   return withTenantContext(tenantId, async (tx) => {
-    const purchase = await loadPurchase(tx, tenantId, purchaseId);
+    const purchase = await loadVisiblePurchase(tx, session, purchaseId);
     if (purchase.status === "cancelled") throw new HttpError(400, "This purchase has been cancelled");
     if (purchase.status === "draft") throw new HttpError(400, "This purchase hasn't been ordered yet — place the order before recording a payment");
 

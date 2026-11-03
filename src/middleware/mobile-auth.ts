@@ -88,7 +88,7 @@ export async function requireOwnerAppAccess(req: Request, _res: Response, next: 
     }
 
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
-    session.permissions = rolePermissions(role?.permissionsJson);
+    session.permissions = rolePermissions(role?.permissionsJson, role?.roleName);
     session.isSuperAdmin = role?.isSuperAdmin ?? false;
 
     if (!session.isSuperAdmin && employee.branchId) {
@@ -126,7 +126,7 @@ export function requireMobilePermission(module: string, action: string) {
         }
         const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
         session.isSuperAdmin = role?.isSuperAdmin ?? false;
-        return rolePermissions(role?.permissionsJson);
+        return rolePermissions(role?.permissionsJson, role?.roleName);
       });
       session.permissions = permissions;
     }
