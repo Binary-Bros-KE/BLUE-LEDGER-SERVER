@@ -558,7 +558,7 @@ async function preparePurchaseLines(tx: Prisma.TransactionClient, tenantId: stri
   const items: StoredPurchaseItem[] = lines.map((item) => {
     const product = productById.get(item.productId);
     if (!product) throw new NotFoundError("One of the selected products was not found");
-    const taxableCents = item.orderedQuantity * item.unitCostCents - item.discountAmountCents;
+    const taxableCents = Math.round(item.orderedQuantity * item.unitCostCents) - item.discountAmountCents;
     const { grossCents, taxCents } = computeLineTax(taxableCents, item.taxType, resolveProductTaxConfig(product, tenantTaxConfig));
     return {
       id: `purchase_item_${randomUUID()}`,
@@ -577,7 +577,7 @@ async function preparePurchaseLines(tx: Prisma.TransactionClient, tenantId: stri
   });
   return {
     items,
-    subtotalCents: items.reduce((sum, i) => sum + i.orderedQuantity * i.unitCostCents, 0),
+    subtotalCents: items.reduce((sum, i) => sum + Math.round(i.orderedQuantity * i.unitCostCents), 0),
     discountAmountCents: items.reduce((sum, i) => sum + i.discountAmountCents, 0),
     taxAmountCents: items.reduce((sum, i) => sum + i.taxAmountCents, 0),
     grandTotalCents: items.reduce((sum, i) => sum + i.lineTotalCents, 0) + shippingCostCents,

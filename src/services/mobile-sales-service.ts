@@ -381,7 +381,7 @@ export async function requestSaleReturn(
         productId: saleItem.productId,
         quantity: requested.quantity,
         unitPriceCents: saleItem.unitPriceCents,
-        lineTotalCents: saleItem.unitPriceCents * requested.quantity,
+        lineTotalCents: Math.round(saleItem.unitPriceCents * requested.quantity),
         createdAt: new Date().toISOString(),
       };
     });

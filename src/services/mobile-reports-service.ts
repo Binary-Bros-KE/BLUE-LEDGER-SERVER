@@ -1,4 +1,5 @@
 import { withTenantContext } from "../lib/tenant-context.js";
+import { formatQuantity, parseUnitConfig } from "../lib/product-units.js";
 import { prisma } from "../prisma.js";
 import { mobileProductPerformanceQuerySchema, mobileStockValueQuerySchema } from "../schemas/mobile.js";
 
@@ -47,6 +48,8 @@ export type StockValueProduct = {
   name: string;
   sku: string;
   units: number;
+  /** units in the units people think in ("25 kg"). */
+  unitsLabel: string;
   costValueCents: number;
   retailValueCents: number;
 };
@@ -75,7 +78,7 @@ export async function getStockValueReport(tenantId: string, query: unknown, forc
       tx.location.findMany({ where: { tenantId, status: "active", ...(locationId ? { id: locationId } : {}) }, select: { id: true, locationName: true, locationType: true } }),
       tx.product.findMany({
         where: { tenantId, status: "active", trackStock: true },
-        select: { id: true, name: true, sku: true, buyingPriceCents: true, sellingPriceCents: true, reorderLevel: true },
+        select: { id: true, name: true, sku: true, buyingPriceCents: true, sellingPriceCents: true, reorderLevel: true, unitOfMeasure: true, unitConfigJson: true },
       }),
       tx.inventory.findMany({ where: { tenantId, ...(locationId ? { locationId } : {}) }, select: { productId: true, locationId: true, quantity: true } }),
     ]);
@@ -98,7 +101,7 @@ export async function getStockValueReport(tenantId: string, query: unknown, forc
         retailValueCents += units * product.sellingPriceCents;
         if (row.quantity <= 0) outOfStockCount += 1;
         else if (product.reorderLevel > 0 && row.quantity < product.reorderLevel) lowStockCount += 1;
-        const agg = byProduct.get(product.id) ?? { productId: product.id, name: product.name, sku: product.sku, units: 0, costValueCents: 0, retailValueCents: 0 };
+        const agg = byProduct.get(product.id) ?? { productId: product.id, name: product.name, sku: product.sku, units: 0, unitsLabel: "", costValueCents: 0, retailValueCents: 0 };
         agg.units += units;
         agg.costValueCents += units * product.buyingPriceCents;
         agg.retailValueCents += units * product.sellingPriceCents;
@@ -110,14 +113,24 @@ export async function getStockValueReport(tenantId: string, query: unknown, forc
         isMainStore: location.locationType === "distribution_center",
         productCount: rows.filter((r) => r.quantity > 0).length,
         totalUnits,
-        costValueCents,
-        retailValueCents,
+        costValueCents: Math.round(costValueCents),
+        retailValueCents: Math.round(retailValueCents),
         lowStockCount,
         outOfStockCount,
       };
     });
 
-    const inStock = [...byProduct.values()].filter((p) => p.units > 0);
+    const inStock = [...byProduct.values()]
+      .filter((p) => p.units > 0)
+      .map((p) => {
+        const product = productById.get(p.productId);
+        return {
+          ...p,
+          unitsLabel: formatQuantity(p.units, product?.unitOfMeasure ?? null, parseUnitConfig(product?.unitConfigJson)),
+          costValueCents: Math.round(p.costValueCents),
+          retailValueCents: Math.round(p.retailValueCents),
+        };
+      });
 
     return {
       currency: tenant.currency,

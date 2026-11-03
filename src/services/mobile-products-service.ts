@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import { Prisma } from "@prisma/client";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
@@ -114,6 +115,8 @@ export type MobileProductEditData = {
   categoryId: string | null;
   storefrontId: string | null;
   unitOfMeasure: string | null;
+  /** Selling in several units — see lib/product-units.ts. */
+  unitConfig: ProductUnitConfig | null;
   description: string | null;
   buyingPriceCents: number;
   sellingPriceCents: number;
@@ -142,6 +145,7 @@ export async function getProductForEdit(tenantId: string, productId: string): Pr
       categoryId: p.categoryId,
       storefrontId: p.storefrontId,
       unitOfMeasure: p.unitOfMeasure,
+      unitConfig: parseUnitConfig(p.unitConfigJson),
       description: p.description,
       buyingPriceCents: p.buyingPriceCents,
       sellingPriceCents: p.sellingPriceCents,
@@ -227,6 +231,7 @@ function productWriteFields(parsed: MobileUpdateProductInput, vatRatePercent: nu
     categoryId: parsed.categoryId,
     storefrontId: parsed.storefrontId,
     unitOfMeasure: parsed.unitOfMeasure,
+    unitConfigJson: parsed.unitConfig === null ? Prisma.JsonNull : parsed.unitConfig,
     description: parsed.description,
     buyingPriceCents: parsed.buyingPriceCents,
     sellingPriceCents: parsed.sellingPriceCents,

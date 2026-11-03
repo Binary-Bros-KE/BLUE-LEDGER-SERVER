@@ -229,6 +229,7 @@ export async function getQuotationEditData(tenantId: string, id: string): Promis
         productId: item.productId,
         quantity: item.quantity,
         unitPriceCents: item.unitPriceCents,
+        unitCode: item.unitCode ?? null,
         discountAmountCents: item.discountAmountCents,
         isLocallySourced: item.isLocallySourced,
         localCostCents: item.localCostCents,
@@ -450,6 +451,7 @@ function buildConversionItems(
     productId: string;
     quantity: number;
     unitPriceCents: number;
+    unitCode?: string | null;
     discountAmountCents: number;
     isLocallySourced: boolean;
     localCostCents: number | null;
@@ -477,6 +479,7 @@ function buildConversionItems(
       // Frozen price carries over unchanged even under a quantity override — same as DESKTOP's own
       // repriceLineForQuantity keeping the frozen unit price and only re-deriving discount/tax.
       unitPriceCents: item.unitPriceCents,
+      unitCode: item.unitCode ?? null,
       isLocallySourced: sourced ? true : item.isLocallySourced,
       localCostCents: sourced ? sourced.localCostCents : (item.localCostCents ?? undefined),
       localSupplierId: sourced ? sourced.localSupplierId : (item.localSupplierId ?? undefined),

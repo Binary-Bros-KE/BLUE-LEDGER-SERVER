@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { displayLine } from "../lib/product-units.js";
 import { env } from "../env.js";
 import { formatDocumentDate, formatDocumentDateTime } from "../lib/document-date.js";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
@@ -278,6 +279,9 @@ type RawItem = {
   productId: string;
   quantity: number;
   unitPriceCents: number;
+  /** The unit it was sold in — see lib/product-units.ts. Absent on older lines. */
+  unitCode?: string | null;
+  unitFactor?: number | null;
   discountAmountCents: number;
   taxType: string;
   taxAmountCents: number;
@@ -464,6 +468,12 @@ function asTaxableServiceCharges(serviceCharges: unknown): TaxableServiceCharge[
 /** Exported for reuse by the Owner App's mobile-sales-service.ts — the owner viewing their own
  * tenant's own document is a plain authenticated read, not a public-token share, so it calls this
  * directly instead of minting a ShareLink. Same view-model either way — one source of truth. */
+/** "Rice (kg)", 1.5 x KES 175 — a line printed in the unit it was sold in. */
+function sharedLineUnits(name: string, item: RawItem): { name: string; quantity: number; unitPriceCents: number } {
+  const line = displayLine(item);
+  return { name: line.unitSuffix ? `${name} (${line.unitSuffix})` : name, quantity: line.quantity, unitPriceCents: line.unitPriceCents };
+}
+
 export async function buildSharedDocument(tenantId: string, entity: "sale" | "quotation", entityId: string): Promise<SharedDocumentResult | null> {
   const tenantRow = await prisma.tenant.findUnique({
     where: { id: tenantId },
@@ -505,10 +515,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         hasDeliveryNote: sale.delivery !== null,
         deliveryIsDelivered: (sale.delivery as RawDelivery)?.isDelivered ?? null,
         items: items.map((item) => ({
-          name: withVariant(productById.get(item.productId)?.name ?? "Unknown product", item.variantLabel),
+          ...sharedLineUnits(withVariant(productById.get(item.productId)?.name ?? "Unknown product", item.variantLabel), item),
           sku: productById.get(item.productId)?.sku ?? null,
-          quantity: item.quantity,
-          unitPriceCents: item.unitPriceCents,
           discountAmountCents: item.discountAmountCents,
           taxAmountCents: item.taxAmountCents,
           lineTotalCents: item.lineTotalCents,
@@ -581,10 +589,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       hasDeliveryNote: quotation.delivery !== null,
       deliveryIsDelivered: (quotation.delivery as RawDelivery)?.isDelivered ?? null,
       items: items.map((item) => ({
-        name: withVariant(productById.get(item.productId)?.name ?? "Unknown product", item.variantLabel),
+        ...sharedLineUnits(withVariant(productById.get(item.productId)?.name ?? "Unknown product", item.variantLabel), item),
         sku: productById.get(item.productId)?.sku ?? null,
-        quantity: item.quantity,
-        unitPriceCents: item.unitPriceCents,
         discountAmountCents: item.discountAmountCents,
         taxAmountCents: item.taxAmountCents,
         lineTotalCents: item.lineTotalCents,

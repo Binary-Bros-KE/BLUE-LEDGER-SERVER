@@ -91,7 +91,10 @@ export const mobileCheckoutItemSchema = z.object({
   productId: z.string().trim().min(1),
   quantity: z.coerce.number().int().min(1),
   discountAmountCents: z.coerce.number().int().min(0).default(0),
-  unitPriceCents: z.coerce.number().int().min(0).optional(),
+  /** Per BASE unit, and so possibly fractional — see lib/product-units.ts. */
+  unitPriceCents: z.coerce.number().min(0).optional(),
+  /** The unit this line was sold in (kg, carton); `quantity` is always in base units. */
+  unitCode: z.string().trim().min(1).max(30).nullish(),
   isLocallySourced: z.boolean().optional().default(false),
   localCostCents: z.coerce.number().int().min(0).optional(),
   localSupplierId: z.string().trim().min(1).optional(),
@@ -531,7 +534,9 @@ export const MOBILE_UNIT_OF_MEASURE_VALUES = [
   "bottle", "can", "bag", "sack", "bundle", "tray", "tube", "jar", "bucket", "plate", "sheet",
 ] as const;
 
-const mobilePriceCents = z.coerce.number().int().min(0).max(100_000_000_000);
+/** Not .int(): a product sold in several units keeps its price per base unit, which can be a fraction
+ * of a cent-denominated whole (KES 175/kg = 17.5 cents per gram — see lib/product-units.ts). */
+const mobilePriceCents = z.coerce.number().min(0).max(100_000_000_000);
 const mobileNullablePriceCents = mobilePriceCents.nullable().optional().transform((value) => value ?? null);
 const mobileOptionalText = (max: number) =>
   z
@@ -546,6 +551,27 @@ const mobileOptionalText = (max: number) =>
  * bounds, same uppercased SKU, same "minimum price can't exceed selling price" refinement. Online
  * store content, variants, brand, short name and supplier SKU stay DESKTOP-only and are never
  * touched by a mobile edit (mobile-products-service.ts only writes the fields listed here). */
+/** See lib/product-units.ts — null = the product sells in one unit only. */
+const mobileUnitConfigSchema = z
+  .object({
+    kind: z.enum(["measure", "pack"]),
+    priceUnit: z.string().trim().min(1).max(30).nullable(),
+    defaultSaleUnit: z.string().trim().min(1).max(30).nullable(),
+    units: z
+      .array(
+        z.object({
+          code: z.string().trim().min(1, "Give the unit a name").max(30),
+          factor: z.coerce.number().int().min(2, "A unit must hold at least 2 of the base unit").max(10_000_000),
+          priceCents: z.coerce.number().min(0).max(100_000_000_000).nullable(),
+        }),
+      )
+      .min(1)
+      .max(5),
+  })
+  .nullable()
+  .optional()
+  .transform((value) => value ?? null);
+
 const mobileProductFields = z.object({
   name: z.string().trim().min(1, "Product name is required").max(200),
   sku: z
@@ -558,6 +584,7 @@ const mobileProductFields = z.object({
   categoryId: z.string().trim().min(1).nullable().optional().transform((value) => value ?? null),
   storefrontId: z.string().trim().min(1).nullable().optional().transform((value) => value ?? null),
   unitOfMeasure: z.enum(MOBILE_UNIT_OF_MEASURE_VALUES).nullable().optional().transform((value) => value ?? null),
+  unitConfig: mobileUnitConfigSchema,
   description: mobileOptionalText(1000),
   buyingPriceCents: mobilePriceCents,
   sellingPriceCents: mobilePriceCents,
@@ -632,15 +659,17 @@ export const mobileStockAdjustmentSchema = z
 export type MobileStockAdjustmentInput = z.infer<typeof mobileStockAdjustmentSchema>;
 
 const mobileCents = z.coerce.number().int().min(0).max(100_000_000_000);
+/** Per base unit, so possibly fractional — see lib/product-units.ts. */
+const mobileUnitCents = z.coerce.number().min(0).max(100_000_000_000);
 
 /** Mirrors DESKTOP's own purchaseItemInputSchema (shared/schemas/purchase.ts) — line tax is always
  * computed server-side from taxType + cost, never taken from the client. */
 const mobilePurchaseItemSchema = z.object({
   productId: z.string().trim().min(1),
   orderedQuantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
-  unitCostCents: mobileCents,
+  unitCostCents: mobileUnitCents,
   /** Optional new selling price — pushed onto the product when the order is placed, same as DESKTOP. */
-  sellingPriceCents: mobileCents.nullable().optional().transform((value) => value ?? null),
+  sellingPriceCents: mobileUnitCents.nullable().optional().transform((value) => value ?? null),
   discountAmountCents: mobileCents.optional().default(0),
   taxType: z.enum(["vat", "exempted", "zero_rated"]).default("vat"),
 });

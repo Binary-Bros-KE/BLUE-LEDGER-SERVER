@@ -1,3 +1,4 @@
+import { formatQuantity, parseUnitConfig } from "../lib/product-units.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 
@@ -12,6 +13,9 @@ export type MobileStockMovement = {
   locationName: string;
   movementType: MobileStockMovementType;
   quantityChange: number;
+  /** quantityChange / balanceAfter in the units people think in ("-1.5 kg", "25 kg"). */
+  quantityLabel: string;
+  balanceLabel: string | null;
   /** That location's stock right after this movement — null on rows recorded before it was kept. */
   balanceAfter: number | null;
   /** Quantity moved x the product's CURRENT buying price — a live snapshot, not a price frozen at
@@ -42,7 +46,7 @@ export async function listStockMovements(tenantId: string, locationId: string | 
     const productIds = [...new Set(movements.map((m) => m.productId))];
     const locationIds = [...new Set(movements.map((m) => m.locationId))];
     const [products, locations] = await Promise.all([
-      tx.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, sku: true, buyingPriceCents: true } }),
+      tx.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, sku: true, buyingPriceCents: true, unitOfMeasure: true, unitConfigJson: true } }),
       tx.location.findMany({ where: { id: { in: locationIds } }, select: { id: true, locationName: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
@@ -50,6 +54,8 @@ export async function listStockMovements(tenantId: string, locationId: string | 
 
     return movements.map((movement) => {
       const product = productById.get(movement.productId);
+      const units = parseUnitConfig(product?.unitConfigJson);
+      const label = (quantity: number) => (units ? formatQuantity(quantity, product?.unitOfMeasure ?? null, units) : String(quantity));
       return {
         id: movement.id,
         productId: movement.productId,
@@ -59,8 +65,10 @@ export async function listStockMovements(tenantId: string, locationId: string | 
         locationName: locationNameById.get(movement.locationId) ?? "—",
         movementType: movement.movementType as MobileStockMovementType,
         quantityChange: movement.quantityChange,
+        quantityLabel: `${movement.quantityChange > 0 ? "+" : ""}${label(movement.quantityChange)}`,
+        balanceLabel: movement.newQuantity === null ? null : label(movement.newQuantity),
         balanceAfter: movement.newQuantity,
-        valueCents: Math.abs(movement.quantityChange) * (product?.buyingPriceCents ?? 0),
+        valueCents: Math.round(Math.abs(movement.quantityChange) * (product?.buyingPriceCents ?? 0)),
         notes: movement.notes,
         createdAt: movement.localCreatedAt.toISOString(),
         currency: tenant.currency,
