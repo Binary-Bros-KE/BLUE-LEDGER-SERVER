@@ -325,6 +325,22 @@ export async function updateProduct(session: MobileSession, productId: string, i
     }
     await assertCategoryBelongsToTenant(tx, tenantId, parsed.categoryId);
     await assertLocationBelongsToTenant(tx, tenantId, parsed.storefrontId);
+    if (parsed.unitConfig) {
+      if (existing.variantGroupId !== null || existing.variantConfigJson !== null) {
+        throw new HttpError(400, "A product with variants can't also be sold in several units");
+      }
+      // Stock is counted in the base unit: "2" would silently go from 2 kg to 2 g. A new base unit is
+      // only safe before any stock has moved.
+      if (parsed.unitOfMeasure !== existing.unitOfMeasure) {
+        const moved = await tx.stockMovement.findFirst({ where: { tenantId, productId }, select: { id: true } });
+        if (moved) {
+          throw new HttpError(
+            400,
+            `This product's stock is already counted in ${existing.unitOfMeasure ?? "units"}, so it can't switch to counting in ${parsed.unitOfMeasure ?? "units"}. Create a new product for it instead.`,
+          );
+        }
+      }
+    }
 
     // SKU is editable (same as DESKTOP) but never blanked — an empty field keeps the current one.
     const sku = parsed.sku ?? existing.sku;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import type { Prisma } from "@prisma/client";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
@@ -49,6 +50,9 @@ type RawPurchaseItem = {
   id: string;
   productId: string;
   sellingPriceCents?: number | null;
+  /** Base unit + selling in several units — see lib/product-units.ts. */
+  unitOfMeasure?: string | null;
+  unitConfig?: ProductUnitConfig | null;
   orderedQuantity: number;
   receivedQuantity: number;
   unitCostCents: number;
@@ -240,7 +244,7 @@ async function loadPurchaseDetail(tenantId: string, purchaseId: string): Promise
     const [location, supplier, products] = await Promise.all([
       tx.location.findUnique({ where: { id: purchase.locationId }, select: { locationName: true } }),
       tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { businessName: true, phone1: true, supplierType: true } }),
-      tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true } }),
+      tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true, unitOfMeasure: true, unitConfigJson: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
     const origin = await loadPurchaseOrigin(tx, tenantId, purchase.id);
@@ -273,6 +277,8 @@ async function loadPurchaseDetail(tenantId: string, purchaseId: string): Promise
         sellingPriceCents: item.sellingPriceCents ?? null,
         productName: productById.get(item.productId)?.name ?? "Unknown product",
         sku: productById.get(item.productId)?.sku ?? null,
+        unitOfMeasure: productById.get(item.productId)?.unitOfMeasure ?? null,
+        unitConfig: parseUnitConfig(productById.get(item.productId)?.unitConfigJson),
         orderedQuantity: item.orderedQuantity,
         receivedQuantity: item.receivedQuantity,
         unitCostCents: item.unitCostCents,
