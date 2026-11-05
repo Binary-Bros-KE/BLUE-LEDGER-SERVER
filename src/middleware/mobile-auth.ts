@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { env } from "../env.js";
 import { HttpError } from "../lib/http-error.js";
+import { rolePermissions } from "../lib/role-defaults.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { computeWorkingHoursLockStatus, type WorkingHoursConfig } from "../lib/working-hours-lock.js";
 
@@ -87,7 +88,7 @@ export async function requireOwnerAppAccess(req: Request, _res: Response, next: 
     }
 
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
-    session.permissions = (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
+    session.permissions = rolePermissions(role?.permissionsJson);
     session.isSuperAdmin = role?.isSuperAdmin ?? false;
 
     if (!session.isSuperAdmin && employee.branchId) {
@@ -125,7 +126,7 @@ export function requireMobilePermission(module: string, action: string) {
         }
         const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
         session.isSuperAdmin = role?.isSuperAdmin ?? false;
-        return (role?.permissionsJson as Record<string, string[]> | undefined) ?? {};
+        return rolePermissions(role?.permissionsJson);
       });
       session.permissions = permissions;
     }
@@ -149,4 +150,19 @@ export function requireSuperAdmin(req: Request, _res: Response, next: NextFuncti
     throw new HttpError(403, "Only your Super Admin can access this.");
   }
   next();
+}
+
+/** requireMobilePermission for a route two grants can open. Must run after requireOwnerAppAccess, which
+ * is what loads session.permissions. */
+export function requireMobilePermissionAnyOf(checks: Array<[string, string]>) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    const session = req.mobileSession;
+    if (!session) {
+      throw new HttpError(401, "Not authenticated");
+    }
+    if (!session.isSuperAdmin && !checks.some(([module, action]) => session.permissions?.[module]?.includes(action))) {
+      throw new HttpError(403, "Your account doesn't have access to this — ask your Super Admin to grant it.");
+    }
+    next();
+  };
 }

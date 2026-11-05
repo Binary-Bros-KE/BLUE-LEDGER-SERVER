@@ -1,3 +1,4 @@
+import { buildSaleVerifications } from "./mpesa-verification-service.js";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
@@ -243,11 +244,25 @@ export async function checkout(tenantId: string, employeeId: string, input: unkn
       const { json: deliveryJson, riderName } = await buildDeliveryJson(tx, tenantId, mobileDeviceSequence, parsed.delivery, now);
       const preparedServiceCharges = buildServiceCharges(parsed.serviceCharges, now);
 
+      const mpesaVerifications = await buildSaleVerifications(tx, {
+        tenantId,
+        locationId,
+        saleId: parsed.id,
+        claimKey: parsed.mpesaClaimKey,
+        entries: split
+          ? split.payments.map((p) => ({ paymentMethodId: p.paymentMethodId, reference: p.reference }))
+          : [{ paymentMethodId: primaryMethodId, reference: primaryReference }],
+        existing: null,
+        // Already happened on the phone while offline: recorded unverified, never refused.
+        enforce: parsed.queuedOffline !== true,
+      });
+
       await tx.sale.create({
         data: {
           id: parsed.id,
           tenantId,
           deviceId: OWNER_APP_DEVICE_ID,
+          mpesaVerifications: mpesaVerifications ? (mpesaVerifications as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
           receiptNumber,
           locationId,
           employeeId,

@@ -1,3 +1,4 @@
+import { rolePermissions } from "../lib/role-defaults.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 
@@ -65,7 +66,7 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       employeeName: `${employee.firstName} ${employee.lastName}`.trim(),
       roleName: role?.roleName ?? null,
       currency: tenant.currency,
-      permissions: (role?.permissionsJson as Record<string, string[]> | undefined) ?? {},
+      permissions: rolePermissions(role?.permissionsJson),
       branchId: employee.branchId,
       branchName: branch?.locationName ?? null,
       defaultIncludeBusinessInfo: branch?.defaultIncludeBusinessInfo ?? null,

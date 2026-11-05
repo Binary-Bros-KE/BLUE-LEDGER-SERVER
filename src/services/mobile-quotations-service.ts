@@ -24,6 +24,7 @@ import {
 } from "../schemas/mobile.js";
 import { OWNER_APP_DEVICE_ID, resolveMobileLocation } from "./mobile-checkout-service.js";
 import { createInvoice, type MobileEditableDelivery, type MobileEditableItem } from "./mobile-invoices-service.js";
+import { buildSaleVerifications } from "./mpesa-verification-service.js";
 import {
   buildSharedDeliveryNote,
   buildSharedDocument,
@@ -99,8 +100,12 @@ export async function listQuotations(tenantId: string, locationId: string | null
 /** The owner viewing their own tenant's own quotation — a plain authenticated read via the exact
  * same view-model the Share feature renders (buildSharedDocument), not a public-token lookup. Same
  * reasoning as mobile-sales-service.ts's getSale. */
-export async function getQuotation(tenantId: string, quotationId: string): Promise<SharedDocumentResult | null> {
-  return buildSharedDocument(tenantId, "quotation", quotationId);
+export async function getQuotation(tenantId: string, quotationId: string): Promise<(SharedDocumentResult & { locationId: string | null }) | null> {
+  const doc = await buildSharedDocument(tenantId, "quotation", quotationId);
+  if (!doc) return null;
+  // The convert form's M-Pesa verification is per storefront.
+  const row = await withTenantContext(tenantId, (tx) => tx.quotation.findUnique({ where: { id: quotationId }, select: { locationId: true } }));
+  return { ...doc, locationId: row?.locationId ?? null };
 }
 
 /** Same non-pricing view-model DESKTOP's own DeliveryNotePreview and the public SHARE page render —
@@ -548,12 +553,22 @@ export async function convertQuotationToSale(tenantId: string, employeeId: strin
       const receiptNumber = await mintMobileDocumentNumber(tx, tenantId, mobileDeviceSequence, RECEIPT_PREFIX, RECEIPT_DIGITS);
       const now = new Date();
       const saleId = `sale_${randomUUID()}`;
+      const mpesaVerifications = await buildSaleVerifications(tx, {
+        tenantId,
+        locationId,
+        saleId,
+        claimKey: parsed.mpesaClaimKey,
+        entries: [{ paymentMethodId: parsed.paymentMethodId, reference: parsed.paymentReference?.trim() || null }],
+        existing: null,
+        enforce: true,
+      });
 
       await tx.sale.create({
         data: {
           id: saleId,
           tenantId,
           deviceId: OWNER_APP_DEVICE_ID,
+          ...(mpesaVerifications ? { mpesaVerifications: mpesaVerifications as unknown as Prisma.InputJsonValue } : {}),
           receiptNumber,
           locationId,
           employeeId,

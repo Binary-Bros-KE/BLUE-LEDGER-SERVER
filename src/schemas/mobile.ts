@@ -133,6 +133,8 @@ export const mobileCheckoutDeliverySchema = z.object({
  * mobile-checkout-service.ts): a retry of an id that already succeeded is treated as a no-op success
  * rather than re-running stock deduction a second time. */
 export const mobileCheckoutSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   id: z.string().trim().min(1, "id is required"),
   locationId: z.string().trim().min(1, "locationId is required"),
   items: z.array(mobileCheckoutItemSchema).min(1, "At least one item is required"),
@@ -194,7 +196,10 @@ export type MobileCreateRiderInput = z.infer<typeof mobileCreateRiderSchema>;
 /** Mirrors DESKTOP's own QuickCreateSupplierModal — businessName + phone1 required, contactPerson
  * optional, paymentOption hardcoded to "cash" (everything else editable later from DESKTOP's
  * Suppliers screen). Backs Checkout's "Sourced from another shop" supplier picker. */
+const mobileSupplierType = z.enum(["local", "international"]);
+
 export const mobileCreateSupplierSchema = z.object({
+  supplierType: mobileSupplierType.optional(),
   businessName: z.string().trim().min(1, "Business name is required"),
   contactPerson: z.string().trim().optional(),
   phone1: z.string().trim().min(1, "Phone is required"),
@@ -240,6 +245,8 @@ export const mobileInvoiceSchema = z.object({
   includeBusinessInfo: z.coerce.boolean().optional().default(true),
   items: z.array(mobileInvoiceItemSchema).min(1, "At least one item is required"),
   initialPayment: mobileInitialPaymentSchema.nullable().optional(),
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   delivery: mobileCheckoutDeliverySchema.optional(),
   serviceCharges: mobileServiceChargesFieldSchema,
   /** Legacy whole-invoice default for lines that don't carry their own stockSource. */
@@ -252,6 +259,8 @@ export const mobileInvoiceSchema = z.object({
 export type MobileInvoiceInput = z.infer<typeof mobileInvoiceSchema>;
 
 export const mobileRecordPaymentSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   paymentMethodId: z.string().trim().min(1, "Select a payment method"),
   amountCents: z.coerce.number().int().positive("Amount must be greater than 0"),
   reference: z.string().trim().optional(),
@@ -261,6 +270,8 @@ export const mobileRecordPaymentSchema = z.object({
 export type MobileRecordPaymentInput = z.infer<typeof mobileRecordPaymentSchema>;
 
 export const mobileMarkPaidSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   paymentMethodId: z.string().trim().min(1, "Select a payment method"),
   reference: z.string().trim().optional(),
   notes: z.string().trim().optional(),
@@ -310,6 +321,8 @@ const mobileConvertSourcedLinesSchema = z
   .default([]);
 
 export const mobileConvertToSaleSchema = z.object({
+  /** Reservation key from /mobile/mpesa/verify, so SERVER can confirm the code was really verified. */
+  mpesaClaimKey: z.string().trim().min(1).max(120).optional(),
   paymentMethodId: z.string().trim().min(1, "Select a payment method"),
   paymentReference: z.string().trim().optional(),
   amountReceivedCents: z.coerce.number().int().min(0).nullable().optional(),
@@ -846,6 +859,8 @@ export const mobileUpdateCustomerSchema = z.object({
 /** The day-to-day subset of DESKTOP's supplierInputSchema (country/county/website/alternative M-Pesa
  * number stay DESKTOP-only and are left untouched by a mobile save) — plus status. */
 export const mobileUpdateSupplierSchema = z.object({
+  /** Optional: an older app version's save leaves it untouched. */
+  supplierType: mobileSupplierType.optional(),
   businessName: z.string().trim().min(1, "Business name is required").max(200),
   contactPerson: mobileOptionalText(150),
   phone1: z.string().trim().min(1, "Phone number is required").max(30),
@@ -863,4 +878,63 @@ export const mobileUpdateSupplierSchema = z.object({
   creditLimitCents: mobileCreditLimitCents,
   notes: mobileOptionalText(1000),
   status: z.enum(["active", "inactive"]),
+});
+
+/** Purchase requisitions (DESKTOP's purchaseRequisitionCreateSchema): each line is EITHER a catalog
+ * product (productId) OR a free-text item (itemName only) an approver links later. `id` is minted by
+ * the phone once per form, so a retried submit can't create it twice. A branch-scoped requester always
+ * requisitions for their own storefront (enforced in the service); only an unassigned one names it. */
+export const mobileCreateRequisitionSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  storefrontId: z.string().trim().min(1).nullable().optional(),
+  notes: mobileOptionalText(1000),
+  items: z
+    .array(
+      z
+        .object({
+          productId: z.string().trim().min(1).nullable().optional(),
+          itemName: z.string().trim().max(200).optional().default(""),
+          quantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+          notes: mobileOptionalText(300),
+        })
+        .refine((item) => Boolean(item.productId) || item.itemName.length > 0, { message: "Pick a product or describe the item" }),
+    )
+    .min(1, "Add at least one item"),
+});
+
+export type MobileCreateRequisitionInput = z.infer<typeof mobileCreateRequisitionSchema>;
+
+/** Editing a PENDING requisition (requester or Super Admin only): the full line list again. A line
+ * carrying an existing `id` keeps it (and any product link an approver already made, if the product
+ * is unchanged); lines left out are removed. */
+export const mobileUpdateRequisitionSchema = z.object({
+  notes: mobileOptionalText(1000),
+  items: z
+    .array(
+      z
+        .object({
+          id: z.string().trim().min(1).nullable().optional(),
+          productId: z.string().trim().min(1).nullable().optional(),
+          itemName: z.string().trim().max(200).optional().default(""),
+          quantity: z.coerce.number().int().positive("Quantity must be greater than 0"),
+          notes: mobileOptionalText(300),
+        })
+        .refine((item) => Boolean(item.productId) || item.itemName.length > 0, { message: "Pick a product or describe the item" }),
+    )
+    .min(1, "Add at least one item"),
+});
+
+export const mobileRejectRequisitionSchema = z.object({
+  reason: z.string().trim().min(1, "A reason is required").max(500),
+});
+
+export const mobileLinkRequisitionItemSchema = z.object({
+  itemId: z.string().trim().min(1),
+  productId: z.string().trim().min(1),
+});
+
+/** Approving = creating the purchase it becomes: exactly mobileCreatePurchaseSchema's body; the
+ * service overrides locationId with the requisition's own storefront. */
+export const mobileApproveRequisitionSchema = mobileCreatePurchaseSchema.extend({
+  locationId: z.string().trim().optional().default(""),
 });

@@ -792,6 +792,8 @@ model Tenant {
   inventoryBalances        Inventory[]
   mpesaTillSettings        MpesaTillSettings[]
   mpesaTransactions        MpesaTransaction[]
+  mpesaPayments            MpesaPayment[]
+  mpesaC2bEndpoints        MpesaC2bEndpoint[]
   billingMpesaTransactions BillingMpesaTransaction[]
   pesapalTransactions      PesapalTransaction[]
   mobileDocumentCounters   MobileDocumentCounter[]
@@ -903,6 +905,8 @@ model Supplier {
   bankName               String?
   bankAccountName        String?
   bankAccountNumber      String?
+  /// "local" | "international". What a local-credit-purchases role may see, and the split in "what we owe".
+  supplierType           String  @default("local")
   creditLimitCents       Int?
   status                 String
   notes                  String?
@@ -1455,6 +1459,9 @@ model Sale {
   /// Already a JSON-text column locally (a list of individual payment entries against this
   /// sale/invoice) — carries straight through as Json.
   payments            Json
+  /// M-Pesa code -> {status, verifiedAt, payerName, amountCents}. Absent for sales with no
+  /// verification in play, which is what hides the indicator for shops that don't use it.
+  mpesaVerifications  Json?
   /// sale_items rows for this sale — {id, productId, quantity, unitPriceCents,
   /// discountAmountCents, taxType, taxAmountCents, lineTotalCents, isLocallySourced,
   /// localCostCents, localSupplierId, sectionLabel, createdAt}[]. taxType is a snapshot of the
@@ -2064,12 +2071,70 @@ model MpesaTillSettings {
   /// STK's own "AccountReference" field, shown to the customer on their phone (e.g. the business
   /// name) — optional, sensible default applied at push time if left blank.
   accountReference String @default("")
+  /// "off" | "loose" | "strict" — see services/mpesa-verification-service.ts. Loose by default: only
+  /// a storefront with a row here (saved till credentials) can verify at all.
+  verificationMode String @default("loose")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([tenantId])
   @@map("mpesa_till_settings")
+}
+
+/// Real money received on a till — C2B confirmations and successful STK pushes, one row per receipt
+/// per tenant. Server-native and not synced. Same "no RLS" reasoning as MpesaTransaction: Safaricom's
+/// callback arrives with no tenant context, so isolation is by explicit tenantId in the service.
+model MpesaPayment {
+  id         String @id @default(uuid())
+  tenantId   String
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  locationId String
+
+  /// The M-Pesa receipt (TransID), uppercase.
+  code        String
+  amountCents Int
+  /// From M-Pesa's own register; may be null. The phone is masked by Safaricom, never the real number.
+  payerName   String?
+  maskedPhone String?
+  /// Safaricom's YYYYMMDDHHmmss, kept as sent.
+  transTime   String?
+  /// "c2b" | "stk"
+  source      String
+
+  /// One-time use: reserved under claimKey while a sale is rung up, then claimedSaleId for good.
+  claimKey            String?
+  reservedAt          DateTime?
+  claimedSaleId       String?
+  claimedAt           DateTime?
+  claimedByEmployeeId String?
+
+  receivedAt DateTime @default(now())
+
+  @@unique([tenantId, code])
+  @@index([tenantId, locationId, amountCents, receivedAt])
+  @@index([claimKey])
+  @@map("mpesa_payments")
+}
+
+/// One per till: the secret token in its registered C2B URLs (callbacks are unsigned, so the token is
+/// what authenticates them). No RLS, same reasoning as MpesaPayment: looked up by token alone.
+model MpesaC2bEndpoint {
+  token      String @id
+  tenantId   String
+  tenant     Tenant @relation(fields: [tenantId], references: [id])
+  locationId String @unique
+  shortcode  String
+
+  /// Set once Safaricom accepts the URLs.
+  registeredAt DateTime?
+  lastError    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@map("mpesa_c2b_endpoints")
 }
 
 /// Durable audit log of every STK push attempt — server-side only (never synced to DESKTOP; see

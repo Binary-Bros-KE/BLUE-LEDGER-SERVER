@@ -12,16 +12,17 @@ const OWNER_APP_DEVICE_ID = "owner-app";
 const SUPPLIER_CODE_PREFIX = "SUP";
 const SUPPLIER_CODE_DIGITS = 6;
 
-export type MobileSupplier = { id: string; businessName: string; phone1: string };
+export type MobileSupplier = { id: string; businessName: string; phone1: string; supplierType: string };
 
-const SUPPLIER_SELECT = { id: true, businessName: true, phone1: true } as const;
+const SUPPLIER_SELECT = { id: true, businessName: true, phone1: true, supplierType: true } as const;
 
 /** Backs Checkout's "Sourced from another shop" supplier picker and every other supplier picker
- * (New Purchase) — the Suppliers tab itself uses listSuppliersWithBalances below. */
-export async function listSuppliers(tenantId: string): Promise<MobileSupplier[]> {
+ * (New Purchase) — the Suppliers tab itself uses listSuppliersWithBalances below. `localOnly` is for a
+ * role with no supplier or purchase access of its own (e.g. a Cashier): international suppliers stay hidden. */
+export async function listSuppliers(tenantId: string, localOnly = false): Promise<MobileSupplier[]> {
   return withTenantContext(tenantId, async (tx) =>
     tx.supplier.findMany({
-      where: { tenantId, status: "active" },
+      where: { tenantId, status: "active", ...(localOnly ? { supplierType: "local" } : {}) },
       select: SUPPLIER_SELECT,
       orderBy: { businessName: "asc" },
     }),
@@ -30,7 +31,7 @@ export async function listSuppliers(tenantId: string): Promise<MobileSupplier[]>
 
 /** The fast path for adding a supplier mid-checkout — mirrors DESKTOP's own QuickCreateSupplierModal:
  * businessName + phone1 required, contactPerson optional, paymentOption hardcoded to "cash". */
-export async function createSupplier(tenantId: string, employeeId: string, input: unknown): Promise<MobileSupplier> {
+export async function createSupplier(tenantId: string, employeeId: string, input: unknown, options: { forceLocal: boolean }): Promise<MobileSupplier> {
   const parsed: MobileCreateSupplierInput = mobileCreateSupplierSchema.parse(input);
   const now = new Date();
 
@@ -48,6 +49,7 @@ export async function createSupplier(tenantId: string, employeeId: string, input
         businessName: parsed.businessName,
         contactPerson: parsed.contactPerson ?? null,
         phone1: parsed.phone1,
+        supplierType: options.forceLocal ? "local" : (parsed.supplierType ?? "local"),
         paymentOption: "cash",
         status: "active",
         localCreatedAt: now,
@@ -162,6 +164,7 @@ export async function adjustSupplierBalance(tenantId: string, employeeId: string
 // ---------------------------------------------------------------------------------------------
 
 export type MobileSupplierDetail = {
+  supplierType: string;
   id: string;
   supplierCode: string;
   businessName: string;
@@ -189,6 +192,7 @@ export async function getSupplierDetail(tenantId: string, supplierId: string): P
     if (!s || s.tenantId !== tenantId) throw new NotFoundError("Supplier not found");
     return {
       id: s.id,
+      supplierType: s.supplierType,
       supplierCode: s.supplierCode,
       businessName: s.businessName,
       contactPerson: s.contactPerson,

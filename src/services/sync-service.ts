@@ -51,7 +51,7 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
  * the OTHER, relation-based variant would need). Found live via this feature's own end-to-end test —
  * a quotation/sale with no delivery attached failed to push until this was added. */
 const NULLABLE_JSON_FIELDS: Partial<Record<SyncEntityName, string[]>> = {
-  sales: ["delivery"],
+  sales: ["delivery", "mpesaVerifications"],
   quotations: ["delivery"],
   products: ["variantConfigJson"],
 };

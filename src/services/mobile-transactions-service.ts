@@ -1,3 +1,4 @@
+import { mpesaStatusOf } from "./mpesa-verification-service.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 
@@ -8,6 +9,8 @@ export type MobileTransactionPartyLabel = "Customer" | "Supplier" | "Employee" |
 export type MobileTransactionRow = {
   id: string;
   transactionCode: string;
+  /** Only on an M-Pesa money-in row with verification in play; absent/null shows nothing. */
+  mpesaVerification?: "verified" | "unverified" | null;
   occurredAt: string;
   locationName: string;
   paymentMethodName: string | null;
@@ -123,6 +126,7 @@ export async function listTransactions(
           rows.push({
             id: `${sale.id}:${payment.id}`,
             transactionCode: payment.reference ?? sale.invoiceNumber,
+            mpesaVerification: mpesaStatusOf(sale.mpesaVerifications, payment.reference),
             occurredAt: payment.receivedAt,
             locationName,
             paymentMethodName: payment.paymentMethodName,
@@ -141,6 +145,7 @@ export async function listTransactions(
         rows.push({
           id: sale.id,
           transactionCode: sale.paymentReference ?? sale.receiptNumber ?? sale.id,
+          mpesaVerification: mpesaStatusOf(sale.mpesaVerifications, sale.paymentReference),
           occurredAt: (sale.completedAt ?? sale.localCreatedAt).toISOString(),
           locationName,
           paymentMethodName: sale.paymentMethodId ? (paymentMethodNameById.get(sale.paymentMethodId) ?? null) : null,

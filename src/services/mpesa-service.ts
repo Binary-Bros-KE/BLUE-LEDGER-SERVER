@@ -17,6 +17,7 @@ import {
   mpesaStkPushSchema,
 } from "../schemas/mpesa.js";
 import { env } from "../env.js";
+import { recordPayment } from "./mpesa-verification-service.js";
 
 /** Never re-query Safaricom (via the MANUAL "Check Status Now" action) more often than this — a
  * cashier double-clicking the button can't turn into hammering Safaricom's API. The passive
@@ -168,6 +169,21 @@ export async function handleMpesaCallback(body: unknown): Promise<void> {
       },
     }),
   );
+
+  // A successful push is real money on this till, so it can be verified and claimed like any other.
+  const receipt = String(findMeta("MpesaReceiptNumber") ?? "");
+  if (status === "success" && receipt) {
+    await recordPayment({
+      tenantId: existing.tenantId,
+      locationId: existing.locationId,
+      code: receipt,
+      amountCents: Math.round(existing.amountCents / 100) * 100,
+      payerName: null,
+      maskedPhone: null,
+      transTime: String(findMeta("TransactionDate") ?? "") || null,
+      source: "stk",
+    });
+  }
 }
 
 export type MpesaStatusResponse = {
