@@ -305,3 +305,22 @@ export async function seedTenantDefaults(tenantId: string, businessName: string)
     }
   });
 }
+
+/** Every permission module and the actions it supports — DESKTOP shared/types/role.ts PERMISSION_MODULES. */
+export const PERMISSION_MODULES = PERMISSION_MODULE_ACTIONS;
+
+/**
+ * A built-in role's out-of-the-box permissions, for "Restore defaults" — null for a role that isn't
+ * one of the defaults (a custom role has nothing to restore to). Purchase Requisitions is filled the
+ * way DESKTOP's withLaterModuleDefaults computes it for roles saved before that module existed:
+ * anyone can raise one, roles that approve purchases also approve requisitions.
+ */
+export function defaultPermissionsForRole(roleName: string): Record<string, string[]> | null {
+  const role = DEFAULT_ROLES.find((r) => r.roleName.toLowerCase() === roleName.trim().toLowerCase());
+  if (!role) return null;
+  const permissions: Record<string, string[]> = JSON.parse(JSON.stringify(role.permissions));
+  if (permissions.purchase_requisitions === undefined) {
+    permissions.purchase_requisitions = permissions.purchases?.includes("approve") ? ["view", "create", "approve"] : ["view", "create"];
+  }
+  return permissions;
+}

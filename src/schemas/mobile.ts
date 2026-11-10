@@ -981,3 +981,15 @@ export const mobileLinkRequisitionItemSchema = z.object({
 export const mobileApproveRequisitionSchema = mobileCreatePurchaseSchema.extend({
   locationId: z.string().trim().optional().default(""),
 });
+
+/** Body for POST /mobile/roles and PATCH /mobile/roles/:id — DESKTOP's roleInputSchema. */
+export const mobileRoleInputSchema = z.object({
+  roleName: z.string().trim().min(1, "Role name is required").max(80),
+  description: z
+    .string()
+    .trim()
+    .max(300)
+    .nullish()
+    .transform((value) => (value ? value : null)),
+  permissions: z.record(z.string(), z.array(z.string())),
+});
