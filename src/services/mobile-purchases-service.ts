@@ -416,6 +416,20 @@ async function syncProductPricingFromOrder(
   items: Array<{ productId: string; unitCostCents: number; sellingPriceCents: number | null }>,
   now: Date,
 ): Promise<void> {
+  // Placing the order makes the cost the product's buying price — never above what it sells for
+  // (the same rule as the product form). Checked for every line before any is written.
+  const products = await tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sellingPriceCents: true } });
+  const productById = new Map(products.map((p) => [p.id, p]));
+  for (const item of items) {
+    const product = productById.get(item.productId);
+    const sellingPriceCents = item.sellingPriceCents ?? product?.sellingPriceCents ?? 0;
+    if (product && item.unitCostCents > sellingPriceCents) {
+      throw new HttpError(
+        400,
+        `"${product.name}" would cost ${(item.unitCostCents / 100).toFixed(2)} but sell for ${(sellingPriceCents / 100).toFixed(2)} — raise its selling price on this order first`,
+      );
+    }
+  }
   for (const item of items) {
     await tx.product.update({
       where: { id: item.productId },

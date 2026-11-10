@@ -598,6 +598,17 @@ const mobileProductFields = z.object({
   allowNegativeStock: z.boolean().default(false),
 });
 
+/** Selling below cost turns every sale into a loss on the reports (a real client's negative margins
+ * came from exactly this — a per-gram buying price typed ten times too high). */
+function buyingNotAboveSelling(data: { buyingPriceCents: number; sellingPriceCents: number }): boolean {
+  return data.buyingPriceCents <= data.sellingPriceCents;
+}
+
+const BUYING_PRICE_REFINEMENT_OPTS = {
+  message: "Buying price can't be higher than the selling price — every sale would be a loss",
+  path: ["buyingPriceCents"] as PropertyKey[],
+};
+
 function minimumPriceNotAboveSelling(data: { minimumPriceCents: number | null; sellingPriceCents: number }): boolean {
   return data.minimumPriceCents === null || data.minimumPriceCents <= data.sellingPriceCents;
 }
@@ -620,11 +631,14 @@ export const mobileCreateProductSchema = mobileProductFields
       .optional()
       .transform((value) => value ?? null),
   })
-  .refine(minimumPriceNotAboveSelling, MINIMUM_PRICE_REFINEMENT_OPTS);
+  .refine(minimumPriceNotAboveSelling, MINIMUM_PRICE_REFINEMENT_OPTS)
+  .refine(buyingNotAboveSelling, BUYING_PRICE_REFINEMENT_OPTS);
 
 export type MobileCreateProductInput = z.infer<typeof mobileCreateProductSchema>;
 
-export const mobileUpdateProductSchema = mobileProductFields.refine(minimumPriceNotAboveSelling, MINIMUM_PRICE_REFINEMENT_OPTS);
+export const mobileUpdateProductSchema = mobileProductFields
+  .refine(minimumPriceNotAboveSelling, MINIMUM_PRICE_REFINEMENT_OPTS)
+  .refine(buyingNotAboveSelling, BUYING_PRICE_REFINEMENT_OPTS);
 
 export type MobileUpdateProductInput = z.infer<typeof mobileUpdateProductSchema>;
 
