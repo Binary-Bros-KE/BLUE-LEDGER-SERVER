@@ -35,6 +35,7 @@ import * as mobileReportsService from "../services/mobile-reports-service.js";
 import * as mobileRidersService from "../services/mobile-riders-service.js";
 import * as mobileSaleAdjustmentsService from "../services/mobile-sale-adjustments-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
+import * as mobileRolesService from "../services/mobile-roles-service.js";
 import * as mobileSalesService from "../services/mobile-sales-service.js";
 import * as mobileSettingsService from "../services/mobile-settings-service.js";
 import * as mobileStockLedgerService from "../services/mobile-stock-ledger-service.js";
@@ -93,6 +94,19 @@ mobileRouter.get("/dashboard", requireMobileAuth, requireOwnerAppAccess, async (
 mobileRouter.get("/employees", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("employees", "view"), async (req, res) => {
   const result = await mobileDirectoryService.listEmployees(req.mobileSession!.tenantId);
   res.json(result);
+});
+
+/** Roles & Permissions (mobile-roles-service.ts) — the same roles.view/create/edit DESKTOP checks. */
+mobileRouter.get("/roles/manage", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("roles", "view"), async (req, res) => {
+  res.json(await mobileRolesService.listRoles(req.mobileSession!.tenantId));
+});
+
+mobileRouter.post("/roles", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("roles", "create"), async (req, res) => {
+  res.status(201).json(await mobileRolesService.createRole(req.mobileSession!, req.body));
+});
+
+mobileRouter.patch("/roles/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("roles", "edit"), async (req, res) => {
+  res.json(await mobileRolesService.updateRole(req.mobileSession!, req.params.id as string, req.body));
 });
 
 /** Backs the Employees tab's role picker (Add employee / Edit access). Same employees.view gate the
