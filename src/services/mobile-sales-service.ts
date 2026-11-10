@@ -1,4 +1,5 @@
 import { mpesaStatusOfSale } from "./mpesa-verification-service.js";
+import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
@@ -282,6 +283,9 @@ export type MobileReturnableItem = {
   saleItemId: string;
   productId: string;
   productName: string;
+  /** Base unit + selling in several units — see lib/product-units.ts. */
+  unitOfMeasure: string | null;
+  unitConfig: ProductUnitConfig | null;
   quantitySold: number;
   /** Already restocked by an APPROVED return — mirrors DESKTOP's own
    * findApprovedReturnedQuantityForSaleItem (only approved returns count against eligibility;
@@ -310,8 +314,9 @@ export async function getSaleReturnableItems(tenantId: string, saleId: string): 
 
     const items = asArray<RawSaleItemFull>(sale.items);
     const productIds = [...new Set(items.map((i) => i.productId))];
-    const products = await tx.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } });
+    const products = await tx.product.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true, unitOfMeasure: true, unitConfigJson: true } });
     const productNameById = new Map(products.map((p) => [p.id, p.name]));
+    const productById = new Map(products.map((p) => [p.id, p]));
 
     const approvedReturns = await tx.saleReturn.findMany({ where: { tenantId, saleId, status: "approved" }, select: { items: true } });
     const returnedBySaleItemId = new Map<string, number>();
@@ -327,6 +332,8 @@ export async function getSaleReturnableItems(tenantId: string, saleId: string): 
         saleItemId: item.id,
         productId: item.productId,
         productName: withVariantLabel(productNameById.get(item.productId) ?? "Unknown product", (item as { variantLabel?: string | null }).variantLabel),
+        unitOfMeasure: productById.get(item.productId)?.unitOfMeasure ?? null,
+        unitConfig: parseUnitConfig(productById.get(item.productId)?.unitConfigJson),
         quantitySold: item.quantity,
         alreadyReturnedQuantity,
         remainingQuantity: Math.max(0, item.quantity - alreadyReturnedQuantity),
@@ -381,7 +388,7 @@ export async function requestSaleReturn(
         productId: saleItem.productId,
         quantity: requested.quantity,
         unitPriceCents: saleItem.unitPriceCents,
-        lineTotalCents: saleItem.unitPriceCents * requested.quantity,
+        lineTotalCents: Math.round(saleItem.unitPriceCents * requested.quantity),
         createdAt: new Date().toISOString(),
       };
     });

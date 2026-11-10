@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { findUnit, formatQuantity, parseUnitConfig } from "./product-units.js";
 import type { Prisma } from "@prisma/client";
 import { findDropshipLinks } from "./dropship-links.js";
 import { HttpError, NotFoundError } from "./http-error.js";
@@ -31,6 +32,7 @@ export type MobileCartItemInput = {
   quantity: number;
   discountAmountCents: number;
   unitPriceCents?: number;
+  unitCode?: string | null | undefined;
   isLocallySourced?: boolean;
   localCostCents?: number;
   localSupplierId?: string;
@@ -41,8 +43,13 @@ export type MobileCartItemInput = {
 export type PreparedMobileCartItem = {
   id: string;
   productId: string;
+  /** Always in the product's base unit — see lib/product-units.ts. */
   quantity: number;
+  /** Per base unit, so possibly fractional. */
   unitPriceCents: number;
+  /** The unit it was sold in, kept for how the line prints. Null = the base unit. */
+  unitCode: string | null;
+  unitFactor: number | null;
   discountAmountCents: number;
   taxType: string;
   taxAmountCents: number;
@@ -183,16 +190,30 @@ export async function prepareMobileCart(
       }
       variant = { key: found.key, label: variantLabel(config.options, found.values), priceCents: found.priceCents };
     }
+    // Sold in another unit (kg, carton): a pack can carry its own price, which then beats wholesale;
+    // otherwise the base price is already right for any unit.
+    const unitConfig = parseUnitConfig(product.unitConfigJson);
+    const saleUnit = findUnit(unitConfig, item.unitCode);
+    if (item.unitCode && !saleUnit) {
+      throw new HttpError(400, `"${product.name}" can't be sold in ${item.unitCode} any more — remove the line and add it again`);
+    }
+    if (saleUnit && unitConfig?.kind === "pack" && item.quantity % saleUnit.factor !== 0) {
+      throw new HttpError(400, `"${product.name}" sells in whole ${saleUnit.code}s`);
+    }
+    const unitOwnPriceCents = saleUnit?.priceCents != null ? saleUnit.priceCents / saleUnit.factor : null;
     const unitPriceCents =
-      item.unitPriceCents ?? (useWholesale ? (product.wholesalePriceCents as number) : (variant?.priceCents ?? product.sellingPriceCents));
+      item.unitPriceCents ??
+      unitOwnPriceCents ??
+      (useWholesale ? (product.wholesalePriceCents as number) : (variant?.priceCents ?? product.sellingPriceCents));
     if (product.minimumPriceCents !== null && unitPriceCents < product.minimumPriceCents) {
       throw new HttpError(400, `Price for "${product.name}" can't be below its minimum price of ${(product.minimumPriceCents / 100).toFixed(2)}`);
     }
-    const lineSubtotalCents = unitPriceCents * item.quantity;
+    // Rounded: a fractional per-gram price times grams can land between cents.
+    const lineSubtotalCents = Math.round(unitPriceCents * item.quantity);
     if (item.discountAmountCents > lineSubtotalCents) {
       throw new HttpError(400, `Discount for "${product.name}" can't exceed its subtotal`);
     }
-    const minLineSubtotalCents = product.minimumPriceCents !== null ? product.minimumPriceCents * item.quantity : 0;
+    const minLineSubtotalCents = product.minimumPriceCents !== null ? Math.round(product.minimumPriceCents * item.quantity) : 0;
     if (lineSubtotalCents - item.discountAmountCents < minLineSubtotalCents) {
       throw new HttpError(400, `Discount for "${product.name}" would drop it below its minimum price`);
     }
@@ -203,7 +224,7 @@ export async function prepareMobileCart(
       requestedByProduct.set(stockKey, requested);
       if (available - requested < 0 && !product.allowNegativeStock) {
         if (!options.allowStockShortfall) {
-          throw new HttpError(400, `"${product.name}" doesn't have enough stock (${available} available)`);
+          throw new HttpError(400, `"${product.name}" doesn't have enough stock (${formatQuantity(available, product.unitOfMeasure, unitConfig)} available)`);
         }
         if (!stockShortfalls.includes(product.name)) stockShortfalls.push(product.name);
       }
@@ -222,6 +243,8 @@ export async function prepareMobileCart(
       productId: product.id,
       quantity: item.quantity,
       unitPriceCents,
+      unitCode: saleUnit?.code ?? null,
+      unitFactor: saleUnit?.factor ?? null,
       discountAmountCents: item.discountAmountCents,
       taxType: product.taxType,
       taxAmountCents: taxCents,

@@ -50,7 +50,7 @@ export function computeAddedTaxCents(
   lines: Array<{ unitPriceCents: number; quantity: number; discountAmountCents: number; lineTotalCents: number }>,
 ): number {
   return lines.reduce((sum, line) => {
-    const taxableCents = line.unitPriceCents * line.quantity - line.discountAmountCents;
+    const taxableCents = Math.round(line.unitPriceCents * line.quantity) - line.discountAmountCents;
     return sum + (line.lineTotalCents - taxableCents);
   }, 0);
 }
@@ -108,7 +108,7 @@ export function computeTaxBreakdown(
   const byKey = new Map<string, { taxType: TaxType; pricingMode: TaxPricingMode | null; netCents: number; taxCents: number; grossCents: number }>();
   for (const line of lines) {
     const taxType = (KNOWN_TAX_TYPES as string[]).includes(line.taxType) ? (line.taxType as TaxType) : "vat";
-    const taxableCents = line.unitPriceCents * line.quantity - line.discountAmountCents;
+    const taxableCents = Math.round(line.unitPriceCents * line.quantity) - line.discountAmountCents;
     const pricingMode: TaxPricingMode | null = taxType === "vat" ? (line.lineTotalCents > taxableCents ? "exclusive" : "inclusive") : null;
     const key = `${taxType}:${pricingMode ?? ""}`;
     const entry = byKey.get(key) ?? { taxType, pricingMode, netCents: 0, taxCents: 0, grossCents: 0 };

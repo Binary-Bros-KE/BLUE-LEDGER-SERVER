@@ -1,4 +1,5 @@
 import { prisma } from "../prisma.js";
+import { formatQuantity, parseUnitConfig } from "../lib/product-units.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 
 /**
@@ -97,6 +98,8 @@ export type SalesTopProduct = {
 export type SalesProductSold = SalesTopProduct & {
   /** Product.unitOfMeasure (e.g. "piece", "kg") — null when the product has none set. */
   unitOfMeasure: string | null;
+  /** quantitySold in the units people think in ("12.5 kg"); see lib/product-units.ts. */
+  quantityLabel: string | null;
   costCents: number;
   marginCents: number;
   /** Gross margin as a % of this product's revenue; 0 when revenue is 0. */
@@ -275,7 +278,7 @@ export async function computeSalesAndProfit(
       where: { tenantId, status: "active", localCreatedAt: { gte: start, lt: endExclusive } },
       _sum: { netPayCents: true },
     }),
-    tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true, unitOfMeasure: true } }),
+    tx.product.findMany({ where: { tenantId }, select: { id: true, name: true, buyingPriceCents: true, unitOfMeasure: true, unitConfigJson: true } }),
     tx.paymentMethod.findMany({ where: { tenantId }, select: { id: true, name: true } }),
   ]);
 
@@ -462,6 +465,11 @@ export async function computeSalesAndProfit(
     return {
       ...product,
       unitOfMeasure: productById.get(product.productId)?.unitOfMeasure ?? null,
+      quantityLabel: (() => {
+        const row = productById.get(product.productId);
+        const units = parseUnitConfig(row?.unitConfigJson);
+        return units ? formatQuantity(product.quantitySold, row?.unitOfMeasure ?? null, units) : null;
+      })(),
       marginCents,
       marginPercent: product.revenueCents > 0 ? (marginCents / product.revenueCents) * 100 : 0,
       percentOfRevenue: totalProductRevenueCents > 0 ? (product.revenueCents / totalProductRevenueCents) * 100 : 0,

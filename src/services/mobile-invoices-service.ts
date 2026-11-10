@@ -255,6 +255,7 @@ export type MobileEditableItem = {
   sectionLabel?: string | null;
   quantity: number;
   unitPriceCents: number;
+  unitCode?: string | null;
   discountAmountCents: number;
   isLocallySourced: boolean;
   localCostCents: number | null;
@@ -321,6 +322,7 @@ export async function getInvoiceEditData(tenantId: string, id: string): Promise<
         productId: item.productId,
         quantity: item.quantity,
         unitPriceCents: item.unitPriceCents,
+        unitCode: item.unitCode ?? null,
         discountAmountCents: item.discountAmountCents,
         isLocallySourced: item.isLocallySourced,
         localCostCents: item.localCostCents,
@@ -595,6 +597,7 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
         productId: string;
         quantity: number;
         unitPriceCents: number;
+        unitCode?: string | null;
         discountAmountCents: number;
         isLocallySourced: boolean;
         localCostCents: number | null;
@@ -623,6 +626,7 @@ export async function duplicateInvoice(tenantId: string, employeeId: string, sal
           quantity: item.quantity,
           discountAmountCents: item.discountAmountCents,
           unitPriceCents: item.unitPriceCents,
+          unitCode: item.unitCode ?? null,
           isLocallySourced: item.isLocallySourced,
           localCostCents: item.localCostCents ?? undefined,
           localSupplierId: item.localSupplierId ?? undefined,

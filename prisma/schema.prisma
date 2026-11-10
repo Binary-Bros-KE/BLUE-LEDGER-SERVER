@@ -1203,11 +1203,14 @@ model Product {
   categoryId           String?
   storefrontId         String?
   unitOfMeasure        String?
-  buyingPriceCents     Int
-  sellingPriceCents    Int
-  wholesalePriceCents  Int?
+  /// Selling in several units (kg and g, carton and piece) — see src/lib/product-units.ts. Null = one
+  /// unit only. Prices below are per unitOfMeasure and may be fractional (KES 175/kg = 17.5 cents/g).
+  unitConfigJson       Json?
+  buyingPriceCents     Float
+  sellingPriceCents    Float
+  wholesalePriceCents  Float?
   wholesaleMinQuantity Int
-  minimumPriceCents    Int?
+  minimumPriceCents    Float?
   taxRate              Float
   /// One of "vat" (standard-rated, uses the tenant's own vatRatePercent), "exempted", or
   /// "zero_rated" — replaces taxRate as the actual calculation driver going forward (taxRate is

@@ -28,7 +28,7 @@ export function readWebPricing(json: Prisma.JsonValue | null | undefined): WebPr
 
 /** A POS price (cents) → its website price. */
 export function markUp(cents: number, pricing: WebPricing): number {
-  if (!pricing.markupPercent) return cents;
+  if (!pricing.markupPercent) return Math.round(cents);
   const step = pricing.roundTo * 100;
   return Math.round((cents * (1 + pricing.markupPercent / 100)) / step) * step;
 }

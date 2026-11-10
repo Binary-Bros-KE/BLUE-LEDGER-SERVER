@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import { Prisma } from "@prisma/client";
 import { assertNotDropshipLinked } from "../lib/dropship-links.js";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
@@ -115,6 +116,8 @@ export type MobileProductEditData = {
   categoryId: string | null;
   storefrontId: string | null;
   unitOfMeasure: string | null;
+  /** Selling in several units — see lib/product-units.ts. */
+  unitConfig: ProductUnitConfig | null;
   description: string | null;
   buyingPriceCents: number;
   sellingPriceCents: number;
@@ -143,6 +146,7 @@ export async function getProductForEdit(tenantId: string, productId: string): Pr
       categoryId: p.categoryId,
       storefrontId: p.storefrontId,
       unitOfMeasure: p.unitOfMeasure,
+      unitConfig: parseUnitConfig(p.unitConfigJson),
       description: p.description,
       buyingPriceCents: p.buyingPriceCents,
       sellingPriceCents: p.sellingPriceCents,
@@ -228,6 +232,7 @@ function productWriteFields(parsed: MobileUpdateProductInput, vatRatePercent: nu
     categoryId: parsed.categoryId,
     storefrontId: parsed.storefrontId,
     unitOfMeasure: parsed.unitOfMeasure,
+    ...(parsed.unitConfig === undefined ? {} : { unitConfigJson: parsed.unitConfig === null ? Prisma.JsonNull : parsed.unitConfig }),
     description: parsed.description,
     buyingPriceCents: parsed.buyingPriceCents,
     sellingPriceCents: parsed.sellingPriceCents,
@@ -321,6 +326,23 @@ export async function updateProduct(session: MobileSession, productId: string, i
     }
     await assertCategoryBelongsToTenant(tx, tenantId, parsed.categoryId);
     await assertLocationBelongsToTenant(tx, tenantId, parsed.storefrontId);
+    if (parsed.unitConfig) {
+      if (existing.variantGroupId !== null || existing.variantConfigJson !== null) {
+        throw new HttpError(400, "A product with variants can't also be sold in several units");
+      }
+      // Stock is counted in the base unit: "2" would silently go from 2 kg to 2 g. A new base unit is
+      // only safe before any stock has moved.
+      if (parsed.unitOfMeasure !== existing.unitOfMeasure) {
+        // (The same check DESKTOP's updateProduct makes.)
+        const moved = await tx.stockMovement.findFirst({ where: { tenantId, productId }, select: { id: true } });
+        if (moved) {
+          throw new HttpError(
+            400,
+            `This product's stock is already counted in ${existing.unitOfMeasure ?? "units"}, so it can't switch to counting in ${parsed.unitOfMeasure ?? "units"}. Create a new product for it instead.`,
+          );
+        }
+      }
+    }
 
     // SKU is editable (same as DESKTOP) but never blanked — an empty field keeps the current one.
     const sku = parsed.sku ?? existing.sku;

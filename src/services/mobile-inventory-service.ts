@@ -1,5 +1,6 @@
 import { findDropshipLinks } from "../lib/dropship-links.js";
 import { activeSharedVariants, parseVariantConfig, parseVariantOptions, variantLabel, type VariantOption } from "../lib/variants.js";
+import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
 import { isStorefrontLocationType } from "./mobile-sales-service.js";
@@ -17,6 +18,9 @@ export type MobileProductListItem = {
    * Checkout screen shows. Never trusted server-side for the actual sale total (mobile-checkout-
    * service.ts always re-fetches the real Product row and recomputes) — display/preview only. */
   sellingPriceCents: number;
+  /** Base unit + selling in several units — see lib/product-units.ts. */
+  unitOfMeasure: string | null;
+  unitConfig: ProductUnitConfig | null;
   taxType: string;
   /** This product's own inclusive/exclusive override, or null to fall back to the tenant default
    * (MobileSessionInfo.pricesTaxInclusive) — same resolveProductTaxConfig contract DESKTOP and
@@ -103,6 +107,8 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
           categoryId: true,
           reorderLevel: true,
           sellingPriceCents: true,
+          unitOfMeasure: true,
+          unitConfigJson: true,
           taxType: true,
           pricesTaxInclusive: true,
           minimumPriceCents: true,
@@ -193,6 +199,8 @@ export async function listProducts(tenantId: string, options: { includeAll?: boo
         barcode: product.barcode,
         categoryName: product.categoryId ? (categoryNameById.get(product.categoryId) ?? null) : null,
         sellingPriceCents: product.sellingPriceCents,
+        unitOfMeasure: product.unitOfMeasure,
+        unitConfig: parseUnitConfig(product.unitConfigJson),
         taxType: product.taxType,
         pricesTaxInclusive: product.pricesTaxInclusive,
         minimumPriceCents: product.minimumPriceCents,

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import type { Prisma } from "@prisma/client";
 import { findDropshipLinks } from "../lib/dropship-links.js";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
@@ -50,6 +51,9 @@ type RawPurchaseItem = {
   id: string;
   productId: string;
   sellingPriceCents?: number | null;
+  /** Base unit + selling in several units — see lib/product-units.ts. */
+  unitOfMeasure?: string | null;
+  unitConfig?: ProductUnitConfig | null;
   orderedQuantity: number;
   receivedQuantity: number;
   unitCostCents: number;
@@ -241,7 +245,7 @@ async function loadPurchaseDetail(tenantId: string, purchaseId: string): Promise
     const [location, supplier, products] = await Promise.all([
       tx.location.findUnique({ where: { id: purchase.locationId }, select: { locationName: true } }),
       tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { businessName: true, phone1: true, supplierType: true } }),
-      tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true } }),
+      tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sku: true, unitOfMeasure: true, unitConfigJson: true } }),
     ]);
     const productById = new Map(products.map((p) => [p.id, p]));
     const origin = await loadPurchaseOrigin(tx, tenantId, purchase.id);
@@ -274,6 +278,8 @@ async function loadPurchaseDetail(tenantId: string, purchaseId: string): Promise
         sellingPriceCents: item.sellingPriceCents ?? null,
         productName: productById.get(item.productId)?.name ?? "Unknown product",
         sku: productById.get(item.productId)?.sku ?? null,
+        unitOfMeasure: productById.get(item.productId)?.unitOfMeasure ?? null,
+        unitConfig: parseUnitConfig(productById.get(item.productId)?.unitConfigJson),
         orderedQuantity: item.orderedQuantity,
         receivedQuantity: item.receivedQuantity,
         unitCostCents: item.unitCostCents,
@@ -559,7 +565,7 @@ async function preparePurchaseLines(tx: Prisma.TransactionClient, tenantId: stri
   const items: StoredPurchaseItem[] = lines.map((item) => {
     const product = productById.get(item.productId);
     if (!product) throw new NotFoundError("One of the selected products was not found");
-    const taxableCents = item.orderedQuantity * item.unitCostCents - item.discountAmountCents;
+    const taxableCents = Math.round(item.orderedQuantity * item.unitCostCents) - item.discountAmountCents;
     const { grossCents, taxCents } = computeLineTax(taxableCents, item.taxType, resolveProductTaxConfig(product, tenantTaxConfig));
     return {
       id: `purchase_item_${randomUUID()}`,
@@ -578,7 +584,7 @@ async function preparePurchaseLines(tx: Prisma.TransactionClient, tenantId: stri
   });
   return {
     items,
-    subtotalCents: items.reduce((sum, i) => sum + i.orderedQuantity * i.unitCostCents, 0),
+    subtotalCents: items.reduce((sum, i) => sum + Math.round(i.orderedQuantity * i.unitCostCents), 0),
     discountAmountCents: items.reduce((sum, i) => sum + i.discountAmountCents, 0),
     taxAmountCents: items.reduce((sum, i) => sum + i.taxAmountCents, 0),
     grandTotalCents: items.reduce((sum, i) => sum + i.lineTotalCents, 0) + shippingCostCents,
