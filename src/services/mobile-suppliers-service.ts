@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ConflictError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
 import { withTenantContext } from "../lib/tenant-context.js";
+import type { MobileSession } from "../middleware/mobile-auth.js";
 import { type MobileCreateSupplierInput, mobileCreateSupplierSchema, mobileSupplierBalanceAdjustSchema, mobileUpdateSupplierSchema } from "../schemas/mobile.js";
 
 /** Same synthetic deviceId used by every other Owner-App-originated write — see
@@ -15,6 +16,18 @@ const SUPPLIER_CODE_DIGITS = 6;
 export type MobileSupplier = { id: string; businessName: string; phone1: string; supplierType: string };
 
 const SUPPLIER_SELECT = { id: true, businessName: true, phone1: true, supplierType: true } as const;
+
+/** Without this a role only ever sees local suppliers and their purchases, whatever else it's ticked for. */
+export function seesInternationalSuppliers(session: MobileSession): boolean {
+  return Boolean(session.isSuperAdmin || session.permissions?.international_suppliers?.includes("view"));
+}
+
+/** A hidden supplier reads as not existing, rather than announcing itself. */
+export async function assertSupplierVisible(session: MobileSession, supplierId: string): Promise<void> {
+  if (seesInternationalSuppliers(session)) return;
+  const supplier = await withTenantContext(session.tenantId, (tx) => tx.supplier.findUnique({ where: { id: supplierId }, select: { supplierType: true } }));
+  if (supplier?.supplierType !== "local") throw new NotFoundError("Supplier not found");
+}
 
 /** Backs Checkout's "Sourced from another shop" supplier picker and every other supplier picker
  * (New Purchase) — the Suppliers tab itself uses listSuppliersWithBalances below. `localOnly` is for a
@@ -83,10 +96,10 @@ export type MobileSupplierBalanceEntry = {
 };
 
 /** Suppliers tab list — biggest balance owed first. */
-export async function listSuppliersWithBalances(tenantId: string): Promise<MobileSupplierWithBalance[]> {
+export async function listSuppliersWithBalances(tenantId: string, localOnly = false): Promise<MobileSupplierWithBalance[]> {
   return withTenantContext(tenantId, async (tx) => {
     const [suppliers, sums] = await Promise.all([
-      tx.supplier.findMany({ where: { tenantId, status: "active" }, select: { ...SUPPLIER_SELECT, supplierCode: true } }),
+      tx.supplier.findMany({ where: { tenantId, status: "active", ...(localOnly ? { supplierType: "local" } : {}) }, select: { ...SUPPLIER_SELECT, supplierCode: true } }),
       tx.supplierBalanceEntry.groupBy({ by: ["supplierId"], where: { tenantId }, _sum: { amountCents: true } }),
     ]);
     const balanceBySupplier = new Map(sums.map((row) => [row.supplierId, row._sum.amountCents ?? 0]));

@@ -506,9 +506,7 @@ mobileRouter.post(
 
 mobileRouter.get("/suppliers", requireMobileAuth, requireOwnerAppAccess, async (req, res) => {
   const session = req.mobileSession!;
-  const perms = session.permissions ?? {};
-  const seesInternational = session.isSuperAdmin || perms.suppliers?.includes("view") || perms.purchases?.includes("view");
-  const result = await mobileSuppliersService.listSuppliers(session.tenantId, !seesInternational);
+  const result = await mobileSuppliersService.listSuppliers(session.tenantId, !mobileSuppliersService.seesInternationalSuppliers(session));
   res.json(result);
 });
 
@@ -522,7 +520,7 @@ mobileRouter.post(
   ]),
   async (req, res) => {
     const session = req.mobileSession!;
-    const forceLocal = !session.isSuperAdmin && !session.permissions?.suppliers?.includes("create");
+    const forceLocal = !mobileSuppliersService.seesInternationalSuppliers(session);
     const result = await mobileSuppliersService.createSupplier(session.tenantId, session.employeeId, req.body, { forceLocal });
     res.status(201).json(result);
   },
@@ -531,16 +529,19 @@ mobileRouter.post(
 // Supplier balances — see mobile-suppliers-service.ts. Same suppliers.view / suppliers.edit grants
 // DESKTOP's own supplier-balance-service.ts checks.
 mobileRouter.get("/suppliers/balances", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "view"), async (req, res) => {
-  const result = await mobileSuppliersService.listSuppliersWithBalances(req.mobileSession!.tenantId);
+  const session = req.mobileSession!;
+  const result = await mobileSuppliersService.listSuppliersWithBalances(session.tenantId, !mobileSuppliersService.seesInternationalSuppliers(session));
   res.json(result);
 });
 
 mobileRouter.get("/suppliers/:id/balance-entries", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "view"), async (req, res) => {
+  await mobileSuppliersService.assertSupplierVisible(req.mobileSession!, req.params.id as string);
   const result = await mobileSuppliersService.listSupplierBalanceEntries(req.mobileSession!.tenantId, req.params.id as string);
   res.json(result);
 });
 
 mobileRouter.post("/suppliers/:id/balance-adjustments", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "edit"), async (req, res) => {
+  await mobileSuppliersService.assertSupplierVisible(req.mobileSession!, req.params.id as string);
   const result = await mobileSuppliersService.adjustSupplierBalance(
     req.mobileSession!.tenantId,
     req.mobileSession!.employeeId,
@@ -1145,11 +1146,16 @@ mobileRouter.put("/customers/:id", requireMobileAuth, requireOwnerAppAccess, req
 });
 
 mobileRouter.get("/suppliers/:id/detail", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "view"), async (req, res) => {
+  await mobileSuppliersService.assertSupplierVisible(req.mobileSession!, req.params.id as string);
   res.json(await mobileSuppliersService.getSupplierDetail(req.mobileSession!.tenantId, req.params.id as string));
 });
 
 mobileRouter.put("/suppliers/:id", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("suppliers", "edit"), async (req, res) => {
-  res.json(await mobileSuppliersService.updateSupplier(req.mobileSession!.tenantId, req.params.id as string, req.body));
+  const session = req.mobileSession!;
+  await mobileSuppliersService.assertSupplierVisible(session, req.params.id as string);
+  // Someone who can't see international suppliers can't make one either.
+  const body = mobileSuppliersService.seesInternationalSuppliers(session) ? req.body : { ...req.body, supplierType: "local" };
+  res.json(await mobileSuppliersService.updateSupplier(session.tenantId, req.params.id as string, body));
 });
 
 // Draft purchase edit (purchases.edit) and the cost lookup that pre-fills purchase lines — buying

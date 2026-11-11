@@ -9,7 +9,19 @@
  * saved by an admin in Roles & Permissions (even an empty list) must always win — it does here,
  * since only an ABSENT key gets a default.
  */
-export function withLaterModuleDefaults(permissions: Record<string, string[]>): Record<string, string[]> {
+export function withLaterModuleDefaults(permissions: Record<string, string[]>, roleName: string): Record<string, string[]> {
+  return withInternationalSuppliersDefault(withRequisitionsDefault(permissions), roleName);
+}
+
+/** Whoever could already see suppliers keeps seeing all of them, except a Cashier: cashiers are local
+ * only (client spec) even with Suppliers or Purchases ticked, unless an admin ticks this for them. */
+function withInternationalSuppliersDefault(permissions: Record<string, string[]>, roleName: string): Record<string, string[]> {
+  if (permissions.international_suppliers !== undefined) return permissions;
+  const hadAccess = ["suppliers", "purchases", "reports"].some((module) => permissions[module]?.includes("view"));
+  return { ...permissions, international_suppliers: hadAccess && !/cashier/i.test(roleName) ? ["view"] : [] };
+}
+
+function withRequisitionsDefault(permissions: Record<string, string[]>): Record<string, string[]> {
   if (permissions.purchase_requisitions !== undefined) return permissions;
 
   // Client spec: anybody can raise a requisition; only higher roles approve. "Can already approve
@@ -22,6 +34,6 @@ export function withLaterModuleDefaults(permissions: Record<string, string[]>): 
 }
 
 /** Role.permissionsJson → a permissions map with later-module defaults applied. */
-export function rolePermissions(permissionsJson: unknown): Record<string, string[]> {
-  return withLaterModuleDefaults((permissionsJson as Record<string, string[]> | undefined | null) ?? {});
+export function rolePermissions(permissionsJson: unknown, roleName: string | null | undefined): Record<string, string[]> {
+  return withLaterModuleDefaults((permissionsJson as Record<string, string[]> | undefined | null) ?? {}, roleName ?? "");
 }

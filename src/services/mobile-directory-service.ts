@@ -66,7 +66,7 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       employeeName: `${employee.firstName} ${employee.lastName}`.trim(),
       roleName: role?.roleName ?? null,
       currency: tenant.currency,
-      permissions: rolePermissions(role?.permissionsJson),
+      permissions: rolePermissions(role?.permissionsJson, role?.roleName),
       branchId: employee.branchId,
       branchName: branch?.locationName ?? null,
       defaultIncludeBusinessInfo: branch?.defaultIncludeBusinessInfo ?? null,
