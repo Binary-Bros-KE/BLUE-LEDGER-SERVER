@@ -29,6 +29,8 @@ const ENTITY_DELEGATES: Record<SyncEntityName, (tx: Prisma.TransactionClient) =>
   expenses: (tx) => tx.expense,
   salaries: (tx) => tx.salary,
   recurring_bills: (tx) => tx.recurringBill,
+  customer_subscriptions: (tx) => tx.customerSubscription,
+  customer_subscription_notices: (tx) => tx.customerSubscriptionNotice,
   sale_voids: (tx) => tx.saleVoid,
   invoice_cancellations: (tx) => tx.invoiceCancellation,
   sale_returns: (tx) => tx.saleReturn,
@@ -164,6 +166,8 @@ const REQUIRED_REF_FIELDS: Partial<Record<SyncEntityName, Array<{ field: string;
     { field: "productId", delegate: (tx) => tx.product },
   ],
   working_hours: [{ field: "locationId", delegate: (tx) => tx.location }],
+  // A reminder for a subscription the cloud hasn't got yet is retried later, never stored orphaned.
+  customer_subscription_notices: [{ field: "subscriptionId", delegate: (tx) => tx.customerSubscription }],
 };
 
 /** quotations/sales store their line items and service charges as jsonb ARRAYS, and those elements

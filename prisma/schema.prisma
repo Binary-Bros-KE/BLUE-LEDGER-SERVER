@@ -778,6 +778,8 @@ model Tenant {
   expenses                 Expense[]
   salaries                 Salary[]
   recurringBills           RecurringBill[]
+  customerSubscriptions       CustomerSubscription[]
+  customerSubscriptionNotices CustomerSubscriptionNotice[]
   saleVoids                SaleVoid[]
   invoiceCancellations     InvoiceCancellation[]
   saleReturns              SaleReturn[]
@@ -1603,6 +1605,66 @@ model RecurringBill {
 
   @@index([tenantId])
   @@map("recurring_bills")
+}
+
+/// A customer's subscription the shop sells and tracks (DStv, GOtv...). One row per PAID PERIOD:
+/// renewing marks the old row "renewed" and adds a new one with renewedFromId. endDate = startDate +
+/// periodDays (DESKTOP shared/lib/subscription-schedule.ts); days remaining is never stored. Tracking
+/// only: no money is recorded. customerId/locationId are plain strings like every synced reference.
+model CustomerSubscription {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  customerId    String
+  locationId    String?
+  serviceName   String
+  /// Smartcard / IUC number.
+  accountNumber String?
+  startDate     String
+  periodDays    Int
+  endDate       String
+  amountCents   Int?
+  /// "active" | "renewed" | "cancelled"
+  status        String
+  renewedFromId String?
+  notes         String?
+  createdBy     String?
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId, status, endDate])
+  @@index([customerId])
+  @@map("customer_subscriptions")
+}
+
+/// A reminder sent by hand for one subscription period. Append-only: two devices recording the same
+/// reminder both keep their row, and "already sent" means "a row exists for that stage or a later one".
+model CustomerSubscriptionNotice {
+  id       String @id
+  tenantId String
+  tenant   Tenant @relation(fields: [tenantId], references: [id])
+  deviceId String
+
+  subscriptionId String
+  /// "week" | "three_days" | "due" | "expired"
+  stage          String
+  /// "whatsapp" | "email" | "other"
+  channel        String
+  recipient      String?
+  sentBy         String?
+  sentAt         String
+
+  localCreatedAt DateTime
+  localUpdatedAt DateTime
+  syncedAt       DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@map("customer_subscription_notices")
 }
 
 /// A void request against a sale — its own approval-workflow lifecycle, not a sale line item, so it
