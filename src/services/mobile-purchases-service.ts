@@ -679,6 +679,7 @@ export async function createPurchaseInTx(
         payments: [],
         receivingEvents: [],
         notes: parsed.notes,
+        createdBy: actor.id,
         orderedAt: ordered ? now : null,
         items: cart.items as unknown as Prisma.InputJsonValue,
         localCreatedAt: now,
