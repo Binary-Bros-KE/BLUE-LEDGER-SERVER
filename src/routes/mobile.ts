@@ -821,7 +821,8 @@ mobileRouter.post("/purchases/:id/cancel", requireMobileAuth, requireOwnerAppAcc
   res.json(result);
 });
 
-mobileRouter.post("/purchases/:id/receive", requireMobileAuth, requireOwnerAppAccess, requireMobilePermissionAnyOf([["purchases", "edit"], ["local_credit_purchases", "edit"]]), async (req, res) => {
+// Whoever records purchases receives them too, at their own storefront — the service checks which.
+mobileRouter.post("/purchases/:id/receive", requireMobileAuth, requireOwnerAppAccess, requireMobilePermissionAnyOf([["purchases", "edit"], ["purchases", "create"], ["local_credit_purchases", "create"], ["local_credit_purchases", "edit"]]), async (req, res) => {
   const result = await mobilePurchasesService.receivePurchaseGoods(req.mobileSession!, req.params.id as string, req.body);
   res.json(result);
 });

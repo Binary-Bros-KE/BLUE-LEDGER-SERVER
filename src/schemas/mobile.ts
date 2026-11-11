@@ -704,6 +704,8 @@ export const mobileCreatePurchaseSchema = z.object({
   notes: mobileOptionalText(1000),
   items: z.array(mobilePurchaseItemSchema).min(1, "Add at least one product"),
   intent: z.enum(["draft", "ordered"]).default("ordered"),
+  /** "Create & Receive": order it and receive every line in the same step (createPurchase only). */
+  receiveNow: z.boolean().optional().default(false),
 });
 
 export type MobileCreatePurchaseInput = z.infer<typeof mobileCreatePurchaseSchema>;

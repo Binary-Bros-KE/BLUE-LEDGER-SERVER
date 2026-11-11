@@ -396,6 +396,26 @@ export function mobilePurchaseAccess(session: MobileSession, action: "view" | "c
   return session.permissions?.local_credit_purchases?.includes(action) ? "local" : null;
 }
 
+/** DESKTOP purchase-service.ts assertCanReceive: purchases.edit receives anything. Otherwise whoever
+ * may record purchases (purchases.create, or local_credit_purchases.create/edit, e.g. a Cashier)
+ * receives them too, only into their own storefront; local_credit_purchases only from local suppliers. */
+async function assertCanReceive(
+  tx: Prisma.TransactionClient,
+  session: MobileSession,
+  branchScope: string | null,
+  purchase: { supplierId: string; locationId: string },
+): Promise<void> {
+  if (mobilePurchaseAccess(session, "edit") === "all") return;
+  const recordsPurchases = mobilePurchaseAccess(session, "create") === "all";
+  const localCredit = mobilePurchaseAccess(session, "create") === "local" || mobilePurchaseAccess(session, "edit") === "local";
+  if (!recordsPurchases && !localCredit) throw new HttpError(403, "Your role can't receive purchases");
+  if (branchScope && purchase.locationId !== branchScope) throw new NotFoundError("Purchase not found");
+  if (!recordsPurchases) {
+    const supplier = await tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { supplierType: true } });
+    if (supplier?.supplierType !== "local") throw new NotFoundError("Purchase not found");
+  }
+}
+
 async function loadActor(tx: Prisma.TransactionClient, session: MobileSession) {
   const actor = await tx.employee.findUniqueOrThrow({ where: { id: session.employeeId } });
   return {
@@ -621,7 +641,21 @@ async function preparePurchaseLines(tx: Prisma.TransactionClient, tenantId: stri
 
 export async function createPurchase(session: MobileSession, input: unknown): Promise<{ id: string; purchaseNumber: string }> {
   const parsed: MobileCreatePurchaseInput = mobileCreatePurchaseSchema.parse(input);
-  return withTenantContext(session.tenantId, (tx) => createPurchaseInTx(tx, session, parsed));
+  if (parsed.receiveNow) parsed.intent = "ordered";
+  return withTenantContext(session.tenantId, async (tx) => {
+    const created = await createPurchaseInTx(tx, session, parsed);
+    if (parsed.receiveNow) {
+      // Create & Receive: everything still outstanding (nothing, on a retry that already received it).
+      const purchase = await tx.purchase.findUniqueOrThrow({ where: { id: created.id }, select: { status: true, items: true } });
+      const outstanding = asArray<StoredPurchaseItem>(purchase.items)
+        .map((item) => ({ purchaseItemId: item.id, receivingQuantity: item.orderedQuantity - item.receivedQuantity }))
+        .filter((item) => item.receivingQuantity > 0);
+      if (purchase.status === "ordered" && outstanding.length > 0) {
+        await receivePurchaseGoodsInTx(tx, session, created.id, { items: outstanding }, new Date());
+      }
+    }
+    return created;
+  });
 }
 
 /** createPurchase's body against an already-open tenant transaction — so a caller (approving a
@@ -834,19 +868,25 @@ export async function cancelPurchase(session: MobileSession, purchaseId: string)
 /** DESKTOP's receivePurchaseGoods: partial or full, repeatable until every line is in. */
 export async function receivePurchaseGoods(session: MobileSession, purchaseId: string, input: unknown): Promise<{ id: string; status: string }> {
   const parsed = mobileReceivePurchaseSchema.parse(input);
-  const now = new Date();
-  const { tenantId } = session;
+  return withTenantContext(session.tenantId, (tx) => receivePurchaseGoodsInTx(tx, session, purchaseId, parsed, new Date()));
+}
 
-  return withTenantContext(tenantId, async (tx) => {
+/** receivePurchaseGoods' body against an already-open tenant transaction (Create & Receive uses it too). */
+async function receivePurchaseGoodsInTx(
+  tx: Prisma.TransactionClient,
+  session: MobileSession,
+  purchaseId: string,
+  parsed: { items: Array<{ purchaseItemId: string; receivingQuantity: number }> },
+  now: Date,
+): Promise<{ id: string; status: string }> {
+  const { tenantId } = session;
+  {
     const purchase = await loadVisiblePurchase(tx, session, purchaseId);
     if (purchase.status !== "ordered" && purchase.status !== "partially_received") {
       throw new HttpError(400, "Only ordered or partially received purchases can receive stock");
     }
     const actor = await loadActor(tx, session);
-    if (mobilePurchaseAccess(session, "edit") === "local") {
-      const supplier = await tx.supplier.findUnique({ where: { id: purchase.supplierId }, select: { supplierType: true } });
-      if (supplier?.supplierType !== "local" || (actor.branchScope && purchase.locationId !== actor.branchScope)) throw new NotFoundError("Purchase not found");
-    }
+    await assertCanReceive(tx, session, actor.branchScope, purchase);
 
     const items = asArray<StoredPurchaseItem>(purchase.items);
     const itemById = new Map(items.map((i) => [i.id, i]));
@@ -956,7 +996,7 @@ export async function receivePurchaseGoods(session: MobileSession, purchaseId: s
       });
     }
     return { id: purchase.id, status };
-  });
+  }
 }
 
 /** DESKTOP's recordPurchasePayment / markPurchasePaid (amount omitted = pay off what's due now). */
