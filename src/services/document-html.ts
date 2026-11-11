@@ -550,7 +550,8 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
         ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td>-${money(doc.discountAmountCents)}</td></tr>` : ""}
         ${doc.includeTaxBreakdown && doc.addedTaxCents > 0 ? `<tr><td>Total Tax</td><td>${money(doc.addedTaxCents)}</td></tr>` : ""}
         <tr class="grand"><td>Total</td><td>${money(doc.grandTotalCents)}</td></tr>
-        <tr><td>Amount Paid</td><td>${money(doc.grandTotalCents !== null && doc.balanceDueCents !== null ? doc.grandTotalCents - doc.balanceDueCents : null)}</td></tr>
+        ${doc.creditedCents ? `<tr><td>Credit Notes</td><td>-${money(doc.creditedCents)}</td></tr>` : ""}
+        <tr><td>Amount Paid</td><td>${money(doc.amountPaidCents ?? (doc.grandTotalCents !== null && doc.balanceDueCents !== null ? doc.grandTotalCents - doc.balanceDueCents - (doc.creditedCents ?? 0) : null))}</td></tr>
         <tr class="balance"><td>Balance Due</td><td>${money(doc.balanceDueCents)}</td></tr>
       </table>
     </div>

@@ -1,3 +1,4 @@
+import { creditedValueForSale } from "../lib/invoice-credit.js";
 import { randomBytes } from "node:crypto";
 import { displayLine } from "../lib/product-units.js";
 import { env } from "../env.js";
@@ -316,6 +317,10 @@ export type SharedDocumentResult = {
   // invoice-only
   dueDate: string | null;
   balanceDueCents: number | null;
+  /** What's been paid (invoices). Not Total − Balance: credit notes also take the balance down. */
+  amountPaidCents: number | null;
+  /** Approved credit notes on the invoice; Total − this − Paid = Balance. */
+  creditedCents: number | null;
   paymentStatus: string | null;
   // quotation-only
   validUntil: string | null;
@@ -652,6 +657,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         notesSections: asArray<SharedNotesSection>(sale.notesSections),
         dueDate: isInvoice ? sale.dueDate : null,
         balanceDueCents: isInvoice ? sale.balanceDueCents : null,
+        amountPaidCents: isInvoice ? sale.amountPaidCents : null,
+        creditedCents: isInvoice ? await creditedValueForSale(tx, tenantId, sale.id) : null,
         paymentStatus: isInvoice
           ? computePaymentStatus({
               balanceDueCents: sale.balanceDueCents,
@@ -720,6 +727,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       notesSections: asArray<SharedNotesSection>(quotation.notesSections),
       dueDate: null,
       balanceDueCents: null,
+      amountPaidCents: null,
+      creditedCents: null,
       paymentStatus: null,
       validUntil: quotation.validUntil,
       quotationStatus: computeQuotationStatus({ storedStatus: quotation.status, validUntil: quotation.validUntil }),
@@ -938,6 +947,7 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
   lines.push(`Subtotal: ${money(doc.subtotalCents)}`);
   if (doc.discountAmountCents > 0) lines.push(`Discount: -${money(doc.discountAmountCents)}`);
   lines.push(`*TOTAL: ${money(doc.grandTotalCents)}*`);
+  if (doc.creditedCents) lines.push(`Credit Notes: -${money(doc.creditedCents)}`);
   if (doc.balanceDueCents !== null && doc.balanceDueCents > 0) {
     lines.push(`⚠️ *Balance Due: ${money(doc.balanceDueCents)}*`);
   }
