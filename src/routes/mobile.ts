@@ -33,6 +33,7 @@ import * as mobileProductsService from "../services/mobile-products-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
 import * as mobileReportsService from "../services/mobile-reports-service.js";
 import * as mobileRidersService from "../services/mobile-riders-service.js";
+import * as mobileSubscriptionsService from "../services/mobile-subscriptions-service.js";
 import * as mobileSaleAdjustmentsService from "../services/mobile-sale-adjustments-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
 import * as mobileRolesService from "../services/mobile-roles-service.js";
@@ -1170,4 +1171,41 @@ mobileRouter.get("/products/costs", requireMobileAuth, requireOwnerAppAccess, as
   const allowed = session.isSuperAdmin || (perms["purchases"] ?? []).includes("create") || (perms["products"] ?? []).includes("edit");
   if (!allowed) throw new HttpError(403, "You don't have access to buying prices.");
   res.json(await mobilePurchasesService.listProductCosts(session.tenantId));
+});
+
+// Subscriptions (DStv, GOtv...) — see mobile-subscriptions-service.ts. The same subscriptions permission
+// module as DESKTOP's Subscriptions tab. "/suggestions" comes before "/:id" so it isn't read as an id.
+const subscriptionView = requireMobilePermission("subscriptions", "view");
+
+mobileRouter.get("/subscriptions", requireMobileAuth, requireOwnerAppAccess, subscriptionView, async (req, res) => {
+  res.json(await mobileSubscriptionsService.listSubscriptions(req.mobileSession!));
+});
+
+mobileRouter.get("/subscriptions/suggestions", requireMobileAuth, requireOwnerAppAccess, subscriptionView, async (req, res) => {
+  res.json(await mobileSubscriptionsService.listServiceSuggestions(req.mobileSession!));
+});
+
+mobileRouter.get("/subscriptions/:id", requireMobileAuth, requireOwnerAppAccess, subscriptionView, async (req, res) => {
+  res.json(await mobileSubscriptionsService.getSubscription(req.mobileSession!, req.params.id as string));
+});
+
+mobileRouter.get("/subscriptions/:id/renewal-defaults", requireMobileAuth, requireOwnerAppAccess, subscriptionView, async (req, res) => {
+  res.json(await mobileSubscriptionsService.getRenewalDefaults(req.mobileSession!, req.params.id as string));
+});
+
+mobileRouter.post("/subscriptions", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("subscriptions", "create"), async (req, res) => {
+  res.status(201).json(await mobileSubscriptionsService.createSubscription(req.mobileSession!, req.body));
+});
+
+mobileRouter.post("/subscriptions/:id/renew", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("subscriptions", "create"), async (req, res) => {
+  res.json(await mobileSubscriptionsService.renewSubscription(req.mobileSession!, req.params.id as string, req.body));
+});
+
+mobileRouter.post("/subscriptions/:id/status", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("subscriptions", "edit"), async (req, res) => {
+  const status = req.body?.status === "active" ? "active" : "cancelled";
+  res.json(await mobileSubscriptionsService.setSubscriptionStatus(req.mobileSession!, req.params.id as string, status));
+});
+
+mobileRouter.post("/subscriptions/:id/notices", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("subscriptions", "edit"), async (req, res) => {
+  res.json(await mobileSubscriptionsService.recordNotice(req.mobileSession!, req.params.id as string, req.body));
 });

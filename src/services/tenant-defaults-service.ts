@@ -50,6 +50,7 @@ const PERMISSION_MODULE_ACTIONS: Record<string, string[]> = {
   local_purchases: ["view", "create", "edit", "delete", "export"],
   local_credit_purchases: ["view", "create", "edit"],
   international_suppliers: ["view"],
+  subscriptions: ["view", "create", "edit", "delete", "export"],
   borrows: ["view", "create", "edit", "export"],
   employees: ["view", "create", "edit", "delete", "export"],
   salaries: ["view", "create", "edit", "delete", "export"],
