@@ -5,7 +5,7 @@ import { z } from "zod";
 export const createShareLinkSchema = z.object({
   tenantId: z.string().trim().min(1),
   deviceId: z.string().trim().min(1),
-  entity: z.enum(["sale", "quotation", "sale_delivery", "quotation_delivery", "customer_statement"]),
+  entity: z.enum(["sale", "quotation", "sale_delivery", "quotation_delivery", "customer_statement", "credit_note"]),
   entityId: z.string().trim().min(1, "entityId is required"),
   /** Whether the WhatsApp/email message includes the full formatted preview (business header, items,
    * totals) or just a short "here's your document" line — the "Include WhatsApp preview" checkbox in
