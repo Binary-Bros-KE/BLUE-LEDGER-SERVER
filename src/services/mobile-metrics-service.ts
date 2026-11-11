@@ -1,3 +1,4 @@
+import { refundOfReturn } from "../lib/invoice-credit.js";
 import { prisma } from "../prisma.js";
 import { formatQuantity, parseUnitConfig } from "../lib/product-units.js";
 import { withTenantContext } from "../lib/tenant-context.js";
@@ -255,7 +256,7 @@ export async function computeSalesAndProfit(
     }),
     tx.saleReturn.findMany({
       where: { tenantId, status: "approved", approvedAt: { gte: start, lt: endExclusive } },
-      select: { saleId: true, items: true },
+      select: { saleId: true, items: true, refundCents: true },
     }),
     tx.expense.aggregate({
       where: {
@@ -354,9 +355,8 @@ export async function computeSalesAndProfit(
   let refundCents = 0;
   for (const ret of approvedReturnsInRange) {
     if (returnSaleIdsInScope && !returnSaleIdsInScope.has(ret.saleId)) continue;
-    for (const item of asArray<SaleReturnItemEntry>(ret.items)) {
-      refundCents += item.lineTotalCents;
-    }
+    // Money actually paid back: an invoice credit note may refund less than its value.
+    refundCents += refundOfReturn(ret);
   }
 
   const grossCents = retailWholesaleCents + invoicePaymentCents;

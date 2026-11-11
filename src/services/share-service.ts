@@ -1,3 +1,4 @@
+import { creditedValueForSale } from "../lib/invoice-credit.js";
 import { randomBytes } from "node:crypto";
 import { displayLine } from "../lib/product-units.js";
 import { env } from "../env.js";
@@ -19,8 +20,9 @@ import { groupItemsBySections } from "../lib/document-sections.js";
 
 const SHARE_LINK_LIFETIME_MS = 365 * 24 * 60 * 60 * 1000; // ~1 year, matching the user's own ask
 
-type ShareEntity = "sale" | "quotation" | "sale_delivery" | "quotation_delivery" | "customer_statement";
-export type SharedResult = SharedDocumentResult | SharedDeliveryNoteResult | SharedStatementResult;
+/** "credit_note": entityId is the sale_returns id (see buildSharedCreditNote). */
+type ShareEntity = "sale" | "quotation" | "sale_delivery" | "quotation_delivery" | "customer_statement" | "credit_note";
+export type SharedResult = SharedDocumentResult | SharedDeliveryNoteResult | SharedStatementResult | SharedCreditNoteResult;
 
 const NOT_FOUND_MESSAGE: Record<ShareEntity, string> = {
   sale: "Receipt/invoice not found",
@@ -28,6 +30,7 @@ const NOT_FOUND_MESSAGE: Record<ShareEntity, string> = {
   sale_delivery: "Delivery note not found",
   quotation_delivery: "Delivery note not found",
   customer_statement: "Customer not found",
+  credit_note: "Credit note not found",
 };
 
 export async function createShareLink(input: unknown): Promise<{ url: string; message: string }> {
@@ -87,8 +90,111 @@ async function buildShareable(
     const doc = await buildSharedStatement(tenantId, entityId);
     return { doc, message: (url, includePreview) => (doc ? buildStatementShareMessage(doc, url, includePreview) : "") };
   }
+  if (entity === "credit_note") {
+    const doc = await buildSharedCreditNote(tenantId, entityId);
+    return { doc, message: (url, includePreview) => (doc ? buildCreditNoteShareMessage(doc, url, includePreview) : "") };
+  }
   const doc = await buildSharedDocument(tenantId, entity, entityId);
   return { doc, message: (url, includePreview) => (doc ? buildShareMessage(doc, url, includePreview) : "") };
+}
+
+export type SharedCreditNoteResult = {
+  documentKind: "credit_note";
+  businessName: string;
+  physicalAddress: string | null;
+  primaryPhone: string | null;
+  currency: string;
+  creditNoteNumber: string;
+  issuedAt: string;
+  againstKind: "invoice" | "receipt";
+  againstNumber: string | null;
+  customerName: string | null;
+  reason: string;
+  approvedByName: string | null;
+  items: Array<{ name: string; quantity: number; unitPriceCents: number; lineTotalCents: number }>;
+  totalCents: number;
+  /** Taken off what the customer still owed (invoice credit notes). */
+  balanceReductionCents: number;
+  /** Paid back to the customer. */
+  refundCents: number;
+  /** For an invoice: what's still owed now. */
+  invoiceBalanceCents: number | null;
+};
+
+type CreditNoteItem = { productId: string; quantity: number; unitPriceCents: number; lineTotalCents: number };
+
+/** A credit note (an approved return with a CN number — DESKTOP's getCreditNote) for the share page
+ * and its PDF. Null until it has a number, so a link can never show a still-pending request. */
+export async function buildSharedCreditNote(tenantId: string, returnId: string): Promise<SharedCreditNoteResult | null> {
+  const tenantRow = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { name: true, physicalAddress: true, contactPhone: true, currency: true },
+  });
+  if (!tenantRow) return null;
+
+  return withTenantContext(tenantId, async (tx) => {
+    const ret = await tx.saleReturn.findUnique({ where: { id: returnId } });
+    if (!ret || ret.tenantId !== tenantId || ret.status !== "approved" || !ret.creditNoteNumber) return null;
+    const sale = await tx.sale.findUnique({ where: { id: ret.saleId } });
+    if (!sale) return null;
+    const items = Array.isArray(ret.items) ? (ret.items as unknown as CreditNoteItem[]) : [];
+    const [products, customer, approver] = await Promise.all([
+      tx.product.findMany({ where: { id: { in: items.map((item) => item.productId) } }, select: { id: true, name: true } }),
+      sale.customerId ? tx.customer.findUnique({ where: { id: sale.customerId }, select: { name: true } }) : null,
+      ret.approvedBy ? tx.employee.findUnique({ where: { id: ret.approvedBy }, select: { firstName: true, lastName: true } }) : null,
+    ]);
+    const nameById = new Map(products.map((product) => [product.id, product.name]));
+    const totalCents = items.reduce((sum, item) => sum + item.lineTotalCents, 0);
+    const refundCents = ret.refundCents ?? totalCents;
+    return {
+      documentKind: "credit_note",
+      businessName: tenantRow.name,
+      physicalAddress: tenantRow.physicalAddress,
+      primaryPhone: tenantRow.contactPhone,
+      currency: tenantRow.currency,
+      creditNoteNumber: ret.creditNoteNumber,
+      issuedAt: (ret.approvedAt ?? ret.localUpdatedAt).toISOString(),
+      againstKind: sale.invoiceNumber ? "invoice" : "receipt",
+      againstNumber: sale.invoiceNumber ?? sale.receiptNumber,
+      customerName: customer?.name ?? null,
+      reason: ret.reason,
+      approvedByName: approver ? `${approver.firstName} ${approver.lastName}`.trim() : null,
+      items: items.map((item) => ({
+        name: nameById.get(item.productId) ?? "Item",
+        quantity: item.quantity,
+        unitPriceCents: item.unitPriceCents,
+        lineTotalCents: item.lineTotalCents,
+      })),
+      totalCents,
+      balanceReductionCents: totalCents - refundCents,
+      refundCents,
+      invoiceBalanceCents: sale.invoiceNumber ? sale.balanceDueCents : null,
+    };
+  });
+}
+
+function buildCreditNoteShareMessage(doc: SharedCreditNoteResult, url: string, includePreview: boolean): string {
+  const dateLabel = new Date(doc.issuedAt).toLocaleDateString();
+  if (!includePreview) return buildCompactShareMessage("🧾", "Credit Note", doc.creditNoteNumber, dateLabel, url);
+  const money = (cents: number) => formatMoney(cents, doc.currency);
+  const lines: string[] = [];
+  lines.push("🧾 *CREDIT NOTE*");
+  lines.push("");
+  lines.push(`*${doc.businessName}*`);
+  if (doc.primaryPhone) lines.push(doc.primaryPhone);
+  lines.push(SEPARATOR);
+  lines.push(`Credit Note: ${doc.creditNoteNumber}`);
+  lines.push(`Against ${doc.againstKind === "invoice" ? "Invoice" : "Receipt"}: ${doc.againstNumber ?? "-"}`);
+  lines.push(`Date: ${dateLabel}`);
+  lines.push(SEPARATOR);
+  for (const item of doc.items) lines.push(`${item.quantity} x ${item.name} — ${money(item.lineTotalCents)}`);
+  lines.push(SEPARATOR);
+  lines.push(`*Total Credited: ${money(doc.totalCents)}*`);
+  if (doc.refundCents > 0) lines.push(`Refunded: ${money(doc.refundCents)}`);
+  if (doc.invoiceBalanceCents !== null) lines.push(`Invoice Balance Now: ${money(doc.invoiceBalanceCents)}`);
+  lines.push("");
+  lines.push(`View: ${url}`);
+  return lines.join("\n");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -211,6 +317,10 @@ export type SharedDocumentResult = {
   // invoice-only
   dueDate: string | null;
   balanceDueCents: number | null;
+  /** What's been paid (invoices). Not Total − Balance: credit notes also take the balance down. */
+  amountPaidCents: number | null;
+  /** Approved credit notes on the invoice; Total − this − Paid = Balance. */
+  creditedCents: number | null;
   paymentStatus: string | null;
   // quotation-only
   validUntil: string | null;
@@ -547,6 +657,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
         notesSections: asArray<SharedNotesSection>(sale.notesSections),
         dueDate: isInvoice ? sale.dueDate : null,
         balanceDueCents: isInvoice ? sale.balanceDueCents : null,
+        amountPaidCents: isInvoice ? sale.amountPaidCents : null,
+        creditedCents: isInvoice ? await creditedValueForSale(tx, tenantId, sale.id) : null,
         paymentStatus: isInvoice
           ? computePaymentStatus({
               balanceDueCents: sale.balanceDueCents,
@@ -615,6 +727,8 @@ export async function buildSharedDocument(tenantId: string, entity: "sale" | "qu
       notesSections: asArray<SharedNotesSection>(quotation.notesSections),
       dueDate: null,
       balanceDueCents: null,
+      amountPaidCents: null,
+      creditedCents: null,
       paymentStatus: null,
       validUntil: quotation.validUntil,
       quotationStatus: computeQuotationStatus({ storedStatus: quotation.status, validUntil: quotation.validUntil }),
@@ -833,6 +947,7 @@ function buildShareMessage(doc: SharedDocumentResult, url: string, includePrevie
   lines.push(`Subtotal: ${money(doc.subtotalCents)}`);
   if (doc.discountAmountCents > 0) lines.push(`Discount: -${money(doc.discountAmountCents)}`);
   lines.push(`*TOTAL: ${money(doc.grandTotalCents)}*`);
+  if (doc.creditedCents) lines.push(`Credit Notes: -${money(doc.creditedCents)}`);
   if (doc.balanceDueCents !== null && doc.balanceDueCents > 0) {
     lines.push(`⚠️ *Balance Due: ${money(doc.balanceDueCents)}*`);
   }

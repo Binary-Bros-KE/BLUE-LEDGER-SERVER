@@ -1,3 +1,4 @@
+import { refundOfReturn } from "../lib/invoice-credit.js";
 import { NotFoundError } from "../lib/http-error.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -99,7 +100,7 @@ export async function getCashUp(tenantId: string, query: unknown, forcedEmployee
         },
         select: { id: true, payments: true },
       }),
-      tx.saleReturn.findMany({ where: { tenantId, status: "approved", approvedAt: { gte: start, lt: endExclusive } }, select: { saleId: true, items: true } }),
+      tx.saleReturn.findMany({ where: { tenantId, status: "approved", approvedAt: { gte: start, lt: endExclusive } }, select: { saleId: true, items: true, refundCents: true } }),
       tx.expense.findMany({
         where: { tenantId, status: "active", expenseDate: parsed.date, ...(locationId ? { storefrontId: locationId } : {}) },
         select: { amountCents: true, paymentMethodId: true },
@@ -174,7 +175,8 @@ export async function getCashUp(tenantId: string, query: unknown, forcedEmployee
       );
       for (const r of returns) {
         if (!inScope.has(r.saleId)) continue;
-        refundsCents += asArray<ReturnItemEntry>(r.items).reduce((sum, item) => sum + (item.lineTotalCents ?? 0), 0);
+        // What was actually handed back: an invoice credit note may refund less than its value.
+        refundsCents += refundOfReturn(r);
       }
     }
 

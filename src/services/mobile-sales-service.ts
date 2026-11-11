@@ -1,3 +1,4 @@
+import { settleCreditNote } from "../lib/invoice-credit.js";
 import { mpesaStatusOfSale } from "./mpesa-verification-service.js";
 import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import { randomUUID } from "node:crypto";
@@ -362,6 +363,7 @@ export async function requestSaleReturn(
     const sale = await tx.sale.findUnique({ where: { id: saleId } });
     if (!sale || sale.tenantId !== tenantId) throw new NotFoundError("Sale not found");
     if (sale.saleStatus !== "completed") throw new HttpError(400, "Only completed sales can have returns");
+    if (sale.invoiceNumber && sale.paymentStatus === "cancelled") throw new HttpError(400, "This invoice has been cancelled");
 
     const saleItems = asArray<RawSaleItemFull>(sale.items);
     const saleItemById = new Map(saleItems.map((i) => [i.id, i]));
@@ -413,7 +415,10 @@ export async function requestSaleReturn(
         localUpdatedAt: now,
       },
     });
-    if (approveNow) await restockReturn(tx, tenantId, employeeId, id, saleId, preparedItems, now);
+    if (approveNow) {
+      await restockReturn(tx, tenantId, employeeId, id, saleId, preparedItems, now);
+      await settleCreditNote(tx, { tenantId, employeeId, returnId: id, saleId, now });
+    }
 
     return { id, status: approveNow ? "approved" : "pending_approval" };
   });

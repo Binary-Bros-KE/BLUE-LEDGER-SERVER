@@ -1,3 +1,4 @@
+import { refundOfReturn } from "../lib/invoice-credit.js";
 import { mpesaStatusOf } from "./mpesa-verification-service.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -170,7 +171,7 @@ export async function listTransactions(
       where: { tenantId, status: "approved" },
       orderBy: { approvedAt: "desc" },
       take: 300,
-      select: { id: true, saleId: true, approvedAt: true, items: true },
+      select: { id: true, saleId: true, approvedAt: true, items: true, refundCents: true },
     });
     const returnSaleIds = [...new Set(approvedReturns.map((r) => r.saleId))];
     const returnSales =
@@ -195,7 +196,8 @@ export async function listTransactions(
       if (!sale) continue;
       if (locationId && sale.locationId !== locationId) continue;
       if (!isSuperAdmin && sale.employeeId !== viewerEmployeeId) continue;
-      const amountCents = asArray<RawSaleReturnItem>(ret.items).reduce((sum, item) => sum + item.lineTotalCents, 0);
+      // Money actually paid back: an invoice credit note reduces what's owed first (lib/invoice-credit.ts).
+      const amountCents = refundOfReturn(ret);
       if (amountCents <= 0) continue;
       const realCustomerName = sale.customerId ? (customerNameById.get(sale.customerId) ?? null) : null;
       rows.push({

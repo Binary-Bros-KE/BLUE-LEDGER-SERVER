@@ -3,6 +3,7 @@ import { groupItemsBySections } from "../lib/document-sections.js";
 import { taxBreakdownLabel, type TaxBreakdownEntry } from "../lib/tax-breakdown.js";
 import { formatMoney } from "./share-service.js";
 import type {
+  SharedCreditNoteResult,
   SharedDeliveryNoteResult,
   SharedDocumentResult,
   SharedLineItem,
@@ -208,6 +209,8 @@ export function documentFilenameBase(doc: SharedResult): string {
       return `Delivery-Note-${sanitize(doc.deliveryNoteNumber)}`;
     case "statement":
       return `Statement-${sanitize(doc.customerName)}`;
+    case "credit_note":
+      return `Credit-Note-${sanitize(doc.creditNoteNumber)}`;
   }
 }
 
@@ -223,7 +226,85 @@ export function buildDocumentHtml(doc: SharedResult): string {
       return buildDeliveryNoteDocumentHtml(doc);
     case "statement":
       return buildStatementDocumentHtml(doc);
+    case "credit_note":
+      return buildCreditNoteDocumentHtml(doc);
   }
+}
+
+/** Same letterhead family as the invoice: what was credited, against which document, and how the
+ * money was settled. */
+function buildCreditNoteDocumentHtml(doc: SharedCreditNoteResult): string {
+  const money = (cents: number): string => formatMoney(cents, doc.currency);
+  const rows = doc.items
+    .map(
+      (item, index) => `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${escapeHtml(item.name)}</td>
+        <td class="center">${item.quantity}</td>
+        <td class="right">${money(item.unitPriceCents)}</td>
+        <td class="right">${money(item.lineTotalCents)}</td>
+      </tr>`,
+    )
+    .join("");
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${escapeHtml(documentFilenameBase(doc))}</title>
+<style>${LETTERHEAD_STYLES}</style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="header">
+      <div class="header-row">
+        <div>
+          <p class="business-name">${escapeHtml(doc.businessName)}</p>
+          ${doc.physicalAddress ? `<p class="muted">${escapeHtml(doc.physicalAddress)}</p>` : ""}
+          ${doc.primaryPhone ? `<p class="muted">${escapeHtml(doc.primaryPhone)}</p>` : ""}
+        </div>
+        <div>
+          <p class="invoice-title">CREDIT NOTE</p>
+          <p class="muted" style="text-align:right;">${escapeHtml(doc.creditNoteNumber)}</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="bill-to">
+      <p class="label">Credited To</p>
+      <p class="name">${escapeHtml(doc.customerName ?? "Walk-in Customer")}</p>
+    </div>
+
+    <table class="meta-table">
+      <thead>
+        <tr><th>Date</th><th>Against ${doc.againstKind === "invoice" ? "Invoice" : "Receipt"}</th><th>Approved By</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>${formatDate(doc.issuedAt)}</td><td>${escapeHtml(doc.againstNumber ?? "-")}</td><td>${escapeHtml(doc.approvedByName ?? "-")}</td></tr>
+      </tbody>
+    </table>
+
+    <div class="items-frame">
+      <table class="items-table">
+        <thead>
+          <tr><th>#</th><th>Product</th><th class="center">Qty</th><th class="right">Unit Price</th><th class="right">Line Total</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="items-spacer"></div>
+      <table class="totals-table">
+        <tr class="grand"><td>Total Credited</td><td>${money(doc.totalCents)}</td></tr>
+        ${doc.againstKind === "invoice" ? `<tr><td>Taken Off Amount Owed</td><td>${money(doc.balanceReductionCents)}</td></tr>` : ""}
+        <tr><td>Refunded</td><td>${money(doc.refundCents)}</td></tr>
+        ${doc.invoiceBalanceCents !== null ? `<tr class="balance"><td>Invoice Balance Now</td><td>${money(doc.invoiceBalanceCents)}</td></tr>` : ""}
+      </table>
+    </div>
+
+    <div class="notes"><strong>Reason</strong><p>${escapeHtml(doc.reason)}</p></div>
+    <div class="footer">Thank you for your business!</div>
+  </div>
+</body>
+</html>`;
 }
 
 /** Letterhead-style receipt — same visual family as the invoice/quotation/statement documents, NOT
@@ -469,7 +550,8 @@ function buildInvoiceDocumentHtml(doc: SharedDocumentResult): string {
         ${doc.discountAmountCents > 0 ? `<tr><td>Discount</td><td>-${money(doc.discountAmountCents)}</td></tr>` : ""}
         ${doc.includeTaxBreakdown && doc.addedTaxCents > 0 ? `<tr><td>Total Tax</td><td>${money(doc.addedTaxCents)}</td></tr>` : ""}
         <tr class="grand"><td>Total</td><td>${money(doc.grandTotalCents)}</td></tr>
-        <tr><td>Amount Paid</td><td>${money(doc.grandTotalCents !== null && doc.balanceDueCents !== null ? doc.grandTotalCents - doc.balanceDueCents : null)}</td></tr>
+        ${doc.creditedCents ? `<tr><td>Credit Notes</td><td>-${money(doc.creditedCents)}</td></tr>` : ""}
+        <tr><td>Amount Paid</td><td>${money(doc.amountPaidCents ?? (doc.grandTotalCents !== null && doc.balanceDueCents !== null ? doc.grandTotalCents - doc.balanceDueCents - (doc.creditedCents ?? 0) : null))}</td></tr>
         <tr class="balance"><td>Balance Due</td><td>${money(doc.balanceDueCents)}</td></tr>
       </table>
     </div>
