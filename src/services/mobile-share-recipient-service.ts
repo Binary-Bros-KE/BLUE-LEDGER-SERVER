@@ -17,6 +17,12 @@ export async function getShareRecipient(tenantId: string, input: MobileShareReci
     let customerId: string | null;
     if (input.entity === "customer_statement") {
       customerId = input.entityId;
+    } else if (input.entity === "credit_note") {
+      // entityId is the return: the credit note goes to that sale's customer.
+      const ret = await tx.saleReturn.findUnique({ where: { id: input.entityId }, select: { tenantId: true, saleId: true } });
+      if (!ret || ret.tenantId !== tenantId) throw new NotFoundError("Document not found");
+      const sale = await tx.sale.findUnique({ where: { id: ret.saleId }, select: { customerId: true } });
+      customerId = sale?.customerId ?? null;
     } else if (input.entity === "sale" || input.entity === "sale_delivery") {
       const sale = await tx.sale.findUnique({ where: { id: input.entityId }, select: { tenantId: true, customerId: true } });
       if (!sale || sale.tenantId !== tenantId) throw new NotFoundError("Document not found");

@@ -135,6 +135,8 @@ export type MobilePendingSaleAdjustment = {
   /** Return lines, "2 × Sugar 1kg" — empty for a void. */
   lines: string[];
   currency: string;
+  /** Against an invoice: a return there is a credit note (settled on approval — lib/invoice-credit.ts). */
+  isInvoice: boolean;
 };
 
 /** The Approvals tab's void + return queue, oldest first. */
@@ -179,6 +181,7 @@ export async function listPendingSaleAdjustments(tenantId: string): Promise<Mobi
         requestedAt: v.requestedAt.toISOString(),
         lines: [],
         currency: tenant.currency,
+        isInvoice: sale.invoiceNumber !== null,
       });
     }
     for (const r of returns) {
@@ -199,6 +202,7 @@ export async function listPendingSaleAdjustments(tenantId: string): Promise<Mobi
         requestedAt: r.requestedAt.toISOString(),
         lines: lines.map((l) => `${l.quantity} × ${productName.get(l.productId) ?? "Unknown product"}`),
         currency: tenant.currency,
+        isInvoice: sale.invoiceNumber !== null,
       });
     }
     return rows.sort((a, b) => a.requestedAt.localeCompare(b.requestedAt));
@@ -259,6 +263,8 @@ export type MobileRecentDecision = {
   status: "approved" | "rejected";
   decidedByName: string | null;
   decidedAt: string | null;
+  /** An approved return's CN number, once issued. */
+  creditNoteNumber: string | null;
 };
 
 const RECENT_DECISIONS_LIMIT = 20;
@@ -295,6 +301,11 @@ export async function listRecentDecisions(tenantId: string): Promise<MobileRecen
     const locations = await tx.location.findMany({ where: { id: { in: [...new Set(sales.map((s) => s.locationId))] } }, select: { id: true, locationName: true } });
     const locationName = new Map(locations.map((l) => [l.id, l.locationName]));
     const employeeName = new Map(employees.map((e) => [e.id, `${e.firstName} ${e.lastName}`.trim()]));
+    const creditNotes = await tx.saleReturn.findMany({
+      where: { id: { in: returns.map((row) => row.id) }, creditNoteNumber: { not: null } },
+      select: { id: true, creditNoteNumber: true },
+    });
+    const creditNoteById = new Map(creditNotes.map((row) => [row.id, row.creditNoteNumber]));
 
     return entries.map(({ kind, row }) => {
       const sale = saleById.get(row.saleId);
@@ -308,6 +319,7 @@ export async function listRecentDecisions(tenantId: string): Promise<MobileRecen
         status: row.status as "approved" | "rejected",
         decidedByName: row.approvedBy ? (employeeName.get(row.approvedBy) ?? null) : null,
         decidedAt: row.approvedAt?.toISOString() ?? null,
+        creditNoteNumber: kind === "return" ? (creditNoteById.get(row.id) ?? null) : null,
       };
     });
   });

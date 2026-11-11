@@ -33,6 +33,7 @@ import * as mobileProductsService from "../services/mobile-products-service.js";
 import * as mobileQuotationsService from "../services/mobile-quotations-service.js";
 import * as mobileReportsService from "../services/mobile-reports-service.js";
 import * as mobileRidersService from "../services/mobile-riders-service.js";
+import * as mobileCreditNotesService from "../services/mobile-credit-notes-service.js";
 import * as mobileSaleAdjustmentsService from "../services/mobile-sale-adjustments-service.js";
 import * as mobileSalesReportService from "../services/mobile-sales-report-service.js";
 import * as mobileRolesService from "../services/mobile-roles-service.js";
@@ -1164,4 +1165,14 @@ mobileRouter.get("/products/costs", requireMobileAuth, requireOwnerAppAccess, as
   const allowed = session.isSuperAdmin || (perms["purchases"] ?? []).includes("create") || (perms["products"] ?? []).includes("edit");
   if (!allowed) throw new HttpError(403, "You don't have access to buying prices.");
   res.json(await mobilePurchasesService.listProductCosts(session.tenantId));
+});
+
+// Credit notes — see mobile-credit-notes-service.ts. Seeing and issuing the document only needs
+// sales.view: the stock and money were settled when the return was approved.
+mobileRouter.get("/sales/:id/credit-notes", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "view"), async (req, res) => {
+  res.json(await mobileCreditNotesService.listSaleCreditNotes(req.mobileSession!.tenantId, req.params.id as string));
+});
+
+mobileRouter.post("/returns/:id/credit-note", requireMobileAuth, requireOwnerAppAccess, requireMobilePermission("sales", "view"), async (req, res) => {
+  res.json(await mobileCreditNotesService.issueCreditNote(req.mobileSession!.tenantId, req.mobileSession!.employeeId, req.params.id as string));
 });
