@@ -1,3 +1,4 @@
+import { stockRequestDecisionConflict } from "../lib/stock-request-sync.js";
 import { Prisma } from "@prisma/client";
 import { withTenantContext } from "../lib/tenant-context.js";
 import {
@@ -165,6 +166,7 @@ const REQUIRED_REF_FIELDS: Partial<Record<SyncEntityName, Array<{ field: string;
     { field: "locationId", delegate: (tx) => tx.location },
     { field: "productId", delegate: (tx) => tx.product },
   ],
+  stock_receipts: [{ field: "stockRequestId", delegate: (tx) => tx.stockRequest }],
   working_hours: [{ field: "locationId", delegate: (tx) => tx.location }],
   // A reminder for a subscription the cloud hasn't got yet is retried later, never stored orphaned.
   customer_subscription_notices: [{ field: "subscriptionId", delegate: (tx) => tx.customerSubscription }],
@@ -266,7 +268,7 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
         }
       }
 
-      for (const row of parsed.rows) {
+      for (const row of parsed.entity === "stock_requests" ? [...parsed.rows].sort((a,b) => String(a.id).localeCompare(String(b.id))) : parsed.rows) {
         const id = typeof row.id === "string" ? row.id : null;
         if (!id) {
           results.push({ id: "(missing)", status: "error", error: "Row missing id" });
@@ -278,8 +280,16 @@ export async function pushRows(input: unknown): Promise<{ results: PushRowResult
 
           // One existence check up front, reused by both the conflict check and the natural-key dedup
           // below — either needs to know "does a row with this exact id already exist."
+          if (parsed.entity === "stock_requests") {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${parsed.tenantId}), hashtext(${id}))`;
+          }
           const existingById =
-            baseUpdatedAt || naturalKeyField ? await delegate.findUnique({ where: { id } }) : null;
+            baseUpdatedAt || naturalKeyField || parsed.entity === "stock_requests" ? await delegate.findUnique({ where: { id } }) : null;
+
+          if (parsed.entity === "stock_requests" && stockRequestDecisionConflict(existingById, row)) {
+            results.push({ id, status: "conflict", serverRow: existingById });
+            continue;
+          }
 
           // Never a conflict with yourself: if the server's current version was written by this SAME
           // device (or is this exact version being replayed), no other device's write sits in between.

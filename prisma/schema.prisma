@@ -1992,6 +1992,7 @@ model StockReceipt {
   tenant   Tenant @relation(fields: [tenantId], references: [id])
   deviceId String
 
+  stockRequestId         String?
   receiptNumber          String
   locationId             String
   allocationStorefrontId String?

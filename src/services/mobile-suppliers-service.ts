@@ -1,3 +1,4 @@
+import { supplierBalances } from "../lib/supplier-balances.js";
 import { randomUUID } from "node:crypto";
 import { ConflictError, NotFoundError } from "../lib/http-error.js";
 import { ensureEmployeeMobileSequence, mintMobileDocumentNumber } from "../lib/mobile-numbering.js";
@@ -74,12 +75,9 @@ export async function createSupplier(tenantId: string, employeeId: string, input
 }
 
 // ---------------------------------------------------------------------------------------------
-// Supplier balances — a supplier's balance is the running sum of its SupplierBalanceEntry rows
-// (DESKTOP's own append-only ledger: purchase_received grows it, payment shrinks it, both written by
-// purchases — see mobile-purchases-service.ts). The only entry a person creates directly is a
-// "manual_adjustment" (DESKTOP's supplier-balance-service.ts adjustSupplierBalance): an opening
-// balance carried over from an old system, a correction, or money settled outside a purchase.
-// Signed: positive = more owed to the supplier, negative = less.
+// Supplier balances match desktop: received goods + supplier shipping fee - payments,
+// plus standalone adjustments. Purchase-linked ledger entries remain available as audit history.
+// Positive = owed to the supplier; negative = supplier credit.
 // ---------------------------------------------------------------------------------------------
 
 export type MobileSupplierWithBalance = MobileSupplier & { supplierCode: string; balanceCents: number };
@@ -98,11 +96,10 @@ export type MobileSupplierBalanceEntry = {
 /** Suppliers tab list — biggest balance owed first. */
 export async function listSuppliersWithBalances(tenantId: string, localOnly = false): Promise<MobileSupplierWithBalance[]> {
   return withTenantContext(tenantId, async (tx) => {
-    const [suppliers, sums] = await Promise.all([
-      tx.supplier.findMany({ where: { tenantId, status: "active", ...(localOnly ? { supplierType: "local" } : {}) }, select: { ...SUPPLIER_SELECT, supplierCode: true } }),
-      tx.supplierBalanceEntry.groupBy({ by: ["supplierId"], where: { tenantId }, _sum: { amountCents: true } }),
+    const [suppliers, balanceBySupplier] = await Promise.all([
+      tx.supplier.findMany({ where: { tenantId, ...(localOnly ? { supplierType: "local" } : {}) }, select: { ...SUPPLIER_SELECT, supplierCode: true } }),
+      supplierBalances(tx, tenantId),
     ]);
-    const balanceBySupplier = new Map(sums.map((row) => [row.supplierId, row._sum.amountCents ?? 0]));
     return suppliers
       .map((sup) => ({ ...sup, balanceCents: balanceBySupplier.get(sup.id) ?? 0 }))
       .sort((a, b) => b.balanceCents - a.balanceCents || a.businessName.localeCompare(b.businessName));
@@ -167,8 +164,8 @@ export async function adjustSupplierBalance(tenantId: string, employeeId: string
         },
       });
     }
-    const sum = await tx.supplierBalanceEntry.aggregate({ where: { tenantId, supplierId }, _sum: { amountCents: true } });
-    return { id: entryId, balanceCents: sum._sum.amountCents ?? 0 };
+    const balances = await supplierBalances(tx, tenantId, supplierId);
+    return { id: entryId, balanceCents: balances.get(supplierId) ?? 0 };
   });
 }
 
