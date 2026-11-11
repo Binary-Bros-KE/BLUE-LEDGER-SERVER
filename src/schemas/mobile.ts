@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isValidDate } from "../lib/subscription-schedule.js";
 
 /** No auth token here — mirrors activationRegisterSchema's own reasoning: this is called by an
  * Owner App install that has no session yet, the same license key + employee credential combo the
@@ -992,4 +993,36 @@ export const mobileRoleInputSchema = z.object({
     .nullish()
     .transform((value) => (value ? value : null)),
   permissions: z.record(z.string(), z.array(z.string())),
+});
+
+// --- Subscriptions (DStv, GOtv...): same bounds as DESKTOP shared/schemas/subscription.ts. `id` is
+// minted by the phone once per form, so a retried submit can never add the same thing twice.
+const mobileCalendarDate = z.string().trim().refine(isValidDate, "Enter a valid date");
+const mobileSubscriptionPeriod = z.coerce.number().int().min(1, "Period must be at least 1 day").max(3660);
+const mobileSubscriptionAmount = z.coerce.number().int().min(0).nullable().optional().transform((value) => value ?? null);
+
+export const mobileSubscriptionSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  customerId: z.string().trim().min(1, "Choose a customer"),
+  locationId: z.string().trim().min(1).nullable().optional(),
+  serviceName: z.string().trim().min(1, "Enter the service, e.g. DStv Compact").max(120),
+  accountNumber: mobileOptionalText(60),
+  startDate: mobileCalendarDate,
+  periodDays: mobileSubscriptionPeriod,
+  amountCents: mobileSubscriptionAmount,
+  notes: mobileOptionalText(500),
+});
+
+export const mobileSubscriptionRenewSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  startDate: mobileCalendarDate,
+  periodDays: mobileSubscriptionPeriod,
+  amountCents: mobileSubscriptionAmount,
+});
+
+export const mobileSubscriptionNoticeSchema = z.object({
+  id: z.string().trim().min(1).max(100),
+  stage: z.enum(["week", "three_days", "due", "expired"]),
+  channel: z.enum(["whatsapp", "email", "other"]),
+  recipient: mobileOptionalText(160),
 });
