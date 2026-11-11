@@ -1,3 +1,4 @@
+import { settleCreditNote } from "../lib/invoice-credit.js";
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
@@ -224,7 +225,11 @@ export async function decideSaleAdjustment(
       const now = new Date();
       if (decision === "approved") {
         if (kind === "void") await restockVoid(tx, tenantId, employeeId, id, row.saleId, now);
-        else await restockReturn(tx, tenantId, employeeId, id, row.saleId, asArray<ReturnLine>("items" in row ? row.items : []), now);
+        else {
+          await restockReturn(tx, tenantId, employeeId, id, row.saleId, asArray<ReturnLine>("items" in row ? row.items : []), now);
+          // Still pending here, so it isn't counted in "already credited".
+          await settleCreditNote(tx, { tenantId, employeeId, returnId: id, saleId: row.saleId, now });
+        }
       }
       const data = {
         status: decision,

@@ -1,3 +1,5 @@
+import { invoiceBalanceCents } from "../lib/credit-note.js";
+import { assertNoCreditNotes, creditedValueForSale } from "../lib/invoice-credit.js";
 import { buildSaleVerifications } from "./mpesa-verification-service.js";
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
@@ -364,6 +366,7 @@ export async function updateInvoice(tenantId: string, employeeId: string, id: st
       const row = await requireInvoiceRow(tx, tenantId, id);
       if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice has been cancelled");
       if (row.amountPaidCents > 0) throw new HttpError(400, "This invoice has payments recorded against it and can no longer be edited");
+      await assertNoCreditNotes(tx, tenantId, id, "edited");
 
       const [tenant, customer] = await Promise.all([
         tx.tenant.findUniqueOrThrow({ where: { id: tenantId }, select: { vatRatePercent: true, pricesTaxInclusive: true, invoiceEditsDisabled: true } }),
@@ -514,7 +517,8 @@ export async function applyPayment(
   const payments = [...existingPayments, newPayment];
 
   const amountPaidCents = payments.reduce((sum, entry) => sum + entry.amountCents, 0);
-  const balanceDueCents = row.grandTotalCents - amountPaidCents;
+  // Credit notes already took their share off what's owed (lib/credit-note.ts).
+  const balanceDueCents = invoiceBalanceCents(row.grandTotalCents, amountPaidCents, await creditedValueForSale(tx, tenantId, saleId));
   const paymentStatus = computePaymentStatus({ balanceDueCents, amountPaidCents, dueDate: row.dueDate, cancelled: false });
   const mpesaVerifications = await buildSaleVerifications(tx, {
     tenantId,
@@ -663,6 +667,7 @@ export async function cancelInvoice(tenantId: string, employeeId: string, saleId
       const row = await requireInvoiceRow(tx, tenantId, saleId);
       if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice is already cancelled");
       await assertNoPendingCancellation(tx, tenantId, saleId);
+      await assertNoCreditNotes(tx, tenantId, saleId, "cancelled");
 
       const items = row.items as unknown as StoredStockLine[];
       const now = new Date();
@@ -711,6 +716,7 @@ export async function requestInvoiceCancel(tenantId: string, employeeId: string,
     const row = await requireInvoiceRow(tx, tenantId, saleId);
     if (row.paymentStatus === "cancelled") throw new HttpError(400, "This invoice is already cancelled");
     await assertNoPendingCancellation(tx, tenantId, saleId);
+    await assertNoCreditNotes(tx, tenantId, saleId, "cancelled");
 
     const now = new Date();
     await tx.invoiceCancellation.create({
@@ -810,6 +816,7 @@ export async function approveInvoiceCancel(tenantId: string, employeeId: string,
     async (tx) => {
       const cancellationRow = await requirePendingCancellation(tx, tenantId, id);
       const saleRow = await requireInvoiceRow(tx, tenantId, cancellationRow.saleId);
+      await assertNoCreditNotes(tx, tenantId, cancellationRow.saleId, "cancelled");
 
       const items = saleRow.items as unknown as StoredStockLine[];
       const now = new Date();

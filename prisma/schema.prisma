@@ -1679,6 +1679,11 @@ model SaleReturn {
   /// sale_return_items rows — {id, saleItemId, productId, quantity, unitPriceCents,
   /// lineTotalCents, createdAt}[].
   items       Json
+  /// CN-... once a credit note is issued (on an invoice: when approved). See DESKTOP migration 112.
+  creditNoteNumber String?
+  /// Money actually paid back. Null = the whole returned value (every receipt return); an invoice
+  /// credit note reduces what's owed first and stores only what it refunded.
+  refundCents      Int?
 
   localCreatedAt DateTime
   localUpdatedAt DateTime
