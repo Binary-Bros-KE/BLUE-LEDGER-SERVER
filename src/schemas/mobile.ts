@@ -180,9 +180,19 @@ export type MobileCheckoutInput = z.infer<typeof mobileCheckoutSchema>;
 /** The fast path for adding a customer mid-checkout — name + phone only, same fields as DESKTOP's
  * own QuickCreateCustomerModal (everything else is editable later from DESKTOP's Customers screen;
  * mobile has no full customer-edit UI in this phase). */
+/** A customer's company. Not sent (an older app) = leave it as it is; blank = clear it. */
+const mobileCompanyName = z
+  .string()
+  .trim()
+  .max(150)
+  .nullable()
+  .optional()
+  .transform((value) => (value === undefined ? undefined : value || null));
+
 export const mobileCreateCustomerSchema = z.object({
   name: z.string().trim().min(1, "Name is required"),
   phone: z.string().trim().min(1, "Phone is required"),
+  companyName: mobileCompanyName,
 });
 
 export type MobileCreateCustomerInput = z.infer<typeof mobileCreateCustomerSchema>;
@@ -894,6 +904,7 @@ export const mobileUpdateCustomerSchema = z.object({
   name: z.string().trim().min(1, "Customer name is required").max(150),
   phone: z.string().trim().min(1, "Phone number is required").max(30),
   customerType: z.enum(["retail", "wholesale", "corporate", "walk_in", "personal"]),
+  companyName: mobileCompanyName,
   email: mobileOptionalText(150),
   kraPin: mobileOptionalText(50),
   physicalAddress: mobileOptionalText(500),

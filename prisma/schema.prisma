@@ -963,6 +963,8 @@ model Customer {
   name                String
   phone               String
   email               String?
+  /// Optional company the customer belongs to (DESKTOP migration 114).
+  companyName         String?
   kraPin              String?
   physicalAddress     String?
   creditLimitCents    Int?

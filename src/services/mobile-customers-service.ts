@@ -20,12 +20,12 @@ const OWNER_APP_DEVICE_ID = "owner-app";
 const CUSTOMER_CODE_PREFIX = "CUST";
 const CUSTOMER_CODE_DIGITS = 5;
 
-export type MobileCustomer = { id: string; name: string; phone: string; customerCode: string };
+export type MobileCustomer = { id: string; name: string; phone: string; customerCode: string; companyName: string | null };
 
 /** The Customers tab's list item — MobileCustomer plus what they currently owe. */
 export type MobileCustomerWithBalance = MobileCustomer & { balanceDueCents: number; unpaidInvoiceCount: number };
 
-const CUSTOMER_SELECT = { id: true, name: true, phone: true, customerCode: true } as const;
+const CUSTOMER_SELECT = { id: true, name: true, phone: true, customerCode: true, companyName: true } as const;
 
 /** Backs the Owner App's "Generate Statement" customer picker AND the Checkout customer picker AND
  * the Customers tab — one list, same shape, reused everywhere a mobile screen needs "which customer
@@ -64,6 +64,7 @@ export async function createCustomer(tenantId: string, employeeId: string, input
         customerType: "retail",
         name: parsed.name,
         phone: parsed.phone,
+        companyName: parsed.companyName ?? null,
         status: "active",
         locationId: employee.branchId,
         localCreatedAt: now,
@@ -272,6 +273,7 @@ export type MobileCustomerDetail = {
   customerType: string;
   name: string;
   phone: string;
+  companyName: string | null;
   email: string | null;
   kraPin: string | null;
   physicalAddress: string | null;
@@ -290,6 +292,7 @@ export async function getCustomerDetail(tenantId: string, customerId: string): P
       customerType: c.customerType,
       name: c.name,
       phone: c.phone,
+      companyName: c.companyName,
       email: c.email,
       kraPin: c.kraPin,
       physicalAddress: c.physicalAddress,
