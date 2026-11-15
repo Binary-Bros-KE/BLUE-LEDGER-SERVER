@@ -671,6 +671,11 @@ model Tenant {
   /// calculation is actually implemented today — this flag exists so the schema doesn't need
   /// another migration once an exclusive-pricing market is actually onboarded.
   pricesTaxInclusive Boolean @default(true)
+  /// Mark Point (DESKTOP shared/lib/mark-point.ts, migration 115): selling = buying x markPoint. Pushed
+  /// with the Business Profile like the tax rate; off by default.
+  markPointEnabled   Boolean @default(false)
+  markPoint          Float?
+  markPointStrict    Boolean @default(false)
   /// Admin-dashboard-controlled ONLY (never pushed by a device): when true,
   /// existing invoices can no longer be edited from any device or the mobile app. Default false so
   /// every existing tenant keeps today's behaviour.

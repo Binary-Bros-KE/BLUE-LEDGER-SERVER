@@ -85,6 +85,10 @@ export const activationProfileUpdateSchema = z.object({
   ownerEmail: pushOptionalText(200),
   vatRatePercent: z.coerce.number().min(0).max(100).optional(),
   pricesTaxInclusive: z.boolean().optional(),
+  // Mark Point — optional so an older desktop's push leaves it as it is.
+  markPointEnabled: z.boolean().optional(),
+  markPoint: z.coerce.number().gt(1).max(100).nullable().optional(),
+  markPointStrict: z.boolean().optional(),
 });
 
 export type ActivationProfileUpdateInput = z.infer<typeof activationProfileUpdateSchema>;
