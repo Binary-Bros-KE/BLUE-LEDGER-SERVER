@@ -1,6 +1,7 @@
+import { sellingFromBuying, strictMarkPoint } from "../lib/mark-point.js";
 import { seesInternationalSuppliers } from "./mobile-suppliers-service.js";
 import { randomUUID } from "node:crypto";
-import { parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
+import { findUnit, parseUnitConfig, type ProductUnitConfig } from "../lib/product-units.js";
 import type { Prisma } from "@prisma/client";
 import { findDropshipLinks } from "../lib/dropship-links.js";
 import { ConflictError, HttpError, NotFoundError } from "../lib/http-error.js";
@@ -447,13 +448,30 @@ async function loadPurchase(tx: Prisma.TransactionClient, tenantId: string, purc
  * minimum price pinned to the new buying price, selling price only when the line gave one. */
 async function syncProductPricingFromOrder(
   tx: Prisma.TransactionClient,
-  items: Array<{ productId: string; unitCostCents: number; sellingPriceCents: number | null }>,
+  orderItems: Array<{ productId: string; unitCostCents: number; sellingPriceCents: number | null }>,
   now: Date,
 ): Promise<void> {
+  const products = await tx.product.findMany({
+    where: { id: { in: orderItems.map((i) => i.productId) } },
+    select: { id: true, name: true, sellingPriceCents: true, tenantId: true, unitConfigJson: true },
+  });
+  const productById = new Map(products.map((p) => [p.id, p]));
+  // Strict Mark Point (DESKTOP purchase-service.ts, same rule): a line without its own selling price
+  // sells at its new cost x the mark point — this prices a Local Credit Purchase, where only cost is typed.
+  const tenant = products[0]
+    ? await tx.tenant.findUnique({ where: { id: products[0].tenantId }, select: { markPointEnabled: true, markPoint: true, markPointStrict: true } })
+    : null;
+  const markPoint = strictMarkPoint(tenant);
+  const items =
+    markPoint === null
+      ? orderItems
+      : orderItems.map((item) => {
+          if (item.sellingPriceCents !== null && item.sellingPriceCents !== undefined) return item;
+          const config = parseUnitConfig(productById.get(item.productId)?.unitConfigJson);
+          return { ...item, sellingPriceCents: sellingFromBuying(item.unitCostCents, markPoint, findUnit(config, config?.priceUnit)?.factor ?? 1) };
+        });
   // Placing the order makes the cost the product's buying price — never above what it sells for
   // (the same rule as the product form). Checked for every line before any is written.
-  const products = await tx.product.findMany({ where: { id: { in: items.map((i) => i.productId) } }, select: { id: true, name: true, sellingPriceCents: true } });
-  const productById = new Map(products.map((p) => [p.id, p]));
   for (const item of items) {
     const product = productById.get(item.productId);
     const sellingPriceCents = item.sellingPriceCents ?? product?.sellingPriceCents ?? 0;
