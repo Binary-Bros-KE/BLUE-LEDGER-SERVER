@@ -1,4 +1,5 @@
 import { prisma } from "../prisma.js";
+import { settleAllDueWallets } from "../services/subscription-wallet-service.js";
 
 /** Hourly is plenty granular against a 30-day grace window — this only needs to notice within an
  * hour or two of the actual deadline, not to the second. Matches the plain setInterval pattern
@@ -48,6 +49,9 @@ export async function runBillingSweep(): Promise<void> {
     data: { status: "ACTIVE" },
   });
 
+  // Prepaid balances pay what's due before anything below can flag or suspend it.
+  const walletPaid = await settleAllDueWallets(now);
+
   // Scoped to an ACTIVE license, same as the auto-suspend step below — a still-in-trial tenant's
   // nextDueDate is already correctly anchored past their trialEndsAt (see resolveBillingAnchorDate),
   // but a defensive gate here too means this can never flag PAST_DUE against a trial tenant even if
@@ -78,6 +82,7 @@ export async function runBillingSweep(): Promise<void> {
     });
   }
 
+  if (walletPaid > 0) console.log(`[billing-scheduler] ${walletPaid} period(s) paid from prepaid balances.`);
   if (trialEndedResult.count > 0 || pastDueResult.count > 0 || recoveredResult.count > 0 || overdueMonthly.length > 0) {
     console.log(
       `[billing-scheduler] ${trialEndedResult.count} trial(s) ended -> ACTIVE, ${pastDueResult.count} newly PAST_DUE, ${recoveredResult.count} recovered to ACTIVE, ${overdueMonthly.length} MONTHLY license(s) auto-suspended for PAYMENT_OVERDUE.`,

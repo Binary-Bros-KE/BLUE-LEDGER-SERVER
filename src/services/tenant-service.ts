@@ -177,6 +177,7 @@ export async function deleteTenant(id: string): Promise<void> {
   // manual cleanup, same convention as the desktop app's own delete paths.
   await prisma.$transaction([
     prisma.subscriptionPayment.deleteMany({ where: { tenantId: id } }),
+    prisma.subscriptionWalletEntry.deleteMany({ where: { tenantId: id } }),
     prisma.device.deleteMany({ where: { tenantId: id } }),
     prisma.subscription.deleteMany({ where: { tenantId: id } }),
     prisma.license.deleteMany({ where: { tenantId: id } }),

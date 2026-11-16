@@ -1,3 +1,5 @@
+import { pricePerPeriodCents } from "../lib/subscription-wallet.js";
+import { getWalletSummary, settleDueFromWallet, type WalletSummary } from "./subscription-wallet-service.js";
 import type { Device, License, Plan, Subscription, Tenant } from "@prisma/client";
 import { HttpError, NotFoundError } from "../lib/http-error.js";
 import { assertLicenseUsable } from "../lib/license-guard.js";
@@ -205,6 +207,10 @@ export type HeartbeatResult = BusinessProfileFields & {
   businessProfileUpdatedAt: string | null;
   /** Null for every tenant without dropshipping — see lib/dropship-links.ts. */
   dropship: DropshipHeartbeat | null;
+  /** Prepaid balance and what one period costs — lets DESKTOP warn "your balance won't cover the next
+   * payment" offline, from its last check-in. */
+  walletBalanceCents: number;
+  pricePerPeriodCents: number | null;
 };
 
 /** Called periodically by an already-registered install — the ongoing "is this license still
@@ -212,9 +218,17 @@ export type HeartbeatResult = BusinessProfileFields & {
  * caches whatever it last successfully heard so it can keep working offline in between calls. */
 export async function heartbeat(input: unknown): Promise<HeartbeatResult> {
   const parsed = activationHeartbeatSchema.parse(input);
-  const license = await findLicenseWithContext(parsed.licenseKey);
+  let license = await findLicenseWithContext(parsed.licenseKey);
   if (!license) {
     throw new NotFoundError("Invalid license key");
+  }
+
+  // A balance pays what has fallen due before anything else looks at the license — so a period due
+  // since this morning never shows as overdue, and an overdue suspension lifts on its own.
+  const dueSubscription = license.tenant.subscription;
+  if (dueSubscription && dueSubscription.walletBalanceCents > 0 && dueSubscription.nextDueDate && dueSubscription.nextDueDate <= new Date()) {
+    const paid = await settleDueFromWallet(license.tenantId);
+    if (paid.length > 0) license = (await findLicenseWithContext(parsed.licenseKey)) ?? license;
   }
 
   const device = license.tenant.devices.find((d) => d.id === parsed.deviceId);
@@ -253,6 +267,8 @@ export async function heartbeat(input: unknown): Promise<HeartbeatResult> {
     maxDevices: license.tenant.maxDevicesOverride ?? subscription?.plan.maxDevices ?? 1,
     ecommerceEnabled: license.tenant.ecommerceEnabled || (subscription?.plan.featureEcommerce ?? false),
     dropship: license.tenant.dropshippingEnabled ? await getDropshipHeartbeat(license.tenant.id) : null,
+    walletBalanceCents: subscription?.walletBalanceCents ?? 0,
+    pricePerPeriodCents: subscription ? pricePerPeriodCents(subscription) : null,
     ...extractBusinessProfileFields(license.tenant),
   };
 }
@@ -370,6 +386,8 @@ export type PaymentScheduleResult = {
    * Active" badge. */
   pesapalAutoBillingEnabled: boolean;
   pesapalAutoBillingActivatedAt: string | null;
+  /** Prepaid balance (lib/subscription-wallet.ts). */
+  walletBalanceCents: number;
 };
 
 /** Powers both DESKTOP's own port of the admin dashboard's "Jan ✅ Feb ✅ Mar ❌" PaymentCalendar
@@ -396,6 +414,7 @@ export async function getPaymentSchedule(input: unknown): Promise<PaymentSchedul
       nextDueDate: null,
       pesapalAutoBillingEnabled: false,
       pesapalAutoBillingActivatedAt: null,
+      walletBalanceCents: 0,
     };
   }
 
@@ -422,5 +441,16 @@ export async function getPaymentSchedule(input: unknown): Promise<PaymentSchedul
     nextDueDate: subscription.nextDueDate?.toISOString() ?? null,
     pesapalAutoBillingEnabled: subscription.pesapalAutoBillingEnabled,
     pesapalAutoBillingActivatedAt: subscription.pesapalAutoBillingActivatedAt?.toISOString() ?? null,
+    walletBalanceCents: subscription.walletBalanceCents,
   };
+}
+
+/** The prepaid balance and its history — license-key-authenticated like getPaymentSchedule. */
+export async function getWallet(input: unknown): Promise<WalletSummary> {
+  const parsed = activationPaymentsQuerySchema.parse(input);
+  const license = await prisma.license.findUnique({ where: { licenseKey: parsed.licenseKey } });
+  if (!license) {
+    throw new NotFoundError("Invalid license key");
+  }
+  return getWalletSummary(license.tenantId);
 }

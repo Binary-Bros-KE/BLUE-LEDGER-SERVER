@@ -56,6 +56,12 @@ billingPesapalRouter.post("/submit-order", async (req, res) => {
   res.status(201).json(result);
 });
 
+// Top up the prepaid balance by card/PayPal (subscription-wallet-service.ts).
+billingPesapalRouter.post("/topup", async (req, res) => {
+  const result = await billingPesapalService.initiateBillingPesapalTopUp(req.body);
+  res.status(201).json(result);
+});
+
 // Passive — polled automatically. Never calls Pesapal.
 billingPesapalRouter.post("/status", async (req, res) => {
   const result = await billingPesapalService.getPesapalStatus(req.body);
@@ -74,6 +80,11 @@ billingPesapalRouter.post("/status/check", async (req, res) => {
 // deliberately reachable pre-login).
 billingPesapalRouter.post("/admin/submit-order", requireAuth, async (req, res) => {
   const result = await billingPesapalService.initiateBillingPesapalOrderAsAdmin(req.body);
+  res.status(201).json(result);
+});
+
+billingPesapalRouter.post("/admin/topup", requireAuth, async (req, res) => {
+  const result = await billingPesapalService.initiateBillingPesapalTopUpAsAdmin(req.body);
   res.status(201).json(result);
 });
 

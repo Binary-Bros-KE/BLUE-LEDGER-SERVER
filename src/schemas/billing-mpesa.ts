@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_TOPUP_KES, MIN_TOPUP_KES } from "../lib/subscription-wallet.js";
 
 /** License-key-authenticated, same auth model as activation.ts — this is a tenant paying for their
  * OWN subscription, initiated directly from DESKTOP (sometimes before any employee is even logged
@@ -15,6 +16,26 @@ export const billingMpesaStkPushSchema = z.object({
   deviceId: z.string().trim().min(1).optional(),
 });
 export type BillingMpesaStkPushInput = z.infer<typeof billingMpesaStkPushSchema>;
+
+/** Top up the prepaid balance (lib/subscription-wallet.ts) by any amount, in whole shillings. */
+const topUpAmountKes = z.coerce
+  .number()
+  .int("Enter a whole amount")
+  .min(MIN_TOPUP_KES, `Top up at least KES ${MIN_TOPUP_KES}`)
+  .max(MAX_TOPUP_KES, "That amount is too large");
+
+export const billingMpesaTopUpSchema = z.object({
+  ...licenseKeyField,
+  phone: z.string().trim().min(9, "Enter a valid phone number"),
+  amountKes: topUpAmountKes,
+  deviceId: z.string().trim().min(1).optional(),
+});
+
+export const billingMpesaAdminTopUpSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  phone: z.string().trim().min(9, "Enter a valid phone number"),
+  amountKes: topUpAmountKes,
+});
 
 export const billingMpesaStatusSchema = z.object({
   ...licenseKeyField,

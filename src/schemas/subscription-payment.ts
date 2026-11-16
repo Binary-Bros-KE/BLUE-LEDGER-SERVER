@@ -18,3 +18,14 @@ export const subscriptionPaymentCreateSchema = z.object({
 });
 
 export type SubscriptionPaymentCreateInput = z.infer<typeof subscriptionPaymentCreateSchema>;
+
+/** Admin: a cash/bank top-up (positive) or a correction (ADJUSTMENT, either sign) to the prepaid balance. */
+export const walletAdjustmentSchema = z
+  .object({
+    amountCents: z.coerce.number().int().refine((value) => value !== 0, "Enter an amount"),
+    kind: z.enum(["TOPUP", "ADJUSTMENT"]).default("TOPUP"),
+    paymentMethod: z.string().trim().min(1).max(50).default("Cash"),
+    reference: z.string().trim().max(100).nullable().optional().transform((value) => value || null),
+    note: z.string().trim().max(300).nullable().optional().transform((value) => value || null),
+  })
+  .refine((value) => value.kind === "ADJUSTMENT" || value.amountCents > 0, { message: "A top-up must be positive", path: ["amountCents"] });

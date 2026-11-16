@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_TOPUP_KES, MIN_TOPUP_KES } from "../lib/subscription-wallet.js";
 
 /** License-key-authenticated, same auth model as billing-mpesa.ts — a tenant paying for their OWN
  * subscription, initiated directly from DESKTOP (sometimes before any employee is logged in, from
@@ -18,6 +19,24 @@ export const billingPesapalSubmitOrderSchema = z.object({
   deviceId: z.string().trim().min(1).optional(),
 });
 export type BillingPesapalSubmitOrderInput = z.infer<typeof billingPesapalSubmitOrderSchema>;
+
+/** Top up the prepaid balance by card/PayPal (lib/subscription-wallet.ts). */
+const topUpAmountKes = z.coerce
+  .number()
+  .int("Enter a whole amount")
+  .min(MIN_TOPUP_KES, `Top up at least KES ${MIN_TOPUP_KES}`)
+  .max(MAX_TOPUP_KES, "That amount is too large");
+
+export const billingPesapalTopUpSchema = z.object({
+  ...licenseKeyField,
+  amountKes: topUpAmountKes,
+  deviceId: z.string().trim().min(1).optional(),
+});
+
+export const billingPesapalAdminTopUpSchema = z.object({
+  tenantId: z.string().trim().min(1),
+  amountKes: topUpAmountKes,
+});
 
 export const billingPesapalStatusSchema = z.object({
   ...licenseKeyField,

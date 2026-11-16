@@ -8,6 +8,8 @@ import * as licenseService from "../services/license-service.js";
 import * as shopAdminService from "../services/shop-admin-service.js";
 import * as subscriptionPaymentService from "../services/subscription-payment-service.js";
 import * as subscriptionService from "../services/subscription-service.js";
+import * as subscriptionWalletService from "../services/subscription-wallet-service.js";
+import { walletAdjustmentSchema } from "../schemas/subscription-payment.js";
 import * as tenantService from "../services/tenant-service.js";
 
 export const tenantsRouter = Router();
@@ -93,6 +95,20 @@ tenantsRouter.get("/:id/payments", async (req, res) => {
   requireAccount(req);
   const payments = await subscriptionPaymentService.listPayments(req.params.id as string, req.account);
   res.json(payments);
+});
+
+// Prepaid balance (subscription-wallet-service.ts): anyone who can see the tenant sees it; only a
+// SUPER_ADMIN records a cash/bank top-up or a correction by hand.
+tenantsRouter.get("/:id/wallet", async (req, res) => {
+  requireAccount(req);
+  await tenantService.getTenant(req.params.id as string, req.account);
+  res.json(await subscriptionWalletService.getWalletSummary(req.params.id as string));
+});
+
+tenantsRouter.post("/:id/wallet", requireSuperAdmin, async (req, res) => {
+  requireAccount(req);
+  const parsed = walletAdjustmentSchema.parse(req.body);
+  res.json(await subscriptionWalletService.adjustWalletAsAdmin(req.params.id as string, parsed, req.account.id));
 });
 
 tenantsRouter.post("/:id/payments", requireSuperAdmin, async (req, res) => {

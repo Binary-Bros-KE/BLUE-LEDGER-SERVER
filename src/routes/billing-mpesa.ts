@@ -18,6 +18,12 @@ billingMpesaRouter.post("/stk-push", async (req, res) => {
   res.status(201).json(result);
 });
 
+// Top up the prepaid balance by any amount (subscription-wallet-service.ts).
+billingMpesaRouter.post("/topup", async (req, res) => {
+  const result = await billingMpesaService.initiateBillingTopUpStk(req.body);
+  res.status(201).json(result);
+});
+
 // Passive — polled automatically. Never calls Safaricom.
 billingMpesaRouter.post("/status", async (req, res) => {
   const result = await billingMpesaService.getBillingMpesaStatus(req.body);
@@ -40,6 +46,11 @@ billingMpesaRouter.post("/status/check", async (req, res) => {
 // above are deliberately reachable pre-login) so req.account actually gets populated here.
 billingMpesaRouter.post("/admin/stk-push", requireAuth, async (req, res) => {
   const result = await billingMpesaService.initiateBillingStkPushAsAdmin(req.body);
+  res.status(201).json(result);
+});
+
+billingMpesaRouter.post("/admin/topup", requireAuth, async (req, res) => {
+  const result = await billingMpesaService.initiateBillingTopUpStkAsAdmin(req.body);
   res.status(201).json(result);
 });
 

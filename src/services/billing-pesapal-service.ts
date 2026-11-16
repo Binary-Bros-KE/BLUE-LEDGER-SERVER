@@ -17,9 +17,13 @@ import { prisma } from "../prisma.js";
 import {
   billingPesapalAdminStatusSchema,
   billingPesapalAdminSubmitOrderSchema,
+  billingPesapalAdminTopUpSchema,
   billingPesapalStatusSchema,
   billingPesapalSubmitOrderSchema,
+  billingPesapalTopUpSchema,
 } from "../schemas/billing-pesapal.js";
+import { pricePerPeriodCents, splitAlreadyPaid } from "../lib/subscription-wallet.js";
+import { creditWallet, settleDueFromWallet } from "./subscription-wallet-service.js";
 import { reactivateIfPaymentOverdue } from "./license-service.js";
 import { env } from "../env.js";
 
@@ -172,6 +176,73 @@ export async function initiateBillingPesapalOrderAsAdmin(input: unknown): Promis
   return initiateBillingPesapalOrderForTenant(parsed.tenantId, parsed.periodCount, parsed.enrollAutoBilling, null);
 }
 
+/** Top-up by card/PayPal: a plain Pesapal order for any amount, credited to the prepaid balance on
+ * success (purpose "topup") — never recurring. */
+async function initiateBillingPesapalTopUpForTenant(
+  tenantId: string,
+  amountKes: number,
+  deviceId: string | null,
+): Promise<BillingPesapalSubmitOrderResponse> {
+  const [subscription, tenant] = await Promise.all([
+    prisma.subscription.findUnique({ where: { tenantId } }),
+    prisma.tenant.findUnique({ where: { id: tenantId }, select: { currency: true, name: true, contactPhone: true, email: true, contactEmail: true } }),
+  ]);
+  if (!subscription || !tenant || !pricePerPeriodCents(subscription)) {
+    throw new HttpError(400, "This account has no recurring subscription to top up.");
+  }
+  const amountCents = amountKes * 100;
+  const [firstName, ...rest] = tenant.name.split(" ");
+  const order = await submitOrder({
+    merchantReference: buildMerchantReference(tenantId),
+    amountCents,
+    currency: tenant.currency,
+    description: "Blue Ledger POS — balance top-up",
+    callbackUrl: `${env.SERVER_PUBLIC_URL}/billing-pesapal/callback`,
+    billingAddress: {
+      email_address: tenant.email ?? tenant.contactEmail ?? undefined,
+      phone_number: tenant.contactPhone ?? undefined,
+      country_code: "KE",
+      first_name: firstName || "Blue Ledger",
+      last_name: rest.join(" ") || "Tenant",
+    },
+  });
+  await prisma.pesapalTransaction.create({
+    data: {
+      tenantId,
+      orderTrackingId: order.order_tracking_id,
+      merchantReference: order.merchant_reference,
+      amountCents,
+      periods: [],
+      purpose: "topup",
+      status: "pending",
+      isRecurringSetup: false,
+      initiatedByDeviceId: deviceId,
+    },
+  });
+  return {
+    orderTrackingId: order.order_tracking_id,
+    merchantReference: order.merchant_reference,
+    redirectUrl: order.redirect_url,
+    amountCents,
+    periods: [],
+    accountNumber: null,
+  };
+}
+
+export async function initiateBillingPesapalTopUp(input: unknown): Promise<BillingPesapalSubmitOrderResponse> {
+  const parsed = billingPesapalTopUpSchema.parse(input);
+  const license = await prisma.license.findUnique({ where: { licenseKey: parsed.licenseKey } });
+  if (!license) {
+    throw new NotFoundError("Invalid license key");
+  }
+  return initiateBillingPesapalTopUpForTenant(license.tenantId, parsed.amountKes, parsed.deviceId ?? null);
+}
+
+export async function initiateBillingPesapalTopUpAsAdmin(input: unknown): Promise<BillingPesapalSubmitOrderResponse> {
+  const parsed = billingPesapalAdminTopUpSchema.parse(input);
+  return initiateBillingPesapalTopUpForTenant(parsed.tenantId, parsed.amountKes, null);
+}
+
 /** The actual "mark it paid" side effect — exact parallel to billing-mpesa-service.ts's
  * applySuccessfulBillingPayment (see that function's own comment for why nextDueDate is a fresh
  * recompute, never an incremental advance). Additionally flips the auto-billing flags the FIRST time
@@ -183,7 +254,17 @@ async function applySuccessfulPesapalPayment(transaction: {
   amountCents: number;
   confirmationCode: string | null;
   recurringInfo: { correlation_id?: string; status?: string } | null;
+  purpose: string;
 }): Promise<void> {
+  if (transaction.purpose === "topup") {
+    await creditWallet(transaction.tenantId, transaction.amountCents, {
+      paymentMethod: "Pesapal",
+      reference: transaction.confirmationCode,
+      note: "Top-up",
+    });
+    await settleDueFromWallet(transaction.tenantId);
+    return;
+  }
   const [subscription, tenant, license] = await Promise.all([
     prisma.subscription.findUnique({ where: { tenantId: transaction.tenantId } }),
     prisma.tenant.findUnique({ where: { id: transaction.tenantId }, select: { currency: true } }),
@@ -191,10 +272,16 @@ async function applySuccessfulPesapalPayment(transaction: {
   ]);
   if (!subscription || !tenant || transaction.periods.length === 0) return;
 
-  const perPeriodCents = Math.round(transaction.amountCents / transaction.periods.length);
+  // Same rule as the M-Pesa path: a period already paid meanwhile goes to the balance, not paid twice.
+  const alreadyPaid = await prisma.subscriptionPayment.findMany({
+    where: { tenantId: transaction.tenantId, status: "PAID", billingPeriod: { in: transaction.periods } },
+    select: { billingPeriod: true },
+  });
+  const split = splitAlreadyPaid(transaction.periods, transaction.amountCents, new Set(alreadyPaid.map((p) => p.billingPeriod)));
+  const perPeriodCents = split.perPeriodCents;
   const paymentDate = new Date();
 
-  for (const period of transaction.periods) {
+  for (const period of split.toRecord) {
     await prisma.subscriptionPayment.create({
       data: {
         tenantId: transaction.tenantId,
@@ -233,6 +320,15 @@ async function applySuccessfulPesapalPayment(transaction: {
   });
 
   await reactivateIfPaymentOverdue(transaction.tenantId);
+
+  if (split.toBalanceCents > 0) {
+    await creditWallet(transaction.tenantId, split.toBalanceCents, {
+      paymentMethod: "Pesapal",
+      reference: transaction.confirmationCode,
+      note: "Already paid — kept as balance",
+    });
+    await settleDueFromWallet(transaction.tenantId);
+  }
 }
 
 export type BillingPesapalStatusResponse = {

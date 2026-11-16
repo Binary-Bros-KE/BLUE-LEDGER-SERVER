@@ -17,9 +17,13 @@ import { prisma } from "../prisma.js";
 import {
   billingMpesaAdminStatusSchema,
   billingMpesaAdminStkPushSchema,
+  billingMpesaAdminTopUpSchema,
   billingMpesaStatusSchema,
   billingMpesaStkPushSchema,
+  billingMpesaTopUpSchema,
 } from "../schemas/billing-mpesa.js";
+import { pricePerPeriodCents, splitAlreadyPaid } from "../lib/subscription-wallet.js";
+import { creditWallet, settleDueFromWallet } from "./subscription-wallet-service.js";
 import { reactivateIfPaymentOverdue } from "./license-service.js";
 import { env } from "../env.js";
 
@@ -119,6 +123,53 @@ export async function initiateBillingStkPushAsAdmin(input: unknown): Promise<Bil
   return initiateBillingStkPushForTenant(parsed.tenantId, parsed.phone, parsed.periodCount, null);
 }
 
+/** Top-up: an STK push for any amount that goes to the prepaid balance (purpose "topup"), which then
+ * pays whatever is due on its own (subscription-wallet-service.ts). */
+async function initiateBillingTopUpStkForTenant(
+  tenantId: string,
+  phone: string,
+  amountKes: number,
+  deviceId: string | null,
+): Promise<BillingStkPushResponse> {
+  const subscription = await prisma.subscription.findUnique({ where: { tenantId } });
+  if (!subscription || !pricePerPeriodCents(subscription)) {
+    throw new HttpError(400, "This account has no recurring subscription to top up.");
+  }
+  const credentials = await requireOutletTillSettings(tenantId);
+  const accessToken = await getAccessToken(credentials);
+  const callbackUrl = `${env.SERVER_PUBLIC_URL}/billing-mpesa/callback`;
+  const result = await callInitiateStkPush({ credentials, accessToken, phone, amountKes, callbackUrl });
+  const amountCents = amountKes * 100;
+  await prisma.billingMpesaTransaction.create({
+    data: {
+      tenantId,
+      merchantRequestId: result.merchantRequestId,
+      checkoutRequestId: result.checkoutRequestId,
+      phone,
+      amountCents,
+      periods: [],
+      purpose: "topup",
+      status: "pending",
+      initiatedByDeviceId: deviceId,
+    },
+  });
+  return { ...result, amountCents, periods: [] };
+}
+
+export async function initiateBillingTopUpStk(input: unknown): Promise<BillingStkPushResponse> {
+  const parsed = billingMpesaTopUpSchema.parse(input);
+  const license = await prisma.license.findUnique({ where: { licenseKey: parsed.licenseKey } });
+  if (!license) {
+    throw new NotFoundError("Invalid license key");
+  }
+  return initiateBillingTopUpStkForTenant(license.tenantId, parsed.phone, parsed.amountKes, parsed.deviceId ?? null);
+}
+
+export async function initiateBillingTopUpStkAsAdmin(input: unknown): Promise<BillingStkPushResponse> {
+  const parsed = billingMpesaAdminTopUpSchema.parse(input);
+  return initiateBillingTopUpStkForTenant(parsed.tenantId, parsed.phone, parsed.amountKes, null);
+}
+
 /** The actual "mark it paid" side effect, applied exactly once per transaction regardless of
  * whether the callback or a manual check is what first observes success (see both call sites'
  * `wasAlreadySuccess` guard) — creates one SubscriptionPayment PAID row per covered period,
@@ -131,7 +182,17 @@ async function applySuccessfulBillingPayment(transaction: {
   periods: string[];
   amountCents: number;
   mpesaReceiptNumber: string | null;
+  purpose: string;
 }): Promise<void> {
+  if (transaction.purpose === "topup") {
+    await creditWallet(transaction.tenantId, transaction.amountCents, {
+      paymentMethod: "M-Pesa",
+      reference: transaction.mpesaReceiptNumber,
+      note: "Top-up",
+    });
+    await settleDueFromWallet(transaction.tenantId);
+    return;
+  }
   const [subscription, tenant, license] = await Promise.all([
     prisma.subscription.findUnique({ where: { tenantId: transaction.tenantId } }),
     prisma.tenant.findUnique({ where: { id: transaction.tenantId }, select: { currency: true } }),
@@ -139,10 +200,17 @@ async function applySuccessfulBillingPayment(transaction: {
   ]);
   if (!subscription || !tenant || transaction.periods.length === 0) return;
 
-  const perPeriodCents = Math.round(transaction.amountCents / transaction.periods.length);
+  // A period someone already paid meanwhile (e.g. from the balance) isn't paid twice: its share goes
+  // to the balance instead.
+  const alreadyPaid = await prisma.subscriptionPayment.findMany({
+    where: { tenantId: transaction.tenantId, status: "PAID", billingPeriod: { in: transaction.periods } },
+    select: { billingPeriod: true },
+  });
+  const split = splitAlreadyPaid(transaction.periods, transaction.amountCents, new Set(alreadyPaid.map((p) => p.billingPeriod)));
+  const perPeriodCents = split.perPeriodCents;
   const paymentDate = new Date();
 
-  for (const period of transaction.periods) {
+  for (const period of split.toRecord) {
     await prisma.subscriptionPayment.create({
       data: {
         tenantId: transaction.tenantId,
@@ -171,6 +239,15 @@ async function applySuccessfulBillingPayment(transaction: {
   });
 
   await reactivateIfPaymentOverdue(transaction.tenantId);
+
+  if (split.toBalanceCents > 0) {
+    await creditWallet(transaction.tenantId, split.toBalanceCents, {
+      paymentMethod: "M-Pesa",
+      reference: transaction.mpesaReceiptNumber,
+      note: "Already paid — kept as balance",
+    });
+    await settleDueFromWallet(transaction.tenantId);
+  }
 }
 
 type SafaricomCallbackItem = { Name: string; Value?: string | number };
