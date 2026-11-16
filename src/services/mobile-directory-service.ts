@@ -1,3 +1,4 @@
+import { pricePerPeriodCents } from "../lib/subscription-wallet.js";
 import { rolePermissions } from "../lib/role-defaults.js";
 import { withTenantContext } from "../lib/tenant-context.js";
 import { prisma } from "../prisma.js";
@@ -50,6 +51,15 @@ export type MobileSessionInfo = {
   /** Server-authoritative — see Role.isSuperAdmin's own doc comment. Lets APP gate its Working Hours
    * tab (and any other Super-Admin-exclusive UI) without a name-based guess. */
   isSuperAdmin: boolean;
+  /** What APP needs for the same overdue / short-balance warnings DESKTOP shows (lowercase, like
+   * DESKTOP's cached license fields). Every employee sees the warnings; only a Super Admin pays. */
+  billing: {
+    licenseStatus: string;
+    subscriptionType: string | null;
+    nextDueDate: string | null;
+    walletBalanceCents: number;
+    pricePerPeriodCents: number | null;
+  };
 };
 
 /** Backs the Owner App's sidebar footer (name + role) and gives every tab the tenant's currency
@@ -70,6 +80,17 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       markPointStrict: true,
     },
   });
+  const [license, subscription] = await Promise.all([
+    prisma.license.findUnique({ where: { tenantId }, select: { status: true } }),
+    prisma.subscription.findUnique({ where: { tenantId } }),
+  ]);
+  const billing = {
+    licenseStatus: (license?.status ?? "ACTIVE").toLowerCase(),
+    subscriptionType: subscription?.subscriptionType.toLowerCase() ?? null,
+    nextDueDate: subscription?.nextDueDate?.toISOString() ?? null,
+    walletBalanceCents: subscription?.walletBalanceCents ?? 0,
+    pricePerPeriodCents: subscription ? pricePerPeriodCents(subscription) : null,
+  };
   return withTenantContext(tenantId, async (tx) => {
     const employee = await tx.employee.findUniqueOrThrow({ where: { id: employeeId } });
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
@@ -91,6 +112,7 @@ export async function getMe(tenantId: string, employeeId: string): Promise<Mobil
       markPoint: tenant.markPoint,
       markPointStrict: tenant.markPointStrict,
       isSuperAdmin: role?.isSuperAdmin ?? false,
+      billing,
     };
   });
 }
