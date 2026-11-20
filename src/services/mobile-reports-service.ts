@@ -110,7 +110,8 @@ export async function getStockValueReport(tenantId: string, query: unknown, forc
       return {
         locationId: location.id,
         locationName: location.locationName,
-        isMainStore: location.locationType === "distribution_center",
+        // Same as DESKTOP inventory-report-service.ts isMainStoreType: a warehouse is the store too.
+        isMainStore: location.locationType === "distribution_center" || location.locationType === "warehouse",
         productCount: rows.filter((r) => r.quantity > 0).length,
         totalUnits,
         costValueCents: Math.round(costValueCents),
