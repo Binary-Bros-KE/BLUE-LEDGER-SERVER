@@ -1,3 +1,4 @@
+import { stampDesktopSeen } from "./activity-service.js";
 import { pricePerPeriodCents } from "../lib/subscription-wallet.js";
 import { getWalletSummary, settleDueFromWallet, type WalletSummary } from "./subscription-wallet-service.js";
 import type { Device, License, Plan, Subscription, Tenant } from "@prisma/client";
@@ -240,8 +241,16 @@ export async function heartbeat(input: unknown): Promise<HeartbeatResult> {
 
   await prisma.device.update({
     where: { id: device.id },
-    data: { lastSeen: new Date(), ...(parsed.appVersion ? { appVersion: parsed.appVersion } : {}) },
+    data: {
+      lastSeen: new Date(),
+      ...(parsed.appVersion ? { appVersion: parsed.appVersion } : {}),
+      // undefined = an older desktop that doesn't report it: leave whatever was last known.
+      ...(parsed.employeeId !== undefined
+        ? { currentEmployeeId: parsed.employeeId, currentEmployeeName: parsed.employeeId ? (parsed.employeeName ?? null) : null }
+        : {}),
+    },
   });
+  if (parsed.employeeId) await stampDesktopSeen(license.tenant.id, parsed.employeeId);
   await prisma.tenant.update({ where: { id: license.tenant.id }, data: { lastCloudSync: new Date() } });
 
   const subscription = license.tenant.subscription;

@@ -54,6 +54,9 @@ export const activationHeartbeatSchema = z.object({
   licenseKey: z.string().trim().min(1, "License key is required"),
   deviceId: z.string().trim().min(1, "Device id is required"),
   appVersion: optionalText(50),
+  /** Who's signed in on this till right now — null when nobody is; absent from an older desktop. */
+  employeeId: z.string().trim().min(1).nullable().optional(),
+  employeeName: z.string().trim().max(200).nullable().optional(),
 });
 
 export type ActivationHeartbeatInput = z.infer<typeof activationHeartbeatSchema>;

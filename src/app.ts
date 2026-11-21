@@ -21,6 +21,7 @@ import { shopAdminRouter } from "./routes/shop-admin.js";
 import { shopRouter } from "./routes/shop.js";
 import { syncRouter } from "./routes/sync.js";
 import { tenantsRouter } from "./routes/tenants.js";
+import { activityRouter } from "./routes/activity.js";
 
 export const app = express();
 
@@ -249,6 +250,7 @@ app.get("/download", (req, res) => {
 
 app.use("/auth", authRouter);
 app.use("/tenants", tenantsRouter);
+app.use("/activity", activityRouter);
 app.use("/accounts", accountsRouter);
 app.use("/outlets", outletsRouter);
 app.use("/plans", plansRouter);

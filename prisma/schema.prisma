@@ -638,6 +638,10 @@ model Device {
   registeredAt DateTime  @default(now())
   lastSeen     DateTime?
   lastSync     DateTime?
+  /// Who was signed in on this till at its last check-in (null = nobody / signed out). Reported by
+  /// DESKTOP's heartbeat; an older desktop doesn't send it and leaves these as they were. Activity tab.
+  currentEmployeeId   String?
+  currentEmployeeName String?
 
   status DeviceStatus @default(ACTIVE)
 
@@ -1053,6 +1057,10 @@ model Employee {
   username         String?
   status           String
   lastLogin        DateTime?
+  /// Activity tab: last seen signed in on a desktop (from its check-ins) / using the phone app (any
+  /// request). Server-only, never synced, and written without touching syncedAt — so no pull churn.
+  lastDesktopSeenAt DateTime?
+  lastMobileSeenAt  DateTime?
 
   /// Now synced (was deliberately excluded through Phase 1-5) — a lost/replaced device must let an
   /// employee log in with their EXISTING PIN, not force everyone to be re-created from scratch, per

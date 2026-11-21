@@ -1,3 +1,4 @@
+import { MOBILE_SEEN_THROTTLE_MS, shouldRestamp } from "../lib/activity-status.js";
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { env } from "../env.js";
@@ -85,6 +86,11 @@ export async function requireOwnerAppAccess(req: Request, _res: Response, next: 
     const employee = await tx.employee.findUnique({ where: { id: session.employeeId } });
     if (!employee || employee.status !== "active") {
       throw new HttpError(403, "This account is no longer active. Contact your Super Admin.");
+    }
+
+    // Activity tab: last seen on the phone, written at most every few minutes (not every request).
+    if (shouldRestamp(employee.lastMobileSeenAt, MOBILE_SEEN_THROTTLE_MS)) {
+      await tx.employee.update({ where: { id: employee.id }, data: { lastMobileSeenAt: new Date() } });
     }
 
     const role = employee.roleId ? await tx.role.findUnique({ where: { id: employee.roleId } }) : null;
