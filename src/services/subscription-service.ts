@@ -25,10 +25,15 @@ export async function updateSubscription(
     throw new NotFoundError("This tenant has no subscription");
   }
 
-  if (parsed.planId) {
+  // Same rule as tenant creation: a plan comes from the tenant's own outlet. Keeping the current plan
+  // is always allowed — a tenant moved to another outlet still has its old outlet's plan until changed.
+  if (parsed.planId && parsed.planId !== existing.planId) {
     const plan = await prisma.plan.findUnique({ where: { id: parsed.planId } });
     if (!plan) {
       throw new HttpError(400, "Selected plan was not found");
+    }
+    if (plan.outletId !== existing.tenant.outletId) {
+      throw new HttpError(400, "That plan belongs to another outlet. Pick one of this tenant's outlet's plans.");
     }
   }
 
