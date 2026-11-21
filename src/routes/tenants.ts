@@ -56,7 +56,8 @@ tenantsRouter.delete("/:id", requireSuperAdmin, async (req, res) => {
 
 // --- Subscription --- SUPER_ADMIN only, same sensitivity as editing the tenant itself.
 tenantsRouter.patch("/:id/subscription", requireSuperAdmin, async (req, res) => {
-  const subscription = await subscriptionService.updateSubscription(req.params.id as string, req.body);
+  requireAccount(req);
+  const subscription = await subscriptionService.updateSubscription(req.params.id as string, req.body, req.account);
   res.json(subscription);
 });
 

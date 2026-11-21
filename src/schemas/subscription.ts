@@ -19,6 +19,8 @@ export const subscriptionUpdateSchema = z.object({
   maintenanceExpiry: z.coerce.date().nullable().optional(),
   supportExpiry: z.coerce.date().nullable().optional(),
   supportStatus: z.enum(SUPPORT_STATUSES).optional(),
+  /** Moving nextDueDate past unpaid periods settles them as KES 0 "WAIVED" payments — must be explicit. */
+  waiveUnpaidBefore: z.boolean().optional(),
 });
 
 export type SubscriptionUpdateInput = z.infer<typeof subscriptionUpdateSchema>;
